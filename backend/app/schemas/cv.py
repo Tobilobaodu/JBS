@@ -1,0 +1,77 @@
+"""Pydantic schemas for CV upload and processing — matching 05-openapi.yaml."""
+
+from datetime import datetime
+from pydantic import BaseModel, Field
+
+
+class CvUploadAccepted(BaseModel):
+    cv_id: str = Field(alias="cvId")
+    processing_job_id: str = Field(alias="processingJobId")
+    status: str  # queued
+    filename: str
+    file_size: int = Field(alias="fileSize")
+    mime_type: str = Field(alias="mimeType")
+
+    model_config = {"populate_by_name": True}
+
+
+class CvFileResponse(BaseModel):
+    id: str
+    original_filename: str = Field(alias="originalFilename")
+    mime_type: str = Field(alias="mimeType")
+    file_size_bytes: int = Field(alias="fileSizeBytes")
+    upload_status: str = Field(alias="uploadStatus")
+    processing_status: str = Field(alias="processingStatus")
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+
+class CvListResponse(BaseModel):
+    items: list[CvFileResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class CvExtractionPassResponse(BaseModel):
+    id: str
+    pass_type: str = Field(alias="passType")
+    attempt_number: int = Field(alias="attemptNumber")
+    confidence_score: float | None = Field(alias="confidenceScore", default=None)
+    processing_duration_ms: int | None = Field(alias="processingDurationMs", default=None)
+    created_at: datetime = Field(alias="createdAt")
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+
+class StructuralValidationResult(BaseModel):
+    section_count_match: bool = Field(alias="sectionCountMatch")
+    heading_alignment_score: float = Field(alias="headingAlignmentScore")
+    reading_order_consistent: bool = Field(alias="readingOrderConsistent")
+    date_range_consistent: bool = Field(alias="dateRangeConsistent")
+    bullet_preservation_score: float = Field(alias="bulletPreservationScore")
+    anomaly_detected: bool = Field(alias="anomalyDetected")
+    anomaly_detail: str | None = Field(alias="anomalyDetail")
+
+    model_config = {"populate_by_name": True}
+
+
+class CvExtractionDetailResponse(BaseModel):
+    passes: list[CvExtractionPassResponse]
+    structural_validation: StructuralValidationResult | None = Field(
+        alias="structuralValidation", default=None
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class CvRawTextResponse(BaseModel):
+    canonical_text: str = Field(alias="canonicalText")
+    ocr_used: bool = Field(alias="ocrUsed")
+    merge_strategy_metadata: dict | None = Field(alias="mergeStrategyMetadata")
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+

@@ -1,0 +1,48 @@
+# Core
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# Database
+sqlalchemy==2.0.36
+alembic==1.14.1
+asyncpg==0.30.0
+psycopg2-binary==2.9.10
+
+# Auth
+bcrypt==4.2.1
+pyjwt[crypto]==2.10.1
+
+# Storage
+boto3==1.36.3
+
+# Queue / Workers
+celery[redis]==5.4.0
+redis==5.2.1
+
+# Document processing
+docling==2.14.0
+
+# File validation
+python-magic==0.4.27
+
+# Malware scanning (clamd client)
+clamd==1.0.2
+
+# Observability
+structlog==24.4.0
+prometheus-client==0.21.1
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.25.0
+httpx==0.28.1
+factory-boy==3.3.1
+
+# Email validation (required by Pydantic EmailStr)
+email-validator==2.2.0
+
+# Utilities
+python-multipart==0.0.20
+python-dotenv==1.0.1
