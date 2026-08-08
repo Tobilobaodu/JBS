@@ -84,7 +84,7 @@ $("#form-register").addEventListener("submit", async (e) => {
       email: fd.get("email"),
       password: fd.get("password"),
     });
-    setAuth(login.data.access_token, fd.get("email"));
+    setAuth(login.data.accessToken, fd.get("email"));
   } catch (err) { showError("register-result", err); }
 });
 
@@ -96,7 +96,7 @@ $("#form-login").addEventListener("submit", async (e) => {
       email: fd.get("email"),
       password: fd.get("password"),
     });
-    setAuth(data.access_token, fd.get("email"));
+    setAuth(data.accessToken, fd.get("email"));
   } catch (err) { showError("login-result", err); }
 });
 

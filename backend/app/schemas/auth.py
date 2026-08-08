@@ -17,16 +17,18 @@ class LoginRequest(BaseModel):
 class UserResponse(BaseModel):
     id: str
     email: str
-    account_status: str  # active, suspended, deleted
-    created_at: datetime
+    account_status: str = Field(alias="accountStatus")  # active, suspended, deleted
+    created_at: datetime = Field(alias="createdAt")
 
-    model_config = {"from_attributes": True}
+    model_config = {"from_attributes": True, "populate_by_name": True}
 
 
 class LoginResponse(BaseModel):
-    access_token: str
-    refresh_token: str
+    access_token: str = Field(alias="accessToken")
+    refresh_token: str = Field(alias="refreshToken")
     user: UserResponse
+
+    model_config = {"populate_by_name": True}
 
 
 class ErrorDetail(BaseModel):
