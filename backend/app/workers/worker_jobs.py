@@ -151,6 +151,10 @@ def process_docling_extract(self, job_id: str) -> None:
         JOB_DURATION_SECONDS.labels(job_type="docling_extract").observe(duration_s)
         EXTRACTION_CHARS.labels(pass_type="docling").observe(result.characters)
 
+        # Update job_type to reflect current pipeline stage before handoff
+        job.job_type = "textract_extract"
+        session.commit()
+
         # Enqueue Textract as the next step
         enqueue_textract_extract(job_id)
 
@@ -633,6 +637,10 @@ def process_textract_extract(self, job_id: str) -> None:
             job.completed_at = datetime.now(timezone.utc)
             session.commit()
 
+            # Update job_type to reflect current pipeline stage before handoff
+            job.job_type = "merge_parse"
+            session.commit()
+
             # Still enqueue merge so the pipeline continues with Docling-only data
             enqueue_merge_parse(job_id)
             return
@@ -777,6 +785,10 @@ def process_textract_extract(self, job_id: str) -> None:
             JOB_THROUGHPUT.labels(job_type="textract_extract", status="completed").inc()
             JOB_DURATION_SECONDS.labels(job_type="textract_extract").observe(duration_s)
             EXTRACTION_CHARS.labels(pass_type="textract").observe(len(extracted_text))
+
+            # Update job_type to reflect current pipeline stage before handoff
+            job.job_type = "merge_parse"
+            session.commit()
 
             # Enqueue merge
             enqueue_merge_parse(job_id)
@@ -942,6 +954,10 @@ def process_merge_parse(self, job_id: str) -> None:
             anomaly_detected=anomaly_detected
         ).inc()
 
+        # Update job_type to reflect current pipeline stage before handoff
+        job.job_type = "cv_parse"
+        session.commit()
+
         # Phase 2: enqueue CV structured profile extraction
         enqueue_cv_parse(job_id)
 
@@ -1102,6 +1118,10 @@ def process_job_post_fetch(self, job_id: str) -> None:
             url=jp.source_url,
             char_count=len(raw_text),
         )
+
+        # Update job_type to reflect current pipeline stage before handoff
+        job.job_type = "job_post_parse"
+        session.commit()
 
         # Enqueue the parse worker as the next step
         from app.workers.tasks import enqueue_job_post_parse
