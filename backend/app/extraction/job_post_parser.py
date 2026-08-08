@@ -155,15 +155,20 @@ class RulesBasedJobPostParser(JobPostParser):
 
         return {k: "\n".join(v) for k, v in sections.items()}
 
+    # Module-level bullet pattern — matches symbolic bullets and numbered lists.
+    # The previous inline regex had a malformed character class (invalid range
+    # inside [\d+[.)]]) that silently matched nothing, so every job post's
+    # responsibilities and qualifications parsed as empty.
+    _BULLET_RE = re.compile(r"^\s*(?:[-•*✦➤►]|\d+[.)])\s+")
+
     @staticmethod
     def _extract_bullet_list(text: str) -> list[str]:
         """Extract bullet-point items from section text."""
         items = []
         for line in text.split("\n"):
             stripped = line.strip()
-            # Match lines starting with bullet markers or numbered lists
-            if re.match(r"^[-•*✦➤►\d+[.)]\s]", stripped):
-                clean = re.sub(r"^[-•*✦➤►\d+[.)]\s*", "", stripped).strip()
+            if RulesBasedJobPostParser._BULLET_RE.match(stripped):
+                clean = RulesBasedJobPostParser._BULLET_RE.sub("", stripped).strip()
                 if clean:
                     items.append(clean)
         return items
