@@ -15,6 +15,8 @@ from app.db.models import (
     AuditEvent,
     CvFile,
     CvExtractionPass,
+    CvProfile,
+    CvProfileVersion,
     CvRawText,
     ProcessingJob,
     User,
@@ -364,3 +366,60 @@ async def get_cv_extraction_detail(
             else None
         ),
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GET /cvs/{cvId}/parsed-profile  — Phase 2
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.get("/cvs/{cv_id}/parsed-profile")
+async def get_cv_parsed_profile(
+    cv_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Return the current structured candidate profile (Phase 2)."""
+    # Ownership check
+    cv_result = await session.execute(
+        select(CvFile).where(CvFile.id == cv_id, CvFile.user_id == current_user.id)
+    )
+    cv_file = cv_result.scalar_one_or_none()
+    if cv_file is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CV not found")
+
+    # Get current profile pointer
+    profile_result = await session.execute(
+        select(CvProfile).where(CvProfile.cv_file_id == cv_id)
+    )
+    profile = profile_result.scalar_one_or_none()
+
+    if profile is None or profile.current_version_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No structured profile available yet. Wait for CV parsing to complete.",
+        )
+
+    version_result = await session.execute(
+        select(CvProfileVersion).where(
+            CvProfileVersion.id == profile.current_version_id
+        )
+    )
+    version = version_result.scalar_one_or_none()
+    if version is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Profile version not found.",
+        )
+
+    return {
+        "cvId": cv_id,
+        "profileVersionId": version.id,
+        "versionNumber": version.version_number,
+        "profileHash": version.profile_hash,
+        "schemaVersion": version.schema_version,
+        "validationStatus": version.validation_status,
+        "confidenceSummary": version.confidence_summary,
+        "structuredPayload": version.structured_payload,
+        "createdAt": version.created_at.isoformat() if version.created_at else None,
+    }

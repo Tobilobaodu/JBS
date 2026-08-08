@@ -1,0 +1,14 @@
+# Prometheus configuration — scrapes the API /metrics endpoint
+# and worker metrics (future: sidecar or pushgateway per-worker).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: "api"
+    metrics_path: "/metrics"
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          service: "cv-tailoring-api"

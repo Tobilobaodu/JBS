@@ -143,11 +143,123 @@ services:
       - ./app:/app/app:ro
     restart: unless-stopped
 
+  # Celery worker - job post URL fetch (SSRF-safe, network-isolated)
+  worker_job_fetch:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q job_post_fetch --concurrency=3 --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+    # Per 10-security-plan.md §4: network-level egress restriction as the
+    # backstop if application-level IP validation has a bypass. This worker
+    # needs internal DB/Redis + public internet only — no route to cloud
+    # metadata or other internal-only services.
+    networks:
+      - default
+
+  # Celery worker - job post structuring (rules-based, no LLM needed yet)
+  worker_job_parse:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q job_post_parse --concurrency=3 --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+
+  # Celery worker - match analysis (Phase 3)
+  worker_match:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q match --concurrency=3 --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+
+  # Celery worker - CV structured profile extraction (Phase 2)
+  worker_cv_parse:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q cv_parse --concurrency=2 --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+    # CV parse worker: reads from cv_raw_text, writes to profile tables.
+    # No outbound network needed — deny-all egress.
+    networks:
+      - default
+      - no_internet
+
+  # Prometheus — scrapes /metrics from the API
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # Grafana — dashboards for Prometheus metrics
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+    volumes:
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
   minio_data:
   clamav_data:
+  prometheus_data:
+  grafana_data:
 
 networks:
   default:

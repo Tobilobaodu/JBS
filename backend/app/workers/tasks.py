@@ -54,3 +54,44 @@ def enqueue_merge_parse(job_id: str) -> None:
         args=[job_id],
         queue="merge_parse",
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 2: Job post ingestion
+# ──────────────────────────────────────────────────────────────────────
+
+
+def enqueue_job_post_fetch(job_id: str) -> None:
+    """Dispatch an SSRF-safe URL fetch job to the job_post_fetch queue."""
+    celery_app.send_task(
+        "app.workers.worker_jobs.process_job_post_fetch",
+        args=[job_id],
+        queue="job_post_fetch",
+    )
+
+
+def enqueue_cv_parse(job_id: str) -> None:
+    """Dispatch a CV structured-profile extraction job to the cv_parse queue."""
+    celery_app.send_task(
+        "app.workers.worker_jobs.process_cv_parse",
+        args=[job_id],
+        queue="cv_parse",
+    )
+
+
+def enqueue_match(job_id: str) -> None:
+    """Dispatch a match analysis job to the match queue."""
+    celery_app.send_task(
+        "app.workers.worker_jobs.process_match",
+        args=[job_id],
+        queue="match",
+    )
+
+
+def enqueue_job_post_parse(job_id: str) -> None:
+    """Dispatch a job post structuring job to the job_post_parse queue."""
+    celery_app.send_task(
+        "app.workers.worker_jobs.process_job_post_parse",
+        args=[job_id],
+        queue="job_post_parse",
+    )

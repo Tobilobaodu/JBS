@@ -340,3 +340,222 @@ class AuditEvent(Base):
     __table_args__ = (
         {"info": {"append_only": True, "no_update": True, "no_delete": True}},
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 2: Job post ingestion
+# ──────────────────────────────────────────────────────────────────────
+
+
+class JobPost(Base):
+    __tablename__ = "job_posts"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=False, index=True
+    )
+    source_type: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # url, text
+    source_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    raw_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(50), default="pending", nullable=False, index=True
+    )  # pending, fetching, structuring, completed, failed
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+    profile: Mapped["JobPostProfile | None"] = relationship(
+        back_populates="job_post", uselist=False, cascade="all, delete-orphan"
+    )
+
+
+class JobPostProfile(Base):
+    __tablename__ = "job_post_profiles"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    job_post_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("job_posts.id"),
+        unique=True,
+        nullable=False,
+    )
+    job_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    employer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    required_skills: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    preferred_skills: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    responsibilities: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    qualifications: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    keywords: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    seniority: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )  # Junior, Mid, Senior, Lead, Principal — nullable, never guessed
+    structured_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    job_post: Mapped["JobPost"] = relationship(back_populates="profile")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 2: CV profile child tables
+# ──────────────────────────────────────────────────────────────────────
+
+
+class CvExperienceItem(Base):
+    """Normalised work experience rows — keyed off cv_profile_version_id, not cv_file_id."""
+
+    __tablename__ = "cv_experience_items"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    cv_profile_version_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("cv_profile_versions.id"),
+        nullable=False,
+        index=True,
+    )
+    company: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    start_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    end_date: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    current: Mapped[bool] = mapped_column(Boolean, default=False)
+    bullets: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    technologies: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    source_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CvEducationItem(Base):
+    """Normalised education rows — keyed off cv_profile_version_id."""
+
+    __tablename__ = "cv_education_items"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    cv_profile_version_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("cv_profile_versions.id"),
+        nullable=False,
+        index=True,
+    )
+    institution: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    degree: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    field: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    source_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CvSkillItem(Base):
+    """Skills with optional categorisation — keyed off cv_profile_version_id."""
+
+    __tablename__ = "cv_skill_items"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    cv_profile_version_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("cv_profile_versions.id"),
+        nullable=False,
+        index=True,
+    )
+    skill_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    category: Mapped[str | None] = mapped_column(
+        String(50), nullable=True
+    )  # technical, soft, other
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    source_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CvProfileVersion extension: master CV lineage (product extension #4)
+# ──────────────────────────────────────────────────────────────────────
+
+# master_profile_id added as a nullable column on cv_profile_versions.
+# This is a schema-only reservation — zero behavioural effect until the
+# feature is built per 11-product-extensions.md §4.
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 3: Match engine
+# ──────────────────────────────────────────────────────────────────────
+
+
+class MatchRun(Base):
+    __tablename__ = "match_runs"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=False, index=True
+    )
+    cv_profile_version_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("cv_profile_versions.id"), nullable=False, index=True
+    )
+    job_post_profile_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("job_post_profiles.id"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(50), default="pending", nullable=False, index=True
+    )
+    score: Mapped[float | None] = mapped_column(nullable=True)
+    supported_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    partial_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unsupported_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    total_requirements: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    summary_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
+    match_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class MatchEvidenceItem(Base):
+    __tablename__ = "match_evidence_items"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    match_run_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("match_runs.id"), nullable=False, index=True
+    )
+    requirement_text: Mapped[str] = mapped_column(Text, nullable=False)
+    requirement_type: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # required, preferred
+    support_level: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # supported, partially_supported, unsupported, contradictory, unclear
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    source_references: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    suggestion: Mapped[str | None] = mapped_column(Text, nullable=True)
+    warning: Mapped[str | None] = mapped_column(Text, nullable=True)
+    user_feedback: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )

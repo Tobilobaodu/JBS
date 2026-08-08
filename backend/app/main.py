@@ -20,6 +20,8 @@ from app.core.storage import ensure_bucket_exists
 from app.api.v1.auth import router as auth_router
 from app.api.v1.cvs import router as cvs_router
 from app.api.v1.jobs import router as jobs_router
+from app.api.v1.job_posts import router as job_posts_router
+from app.api.v1.matches import router as matches_router
 
 logger = get_logger(__name__)
 
@@ -45,10 +47,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
+# CORS — in local dev, also allow null origin (file:// pages) for the test harness
+_cors_origins = [settings.cors_origin]
+if settings.environment == "local":
+    _cors_origins.append("null")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.cors_origin],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -89,6 +95,8 @@ async def global_exception_handler(request: Request, exc: Exception):
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(cvs_router, prefix="/api/v1")
 app.include_router(jobs_router, prefix="/api/v1")
+app.include_router(job_posts_router, prefix="/api/v1")
+app.include_router(matches_router, prefix="/api/v1")
 
 # Prometheus metrics at /metrics
 metrics_app = make_asgi_app()
