@@ -66,6 +66,7 @@ _SECTION_MAPPINGS: list[Tuple[re.Pattern, str]] = [
     (re.compile(r"skills?\s+summary", re.I), SKILLS),
     (re.compile(r"technical\s+proficienc", re.I), SKILLS),
     (re.compile(r"technology\s+stack", re.I), SKILLS),
+    (re.compile(r"\bskills?\b", re.I), SKILLS),
 
     # ── Certifications ────────────────────────────────────────────
     (re.compile(r"certifications?", re.I), CERTIFICATIONS),
