@@ -17,12 +17,13 @@ from __future__ import annotations
 import time
 from collections import defaultdict
 from typing import Tuple, Set
+from app.core.config import settings
 
 
 # ── Configuration ────────────────────────────────────────────────────
 
-MAX_ATTEMPTS_PER_WINDOW = 5
-WINDOW_SECONDS = 60
+MAX_ATTEMPTS_PER_WINDOW = settings.rate_limit_auth_requests
+WINDOW_SECONDS = settings.rate_limit_auth_window
 BLOCKLIST_CLEANUP_INTERVAL = 300  # clean stale entries every 5 min
 
 
@@ -32,7 +33,7 @@ BLOCKLIST_CLEANUP_INTERVAL = 300  # clean stale entries every 5 min
 _attempts: dict[str, list[float]] = defaultdict(list)
 # permanently blocked IPs after repeated window violations
 _blocked: dict[str, float] = {}  # ip → blocked_until epoch
-_last_cleanup = time.monotonic()
+_last_cleanup = time.time()
 
 
 def _cleanup_stale_entries(now: float) -> None:
@@ -96,16 +97,21 @@ def check_rate_limit(key: str) -> bool:
 def get_client_key(request) -> str:
     """Extract a rate-limiting key from the incoming request.
 
-    Uses the client IP. Falls back to "unknown" if the IP is unavailable.
+    Model A -- trusted client identity (Phase 2, Task 2.1): the key is the
+    TCP peer address (request.client.host) only. Forwarded headers such as
+    X-Forwarded-For are intentionally IGNORED: without a verified
+    trusted-proxy configuration that blocks direct API access and is the
+    sole allowed source of forwarded headers, a caller-supplied header is
+    attacker-controlled and would let a caller spoof the key and bypass
+    the limiter.
 
-    In production, X-Forwarded-For should be used if behind a proxy.
+    A verified-proxy path (Model B) may be added later ONLY behind an
+    explicit opt-in that documents the network guarantee making the
+    header trustworthy (per 10-security-plan.md section 6). Do not add a
+    fallback that trusts arbitrary forwarded headers.
+
+    Falls back to "unknown" if the peer address is unavailable.
     """
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        # Take the leftmost IP (the client) from the proxy chain
-        return forwarded.split(",")[0].strip()
-
-    if request.client:
-        return request.client.host
-
-    return "unknown"
+    client_addr = getattr(request, "client", None)
+    client_host = getattr(client_addr, "host", None)
+    return client_host or "unknown"
