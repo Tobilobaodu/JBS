@@ -43,6 +43,7 @@ _PRIVATE_NETWORKS = [
 # Default limits
 _DEFAULT_TIMEOUT_SECONDS = 15
 _DEFAULT_MAX_BYTES = 2 * 1024 * 1024  # 2 MB
+_STREAM_CHUNK_SIZE = 64 * 1024
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -255,21 +256,26 @@ def _connect_and_read_pinned(
             follow_redirects=False,
             headers={"User-Agent": "CV-Tailoring/1.0"},
         ) as client:
-            response = client.get(url)
+            with client.stream("GET", url) as response:
+                # Handle redirects — the caller re-validates the target hop.
+                if response.status_code in (301, 302, 303, 307, 308):
+                    location = response.headers.get("Location")
+                    return b"", location
 
-            # Handle redirects — the caller re-validates the target hop.
-            if response.status_code in (301, 302, 303, 307, 308):
-                location = response.headers.get("Location")
-                return b"", location
+                if response.status_code >= 400:
+                    response.raise_for_status()  # raises HTTPStatusError
 
-            if response.status_code >= 400:
-                response.raise_for_status()  # raises HTTPStatusError
-
-            # Read body with size cap
-            body = response.content
-            if len(body) > max_bytes:
-                raise FetchError(
-                    f"Response exceeds maximum size of {max_bytes} bytes "
-                    f"(got {len(body)} bytes)."
-                )
-            return body, None
+                # Read the body incrementally and abort as soon as the
+                # cumulative size exceeds the cap, so an oversized response
+                # never fully accumulates in worker memory.
+                chunks: list[bytes] = []
+                total = 0
+                for chunk in response.iter_bytes(chunk_size=_STREAM_CHUNK_SIZE):
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise FetchError(
+                            f"Response exceeds maximum size of {max_bytes} bytes "
+                            f"(aborted at {total} bytes while streaming)."
+                        )
+                    chunks.append(chunk)
+                return b"".join(chunks), None

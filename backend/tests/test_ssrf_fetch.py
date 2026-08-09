@@ -16,6 +16,8 @@ from app.services.ssrf_safe_fetch import (
     ssrf_safe_fetch,
     resolve_and_validate_ip,
     _pinned_dns,
+    _connect_and_read_pinned,
+    _STREAM_CHUNK_SIZE,
 )
 
 
@@ -319,3 +321,177 @@ class TestSizeAndTimeout:
                        side_effect=FetchError("Timed out fetching")):
                 with pytest.raises(FetchError):
                     ssrf_safe_fetch("http://example.com", timeout=1)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Streaming size enforcement — Phase 2, Task 2.2
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _FakeStreamResponse:
+    """A minimal fake for httpx's streamed response, returning controlled
+    chunks and tracking consumption so tests can prove that oversized
+    responses are aborted without reading the full body."""
+
+    def __init__(self, chunks, status_code=200, headers=None):
+        self._chunks = list(chunks)
+        self.status_code = status_code
+        self.headers = headers or {}
+        self._iter_calls = 0
+        self._iter_chunk_size = None
+        self.closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.closed = True
+        return False  # do not suppress exceptions
+
+    def iter_bytes(self, chunk_size=None):
+        for c in self._chunks:
+            self._iter_chunk_size = chunk_size
+            self._iter_calls += 1
+            yield c
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            from httpx import HTTPStatusError, Request, Response
+            req_dummy = Request("GET", "http://fake")
+            resp_dummy = Response(self.status_code, request=req_dummy)
+            raise HTTPStatusError("status error", request=req_dummy, response=resp_dummy)
+
+
+class TestStreamingSizeEnforcement:
+    """Focused behavioural tests for the streaming read path.
+
+    All tests inject a fake `httpx.Client` whose `stream()` context manager
+    returns the controlled `_FakeStreamResponse`.  No real network calls
+    are made."""
+
+    # ── helpers ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _patch_client(fake_resp):
+        """Return a patch that replaces `httpx.Client` with a mock that
+        surfaces *fake_resp* as the stream response."""
+        from unittest.mock import MagicMock
+        mock_inst = MagicMock()
+        mock_inst.__enter__.return_value = mock_inst
+        mock_inst.stream.return_value = fake_resp
+        return patch("app.services.ssrf_safe_fetch.httpx.Client", return_value=mock_inst)
+
+    # ── tests ─────────────────────────────────────────────────────────
+
+    def test_small_response_returns_content(self):
+        """A response at or below max_bytes returns the full body."""
+        fake = _FakeStreamResponse(chunks=[b"OK"], status_code=200)
+        with self._patch_client(fake):
+            body, redirect = _connect_and_read_pinned(
+                scheme="http", host="s.example", port=80,
+                parsed=urllib.parse.urlparse("http://s.example/"),
+                validated_ip="8.8.8.8", timeout=5, max_bytes=100,
+            )
+        assert body == b"OK"
+        assert redirect is None
+        assert fake.closed
+        assert fake._iter_chunk_size == _STREAM_CHUNK_SIZE, (  # explicit chunk size passed
+            f"Expected chunk_size {_STREAM_CHUNK_SIZE}, got {fake._iter_chunk_size}"
+        )
+
+    def test_response_exactly_at_limit_succeeds(self):
+        """A response whose body length equals max_bytes is accepted."""
+        limit = 10
+        fake = _FakeStreamResponse(chunks=[b"a" * limit], status_code=200)
+        with self._patch_client(fake):
+            body, _ = _connect_and_read_pinned(
+                scheme="http", host="x", port=80,
+                parsed=urllib.parse.urlparse("http://x/"),
+                validated_ip="8.8.8.8", timeout=5, max_bytes=limit,
+            )
+        assert body == b"a" * limit
+
+    def test_one_byte_over_limit_raises_fetch_error(self):
+        """When the response body is one byte over max_bytes, FetchError is
+        raised and the stream is closed."""
+        limit = 10
+        fake = _FakeStreamResponse(chunks=[b"a" * (limit + 1)], status_code=200)
+        with self._patch_client(fake):
+            with pytest.raises(FetchError) as exc_info:
+                _connect_and_read_pinned(
+                    scheme="http", host="x", port=80,
+                    parsed=urllib.parse.urlparse("http://x/"),
+                    validated_ip="8.8.8.8", timeout=5, max_bytes=limit,
+                )
+        error_msg = str(exc_info.value)
+        assert str(limit) in error_msg
+        assert fake.closed, "stream must be closed after FetchError"
+        assert fake._iter_chunk_size == _STREAM_CHUNK_SIZE, (  # explicit chunk size passed
+            f"Expected chunk_size {_STREAM_CHUNK_SIZE}, got {fake._iter_chunk_size}"
+        )
+
+    def test_multichunk_over_limit_stops_at_first_over_limit_chunk(self):
+        """When a chunked response exceeds max_bytes partway through, the
+        loop stops iteration at the over-limit chunk and does NOT consume
+        any later chunks."""
+        # 3 chunks, max_bytes=250 — the 3rd chunk pushes total to 300
+        chunks = [b"a" * 100, b"b" * 100, b"c" * 100, b"d" * 100]
+        limit = 250
+        fake = _FakeStreamResponse(chunks=chunks, status_code=200)
+        with self._patch_client(fake):
+            with pytest.raises(FetchError):
+                _connect_and_read_pinned(
+                    scheme="http", host="x", port=80,
+                    parsed=urllib.parse.urlparse("http://x/"),
+                    validated_ip="8.8.8.8", timeout=5, max_bytes=limit,
+                )
+        # total = 100 (chunk 1), 200 (chunk 2), 300 (chunk 3 > limit → abort).
+        # Only 3 chunks were requested; the 4th was never consumed.
+        assert fake._iter_calls == 3, (
+            f"Expected only 3 chunks consumed before abort, got {fake._iter_calls}"
+        )
+        assert fake.closed
+        assert fake._iter_chunk_size == _STREAM_CHUNK_SIZE, (  # explicit chunk size passed
+            f"Expected chunk_size {_STREAM_CHUNK_SIZE}, got {fake._iter_chunk_size}"
+        )
+
+    def test_redirect_returns_location_without_reading_body(self):
+        """A redirect response returns (b"", Location) and must not iterate
+        over the body."""
+        fake = _FakeStreamResponse(
+            chunks=[b"should-not-be-read"],
+            status_code=302,
+            headers={"Location": "http://next.example.com/"},
+        )
+        with self._patch_client(fake):
+            body, loc = _connect_and_read_pinned(
+                scheme="http", host="src", port=80,
+                parsed=urllib.parse.urlparse("http://src/"),
+                validated_ip="8.8.8.8", timeout=5, max_bytes=100,
+            )
+        assert body == b""
+        assert loc == "http://next.example.com/"
+        assert fake._iter_calls == 0, "body must not be iterated for redirect"
+
+    def test_full_ssrf_safe_fetch_still_succeeds_public_ip(self):
+        """Use the real streaming path inside ssrf_safe_fetch with a mocked
+        public IP and a faked streaming body.  Confirms the outer redirect
+        loop and exception mapping still compose correctly."""
+        fake = _FakeStreamResponse(chunks=[b"hello world"], status_code=200)
+        with patch("app.services.ssrf_safe_fetch.resolve_and_validate_ip",
+                   return_value="8.8.8.8"):
+            with self._patch_client(fake):
+                result = ssrf_safe_fetch("http://public.example/")
+        assert "hello world" in result
+
+    def test_streaming_read_timeout_maps_to_fetch_error(self):
+        """When `iter_bytes` raises `httpx.ReadTimeout`, the handler in
+        ssrf_safe_fetch must convert it to a FetchError with 'Timed out'."""
+        fake = _FakeStreamResponse(chunks=[b"x"], status_code=200)
+        from httpx import ReadTimeout
+        fake.iter_bytes = lambda chunk_size=None: (_ for _ in ()).throw(ReadTimeout("timed out"))
+        with patch("app.services.ssrf_safe_fetch.resolve_and_validate_ip",
+                   return_value="8.8.8.8"):
+            with self._patch_client(fake):
+                with pytest.raises(FetchError, match="Timed out"):
+                    ssrf_safe_fetch("http://slow.example/")
