@@ -523,6 +523,8 @@ class MatchRun(Base):
     supported_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     partial_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     unsupported_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    contradictory_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    unclear_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total_requirements: Mapped[int | None] = mapped_column(Integer, nullable=True)
     summary_analysis: Mapped[str | None] = mapped_column(Text, nullable=True)
     match_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

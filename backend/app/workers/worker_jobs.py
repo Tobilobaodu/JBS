@@ -264,6 +264,8 @@ def process_match(self, job_id: str) -> None:
         match_run.supported_count = result.supported_count
         match_run.partial_count = result.partial_count
         match_run.unsupported_count = result.unsupported_count
+        match_run.contradictory_count = result.contradictory_count
+        match_run.unclear_count = result.unclear_count
         match_run.total_requirements = result.total_requirements
         match_run.summary_analysis = result.summary_analysis
         match_run.status = "completed"
