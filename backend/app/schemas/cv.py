@@ -22,6 +22,7 @@ class CvFileResponse(BaseModel):
     file_size_bytes: int = Field(alias="fileSizeBytes")
     upload_status: str = Field(alias="uploadStatus")
     processing_status: str = Field(alias="processingStatus")
+    job_status: str | None = Field(None, alias="jobStatus")
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
 

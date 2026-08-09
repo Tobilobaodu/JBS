@@ -174,6 +174,22 @@ async def list_cvs(
     result = await session.execute(query)
     cv_files = result.scalars().all()
 
+    # Batch-query most recent processing job per CV for status visibility
+    job_status_map: dict[str, str] = {}
+    if cv_files:
+        cv_ids = [f.id for f in cv_files]
+        job_result = await session.execute(
+            select(ProcessingJob.source_entity_id, ProcessingJob.status)
+            .where(
+                ProcessingJob.source_entity_type == "cv_file",
+                ProcessingJob.source_entity_id.in_(cv_ids),
+            )
+            .order_by(ProcessingJob.created_at.desc())
+        )
+        for source_id, status in job_result.all():
+            if source_id not in job_status_map:
+                job_status_map[source_id] = status
+
     items = [
         CvFileResponse(
             id=f.id,
@@ -182,6 +198,7 @@ async def list_cvs(
             file_size_bytes=f.file_size,
             upload_status="stored" if f.storage_key else "pending",
             processing_status=f.status,
+            job_status=job_status_map.get(f.id),
             created_at=f.created_at,
             updated_at=f.updated_at,
         )
@@ -215,6 +232,18 @@ async def get_cv(
     if cv_file is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CV not found.")
 
+    # Look up most recent processing job status for this CV
+    job_result = await session.execute(
+        select(ProcessingJob.status)
+        .where(
+            ProcessingJob.source_entity_type == "cv_file",
+            ProcessingJob.source_entity_id == cv_id,
+        )
+        .order_by(ProcessingJob.created_at.desc())
+        .limit(1)
+    )
+    job_status = job_result.scalar()
+
     return CvFileResponse(
         id=cv_file.id,
         original_filename=cv_file.filename,
@@ -222,6 +251,7 @@ async def get_cv(
         file_size_bytes=cv_file.file_size,
         upload_status="stored" if cv_file.storage_key else "pending",
         processing_status=cv_file.status,
+        job_status=job_status,
         created_at=cv_file.created_at,
         updated_at=cv_file.updated_at,
     )
