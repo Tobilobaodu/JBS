@@ -561,3 +561,120 @@ class MatchEvidenceItem(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Phase 4: Guided cover letter workflow
+# ──────────────────────────────────────────────────────────────────────
+
+
+class CoverLetterWorkflow(Base):
+    __tablename__ = "cover_letter_workflows"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=False, index=True
+    )
+    cv_profile_version_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("cv_profile_versions.id"), nullable=False, index=True
+    )
+    job_post_profile_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("job_post_profiles.id"), nullable=False, index=True
+    )
+    match_run_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("match_runs.id"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(50), default="awaiting_answers", nullable=False, index=True
+    )  # awaiting_answers, generating, draft_ready, approved, archived
+    current_step: Mapped[int] = mapped_column(Integer, default=1)
+    total_steps: Mapped[int] = mapped_column(Integer, default=3)
+    question_set_version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class CoverLetterQuestion(Base):
+    __tablename__ = "cover_letter_questions"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    workflow_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("cover_letter_workflows.id"),
+        nullable=False, index=True,
+    )
+    step_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    question_category: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # employer_interest, motivation, relevant_example, tone_preference, availability, clarification
+    required: Mapped[bool] = mapped_column(Boolean, default=False)
+    help_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_evidence_item_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("match_evidence_items.id"), nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+class CoverLetterAnswer(Base):
+    __tablename__ = "cover_letter_answers"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    workflow_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("cover_letter_workflows.id"),
+        nullable=False, index=True,
+    )
+    question_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("cover_letter_questions.id"),
+        nullable=False,
+    )
+    answer_text: Mapped[str] = mapped_column(Text, nullable=False)
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+
+class CoverLetterDraft(Base):
+    __tablename__ = "cover_letter_drafts"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    workflow_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("cover_letter_workflows.id"),
+        nullable=False, index=True,
+    )
+    version_number: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[str] = mapped_column(
+        String(50), default="generated", nullable=False
+    )  # generated, user_edited, approved, archived
+    body_text: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_references: Mapped[list[str] | None] = mapped_column(
+        ARRAY(String), nullable=True
+    )
+    tone: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
