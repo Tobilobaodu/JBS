@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
+from app.services.orchestration import enforce_concurrent_job_limit, mark_job_publish_failed
 from app.db import get_session
 from app.db.models import (
     AuditEvent,
@@ -130,7 +131,9 @@ async def submit_job_post_url(
     session.add(job_post)
     await session.flush()
 
-    # Create processing job
+    # Create processing job after concurrency check
+    await enforce_concurrent_job_limit(session, current_user.id)
+
     proc_job = ProcessingJob(
         job_type="job_post_fetch",
         source_entity_type="job_post",
@@ -151,9 +154,14 @@ async def submit_job_post_url(
     ))
 
     await session.commit()
-
     # Enqueue the SSRF-safe fetch worker
-    enqueue_job_post_fetch(proc_job.id)
+    try:
+        enqueue_job_post_fetch(proc_job.id)
+    except Exception as e:
+        mark_job_publish_failed(proc_job, 'Failed to publish task to message broker.')
+        await session.commit()
+        logger.error('job_post_publish_failed', job_id=proc_job.id, error=str(e))
+        raise
 
     logger.info(
         "job_post_url_submitted",
@@ -193,6 +201,8 @@ async def submit_job_post_text(
     await session.flush()
 
     # Create processing job — goes straight to parse
+    await enforce_concurrent_job_limit(session, current_user.id)
+
     proc_job = ProcessingJob(
         job_type="job_post_parse",
         source_entity_type="job_post",
@@ -212,8 +222,13 @@ async def submit_job_post_text(
     ))
 
     await session.commit()
-
-    enqueue_job_post_parse(proc_job.id)
+    try:
+        enqueue_job_post_parse(proc_job.id)
+    except Exception as e:
+        mark_job_publish_failed(proc_job, 'Failed to publish task to message broker.')
+        await session.commit()
+        logger.error('job_post_publish_failed', job_id=proc_job.id, error=str(e))
+        raise
 
     logger.info(
         "job_post_text_submitted",
@@ -321,6 +336,8 @@ async def reprocess_job_post(
     if job_post is None:
         raise HTTPException(status_code=404, detail="Job post not found")
 
+    await enforce_concurrent_job_limit(session, current_user.id)
+
     proc_job = ProcessingJob(
         job_type="job_post_parse",
         source_entity_type="job_post",
@@ -330,8 +347,13 @@ async def reprocess_job_post(
     )
     session.add(proc_job)
     await session.commit()
-
-    enqueue_job_post_parse(proc_job.id)
+    try:
+        enqueue_job_post_parse(proc_job.id)
+    except Exception as e:
+        mark_job_publish_failed(proc_job, 'Failed to publish task to message broker.')
+        await session.commit()
+        logger.error('job_post_publish_failed', job_id=proc_job.id, error=str(e))
+        raise
 
     return JobPostAccepted(
         jobPostId=job_post.id,

@@ -4,6 +4,7 @@ Phase 3: creates a match analysis between a CV profile version and a job post.
 All matching runs through the queue — the API returns 202 immediately.
 """
 
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -11,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
+from app.services.orchestration import enforce_concurrent_job_limit, mark_job_publish_failed
 from app.db import get_session
 from app.db.models import (
     AuditEvent,
@@ -124,7 +126,9 @@ async def create_match(
     session.add(match_run)
     await session.flush()
 
-    # Create processing job
+    # Create processing job after concurrency check
+    await enforce_concurrent_job_limit(session, current_user.id)
+
     proc_job = ProcessingJob(
         job_type="match",
         source_entity_type="match_run",
@@ -143,8 +147,13 @@ async def create_match(
     ))
 
     await session.commit()
-
-    enqueue_match(proc_job.id)
+    try:
+        enqueue_match(proc_job.id)
+    except Exception as e:
+        mark_job_publish_failed(proc_job, 'Failed to publish task to message broker.')
+        await session.commit()
+        logger.error('match_publish_failed', job_id=proc_job.id, error=str(e))
+        raise
 
     logger.info(
         "match_created",
