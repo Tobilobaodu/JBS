@@ -40,6 +40,14 @@ router = APIRouter(tags=["cvs"])
 logger = get_logger(__name__)
 
 
+def _active_cv_query(user_id: str):
+    """Base query for non-deleted CVs owned by the given user."""
+    return select(CvFile).where(
+        CvFile.user_id == user_id,
+        CvFile.deleted_at.is_(None),
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # POST /cvs — upload
 # ──────────────────────────────────────────────────────────────────────
@@ -152,7 +160,7 @@ async def list_cvs(
     session: AsyncSession = Depends(get_session),
 ):
     """List uploaded CVs for the current user. Scoped by user_id (IDOR-safe)."""
-    query = select(CvFile).where(CvFile.user_id == current_user.id)
+    query = _active_cv_query(current_user.id)
 
     if status_filter:
         query = query.where(CvFile.status == status_filter)
@@ -194,9 +202,13 @@ async def get_cv(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get CV metadata. Returns 404 if not found or not owned by current user."""
+    """Get CV metadata. Returns 404 if not found, not owned by current user, or soft-deleted."""
     result = await session.execute(
-        select(CvFile).where(CvFile.id == cv_id, CvFile.user_id == current_user.id)
+        select(CvFile).where(
+            CvFile.id == cv_id,
+            CvFile.user_id == current_user.id,
+            CvFile.deleted_at.is_(None),
+        )
     )
     cv_file = result.scalar_one_or_none()
 
@@ -226,9 +238,13 @@ async def delete_cv(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Delete a CV and derived records. Returns 404 if not owned by current user."""
+    """Delete a CV and derived records. Returns 404 if not owned by current user or already deleted."""
     result = await session.execute(
-        select(CvFile).where(CvFile.id == cv_id, CvFile.user_id == current_user.id)
+        select(CvFile).where(
+            CvFile.id == cv_id,
+            CvFile.user_id == current_user.id,
+            CvFile.deleted_at.is_(None),
+        )
     )
     cv_file = result.scalar_one_or_none()
 
@@ -236,7 +252,7 @@ async def delete_cv(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CV not found.")
 
     cv_file.deleted_at = func.now()
-    cv_file.status = "failed"
+    cv_file.status = "deleted"
 
     session.add(
         AuditEvent(
@@ -265,7 +281,11 @@ async def reprocess_cv(
 ):
     """Re-trigger the extraction pipeline. Creates new extraction passes."""
     result = await session.execute(
-        select(CvFile).where(CvFile.id == cv_id, CvFile.user_id == current_user.id)
+        select(CvFile).where(
+            CvFile.id == cv_id,
+            CvFile.user_id == current_user.id,
+            CvFile.deleted_at.is_(None),
+        )
     )
     cv_file = result.scalar_one_or_none()
 
@@ -296,9 +316,13 @@ async def get_cv_raw_text(
     session: AsyncSession = Depends(get_session),
 ):
     """Get canonical merged extracted text."""
-    # Verify ownership via cv_file
+    # Verify ownership via cv_file, excluding soft-deleted rows
     result = await session.execute(
-        select(CvFile).where(CvFile.id == cv_id, CvFile.user_id == current_user.id)
+        select(CvFile).where(
+            CvFile.id == cv_id,
+            CvFile.user_id == current_user.id,
+            CvFile.deleted_at.is_(None),
+        )
     )
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CV not found.")
@@ -331,7 +355,11 @@ async def get_cv_extraction_detail(
 ):
     """Get Docling and Textract pass outputs with completeness metadata."""
     result = await session.execute(
-        select(CvFile).where(CvFile.id == cv_id, CvFile.user_id == current_user.id)
+        select(CvFile).where(
+            CvFile.id == cv_id,
+            CvFile.user_id == current_user.id,
+            CvFile.deleted_at.is_(None),
+        )
     )
     if result.scalar_one_or_none() is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="CV not found.")
@@ -380,9 +408,13 @@ async def get_cv_parsed_profile(
     session: AsyncSession = Depends(get_session),
 ):
     """Return the current structured candidate profile (Phase 2)."""
-    # Ownership check
+    # Ownership check, excluding soft-deleted CVs
     cv_result = await session.execute(
-        select(CvFile).where(CvFile.id == cv_id, CvFile.user_id == current_user.id)
+        select(CvFile).where(
+            CvFile.id == cv_id,
+            CvFile.user_id == current_user.id,
+            CvFile.deleted_at.is_(None),
+        )
     )
     cv_file = cv_result.scalar_one_or_none()
     if cv_file is None:
