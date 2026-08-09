@@ -1,8 +1,7 @@
 # Test CVs (contain real personal data)
 Test Cvs/
 
-# Implementation documentation (not source code)
-Implementation pack/
+# Implementation documentation (now tracked)
 
 # Temp files
 temp_metrics.txt

@@ -1,0 +1,1351 @@
+openapi: 3.0.3
+info:
+  title: AI CV Tailoring and Cover Letter Platform — Backend API
+  description: >
+    Draft specification for developer implementation. Covers CV ingestion,
+    job post ingestion, matching, tailored CV generation, guided cover
+    letter generation, and export. All generated content must carry
+    evidence references — see evidenceReferences fields throughout.
+  version: 0.1.0-draft
+servers:
+  - url: /api/v1
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: auth
+  - name: cvs
+  - name: job-posts
+  - name: matching
+  - name: tailored-cvs
+  - name: cover-letters
+  - name: jobs
+  - name: audit
+  - name: exports
+  - name: product-extensions
+
+paths:
+  # ---------------------------------------------------------------------
+  # AUTH
+  # ---------------------------------------------------------------------
+  /auth/register:
+    post:
+      tags: [auth]
+      security: []
+      summary: Create user account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password, minLength: 8 }
+      responses:
+        '201':
+          description: Account created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+        '409':
+          description: Email already registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      summary: Authenticate and issue session/token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  user: { $ref: '#/components/schemas/User' }
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: End session
+      responses:
+        '204': { description: Logged out }
+
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Current user profile and permissions
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+
+  # ---------------------------------------------------------------------
+  # CVs
+  # ---------------------------------------------------------------------
+  /cvs:
+    post:
+      tags: [cvs]
+      summary: Upload CV file, validate, store, create processing job
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PDF or DOCX file
+      responses:
+        '202':
+          description: Accepted — processing started asynchronously
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CvUploadAccepted' }
+        '400':
+          description: Invalid file type, size, or unprocessable file
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    get:
+      tags: [cvs]
+      summary: List uploaded CVs for current user
+      parameters:
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/offset'
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [pending, extracting, merging, parsing, completed, failed] }
+      responses:
+        '200':
+          description: Paginated list of CVs
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CvListResponse' }
+
+  /cvs/{cvId}:
+    parameters:
+      - $ref: '#/components/parameters/cvId'
+    get:
+      tags: [cvs]
+      summary: CV metadata and latest processing state
+      responses:
+        '200':
+          description: CV metadata
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CvFile' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [cvs]
+      summary: Delete CV and derived records, subject to retention policy
+      responses:
+        '202':
+          description: Deletion accepted (may be async)
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cvs/{cvId}/raw-text:
+    parameters:
+      - $ref: '#/components/parameters/cvId'
+    get:
+      tags: [cvs]
+      summary: Canonical merged extracted text
+      responses:
+        '200':
+          description: Canonical text and merge metadata
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CvRawText' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cvs/{cvId}/extraction-detail:
+    parameters:
+      - $ref: '#/components/parameters/cvId'
+    get:
+      tags: [cvs]
+      summary: Docling and Textract pass outputs with completeness metadata
+      responses:
+        '200':
+          description: Extraction pass detail
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  passes:
+                    type: array
+                    items: { $ref: '#/components/schemas/CvExtractionPass' }
+                  structuralValidation:
+                    $ref: '#/components/schemas/StructuralValidationResult'
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cvs/{cvId}/parsed-profile:
+    parameters:
+      - $ref: '#/components/parameters/cvId'
+    get:
+      tags: [cvs]
+      summary: Structured candidate profile (current version)
+      responses:
+        '200':
+          description: Structured profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CvProfile' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cvs/{cvId}/reprocess:
+    parameters:
+      - $ref: '#/components/parameters/cvId'
+    post:
+      tags: [cvs]
+      summary: Re-trigger extraction/parsing pipeline
+      responses:
+        '202':
+          description: Reprocessing accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessingJobRef' }
+
+  /cvs/{cvId}/ats-check:
+    parameters:
+      - $ref: '#/components/parameters/cvId'
+    post:
+      tags: [cvs, product-extensions]
+      summary: Run ATS structural-readability check (product extension 1, see 11-product-extensions.md)
+      responses:
+        '202':
+          description: Check queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessingJobRef' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    get:
+      tags: [cvs, product-extensions]
+      summary: Retrieve the latest ATS structural-readability check result
+      responses:
+        '200':
+          description: ATS readiness result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AtsReadinessCheck' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------------
+  # JOB POSTS
+  # ---------------------------------------------------------------------
+  /job-posts/url:
+    post:
+      tags: [job-posts]
+      summary: Submit job post URL for fetch and structuring
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url: { type: string, format: uri }
+      responses:
+        '202':
+          description: Accepted — fetch and structuring queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobPostAccepted' }
+        '422':
+          description: URL could not be fetched — advise pasting text instead
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /job-posts/text:
+    post:
+      tags: [job-posts]
+      summary: Submit pasted job post text for structuring
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 20 }
+      responses:
+        '202':
+          description: Accepted — structuring queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobPostAccepted' }
+
+  /job-posts:
+    get:
+      tags: [job-posts]
+      summary: List job posts linked to current user
+      parameters:
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/offset'
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [pending, fetching, structuring, completed, failed] }
+      responses:
+        '200':
+          description: Paginated list of job posts
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobPostListResponse' }
+
+  /job-posts/{jobPostId}:
+    parameters:
+      - $ref: '#/components/parameters/jobPostId'
+    get:
+      tags: [job-posts]
+      summary: Raw and structured job post data
+      responses:
+        '200':
+          description: Job post detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobPost' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /job-posts/{jobPostId}/reprocess:
+    parameters:
+      - $ref: '#/components/parameters/jobPostId'
+    post:
+      tags: [job-posts]
+      summary: Re-run cleaning/structuring logic
+      responses:
+        '202':
+          description: Reprocessing accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessingJobRef' }
+
+  # ---------------------------------------------------------------------
+  # PRODUCT EXTENSIONS: MULTI-JOB-POST COVERAGE (see 11-product-extensions.md #2)
+  # ---------------------------------------------------------------------
+  /job-post-collections:
+    post:
+      tags: [product-extensions]
+      summary: Create a named collection of job posts for aggregate comparison
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, jobPostIds]
+              properties:
+                name: { type: string }
+                jobPostIds:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Collection created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/JobPostCollection' }
+    get:
+      tags: [product-extensions]
+      summary: List job post collections for current user
+      responses:
+        '200':
+          description: List of collections
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/JobPostCollection' }
+
+  /job-post-collections/{collectionId}/coverage-report:
+    parameters:
+      - name: collectionId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [product-extensions]
+      summary: Run an aggregated coverage-gap report for a CV against every job post in the collection
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cvId]
+              properties:
+                cvId: { type: string, format: uuid }
+      responses:
+        '202':
+          description: Report queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessingJobRef' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /coverage-reports/{reportId}:
+    parameters:
+      - name: reportId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [product-extensions]
+      summary: Retrieve an aggregated coverage-gap report
+      responses:
+        '200':
+          description: Coverage report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoverageReport' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------------
+  # MATCHING AND TAILORING
+  # ---------------------------------------------------------------------
+  /matches:
+    post:
+      tags: [matching]
+      summary: Create a match analysis between a CV profile and a job post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cvId, jobPostId]
+              properties:
+                cvId: { type: string, format: uuid }
+                jobPostId: { type: string, format: uuid }
+      responses:
+        '202':
+          description: Match analysis queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessingJobRef' }
+
+  /matches/{matchId}:
+    parameters:
+      - $ref: '#/components/parameters/matchId'
+    get:
+      tags: [matching]
+      summary: Match analysis and evidence flags
+      responses:
+        '200':
+          description: Match result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MatchRun' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /matches/{matchId}/tailored-cv:
+    parameters:
+      - $ref: '#/components/parameters/matchId'
+    post:
+      tags: [matching]
+      summary: Generate a tailored CV draft from the match result
+      responses:
+        '202':
+          description: Generation queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessingJobRef' }
+
+  /tailored-cvs/{draftId}:
+    parameters:
+      - $ref: '#/components/parameters/draftId'
+    get:
+      tags: [tailored-cvs]
+      summary: Retrieve a tailored CV draft
+      responses:
+        '200':
+          description: Draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TailoredCvDraft' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /tailored-cvs/{draftId}/regenerate:
+    parameters:
+      - $ref: '#/components/parameters/draftId'
+    post:
+      tags: [tailored-cvs]
+      summary: Regenerate using revised instructions or approved changes
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                instructions: { type: string, description: "Optional user-provided revision notes" }
+      responses:
+        '202':
+          description: Regeneration queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessingJobRef' }
+
+  /tailored-cvs/{draftId}/approve:
+    parameters:
+      - $ref: '#/components/parameters/draftId'
+    post:
+      tags: [tailored-cvs]
+      summary: Mark draft as approved for export
+      responses:
+        '200':
+          description: Draft approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TailoredCvDraft' }
+        '409':
+          description: Draft not in a state that can be approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ---------------------------------------------------------------------
+  # COVER LETTER WORKFLOW
+  # ---------------------------------------------------------------------
+  /cover-letters/start:
+    post:
+      tags: [cover-letters]
+      summary: Start a guided cover letter workflow from CV and job post
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cvId, jobPostId]
+              properties:
+                cvId: { type: string, format: uuid }
+                jobPostId: { type: string, format: uuid }
+                matchId: { type: string, format: uuid, nullable: true }
+      responses:
+        '201':
+          description: Workflow created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoverLetterWorkflow' }
+
+  /cover-letters/{workflowId}/questions:
+    parameters:
+      - $ref: '#/components/parameters/workflowId'
+    get:
+      tags: [cover-letters]
+      summary: Retrieve the next question set
+      responses:
+        '200':
+          description: Question set
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/CoverLetterQuestion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cover-letters/{workflowId}/answers:
+    parameters:
+      - $ref: '#/components/parameters/workflowId'
+    post:
+      tags: [cover-letters]
+      summary: Submit user answers for the active step
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answers]
+              properties:
+                answers:
+                  type: array
+                  items:
+                    type: object
+                    required: [questionId, answerText]
+                    properties:
+                      questionId: { type: string, format: uuid }
+                      answerText: { type: string }
+      responses:
+        '202':
+          description: Answers accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoverLetterWorkflow' }
+
+  /cover-letters/{workflowId}/draft:
+    parameters:
+      - $ref: '#/components/parameters/workflowId'
+    get:
+      tags: [cover-letters]
+      summary: Retrieve the current cover letter draft
+      responses:
+        '200':
+          description: Draft
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoverLetterDraft' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /cover-letters/{workflowId}/regenerate:
+    parameters:
+      - $ref: '#/components/parameters/workflowId'
+    post:
+      tags: [cover-letters]
+      summary: Regenerate letter after user edits or new answers
+      responses:
+        '202':
+          description: Regeneration queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessingJobRef' }
+
+  /cover-letters/{workflowId}/approve:
+    parameters:
+      - $ref: '#/components/parameters/workflowId'
+    post:
+      tags: [cover-letters]
+      summary: Mark letter as approved for export
+      responses:
+        '200':
+          description: Letter approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoverLetterDraft' }
+        '409':
+          description: Draft not in a state that can be approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ---------------------------------------------------------------------
+  # JOBS, AUDIT, EXPORTS
+  # ---------------------------------------------------------------------
+  /jobs/{jobId}:
+    parameters:
+      - name: jobId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [jobs]
+      summary: Get async processing job status
+      responses:
+        '200':
+          description: Job status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProcessingJob' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /audit/{entityType}/{entityId}:
+    parameters:
+      - name: entityType
+        in: path
+        required: true
+        schema: { type: string, enum: [cv, job_post, match, tailored_cv_draft, cover_letter_draft] }
+      - name: entityId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [audit]
+      summary: Evidence links and generation history for an entity
+      responses:
+        '200':
+          description: Audit trail
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/AuditEvent' }
+
+  /exports/cv/{draftId}:
+    parameters:
+      - $ref: '#/components/parameters/draftId'
+    post:
+      tags: [exports]
+      summary: Request export package for approved CV draft
+      responses:
+        '202':
+          description: Export queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportRequest' }
+        '409':
+          description: Draft is not approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /exports/cover-letter/{workflowId}:
+    parameters:
+      - $ref: '#/components/parameters/workflowId'
+    post:
+      tags: [exports]
+      summary: Request export package for approved cover letter
+      responses:
+        '202':
+          description: Export queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportRequest' }
+        '409':
+          description: Draft is not approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /exports/application-pack:
+    post:
+      tags: [exports]
+      summary: Export approved CV plus approved cover letter together
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tailoredCvDraftId, coverLetterWorkflowId]
+              properties:
+                tailoredCvDraftId: { type: string, format: uuid }
+                coverLetterWorkflowId: { type: string, format: uuid }
+      responses:
+        '202':
+          description: Export queued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportRequest' }
+        '409':
+          description: One or both drafts are not approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    cvId:
+      name: cvId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    jobPostId:
+      name: jobPostId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    matchId:
+      name: matchId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    draftId:
+      name: draftId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    workflowId:
+      name: workflowId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+    offset:
+      name: offset
+      in: query
+      required: false
+      schema: { type: integer, default: 0, minimum: 0 }
+
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    Error:
+      type: object
+      description: >
+        Standard error envelope returned by every non-2xx response.
+        `details` is free-form and endpoint-specific — populate it with
+        whatever helps the caller correct the request (offending field,
+        allowed values, etc.), omit it when there's nothing further to add.
+      required: [status, code, message, timestamp, path]
+      properties:
+        status: { type: integer, description: "HTTP status code, duplicated in the body for logging convenience" }
+        code: { type: string, description: "Stable machine-readable error code, e.g. VALIDATION_ERROR" }
+        message: { type: string, description: "Human-readable explanation" }
+        timestamp: { type: string, format: date-time }
+        path: { type: string, description: "Request path that produced the error" }
+        details:
+          type: object
+          additionalProperties: true
+          nullable: true
+      example:
+        status: 400
+        code: VALIDATION_ERROR
+        message: "Invalid file type. Only PDF and DOCX are supported."
+        timestamp: "2026-08-03T10:00:00Z"
+        path: "/api/v1/cvs"
+        details:
+          field: file
+          reason: unsupported_mime_type
+          allowed: ["application/pdf", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"]
+
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        accountStatus: { type: string, enum: [active, suspended, deleted] }
+        createdAt: { type: string, format: date-time }
+
+    CvUploadAccepted:
+      type: object
+      properties:
+        cvId: { type: string, format: uuid }
+        processingJobId: { type: string, format: uuid }
+        status: { type: string, enum: [queued] }
+        filename: { type: string }
+        fileSize: { type: integer }
+        mimeType: { type: string }
+      example:
+        cvId: "b3e1f2a0-1234-4c56-8abc-9f0e1d2c3b4a"
+        processingJobId: "7a6b5c4d-9988-4e3f-8271-11223344aabb"
+        status: queued
+        filename: "resume.pdf"
+        fileSize: 245760
+        mimeType: "application/pdf"
+
+    CvFile:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        originalFilename: { type: string }
+        mimeType: { type: string }
+        fileSizeBytes: { type: integer }
+        uploadStatus: { type: string, enum: [pending, stored, failed] }
+        processingStatus:
+          type: string
+          enum: [queued, extracting, merging, parsing, completed, failed]
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CvListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CvFile' }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    CvExtractionPass:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        passType: { type: string, enum: [docling, textract] }
+        confidenceScore: { type: number, nullable: true, minimum: 0, maximum: 1 }
+        processingDurationMs: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    StructuralValidationResult:
+      type: object
+      description: >
+        Comparison between Docling and Textract passes used to detect
+        probable layout loss or omission before canonicalisation.
+      properties:
+        sectionCountMatch: { type: boolean }
+        headingAlignmentScore: { type: number, minimum: 0, maximum: 1 }
+        readingOrderConsistent: { type: boolean }
+        dateRangeConsistent: { type: boolean }
+        bulletPreservationScore: { type: number, minimum: 0, maximum: 1 }
+        anomalyDetected: { type: boolean }
+        anomalyDetail: { type: string, nullable: true }
+
+    CvRawText:
+      type: object
+      properties:
+        canonicalText: { type: string }
+        ocrUsed: { type: boolean }
+        mergeStrategyMetadata: { type: object, additionalProperties: true }
+
+    CvProfile:
+      type: object
+      description: Structured, evidence-traceable candidate profile.
+      properties:
+        cvFileId: { type: string, format: uuid }
+        profileVersionId: { type: string, format: uuid }
+        versionNumber: { type: integer }
+        profileHash: { type: string }
+        schemaVersion: { type: string }
+        confidenceSummary: { type: object, additionalProperties: true }
+        basics:
+          type: object
+          properties:
+            fullName: { type: string, nullable: true }
+            email: { type: string, nullable: true }
+            phone: { type: string, nullable: true }
+            location: { type: string, nullable: true }
+            summary: { type: string, nullable: true }
+        workExperience:
+          type: array
+          items: { $ref: '#/components/schemas/CvExperienceItem' }
+        education:
+          type: array
+          items: { $ref: '#/components/schemas/CvEducationItem' }
+        skills:
+          type: array
+          items: { $ref: '#/components/schemas/CvSkillItem' }
+        certifications:
+          type: array
+          items: { type: string }
+        projects:
+          type: array
+          items: { type: object, additionalProperties: true }
+      example:
+        cvFileId: "b3e1f2a0-1234-4c56-8abc-9f0e1d2c3b4a"
+        profileVersionId: "5566aabb-1122-4c33-9d44-eeff00112233"
+        versionNumber: 1
+        profileHash: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        schemaVersion: "1.0"
+        confidenceSummary: { overall: 0.92, workExperience: 0.95, education: 0.90, skills: 0.85 }
+        basics:
+          fullName: "Jane Doe"
+          email: "jane@example.com"
+          phone: "+441234567890"
+          location: "London, UK"
+          summary: "Senior Software Engineer with 8+ years experience in cloud-native systems."
+        workExperience:
+          - id: "exp_1"
+            employer: "TechCorp"
+            title: "Senior Software Engineer"
+            startDate: "2020-01-01"
+            endDate: "2024-06-30"
+            bullets:
+              - "Led team of 5 engineers delivering the platform migration"
+              - "Implemented microservices architecture on AWS"
+            confidence: 0.95
+        education:
+          - id: "edu_1"
+            institution: "University of London"
+            qualification: "MSc Computer Science"
+            endDate: "2019-09-01"
+            confidence: 0.90
+        skills:
+          - id: "skill_1"
+            name: "Python"
+            category: technical
+        certifications: ["AWS Solutions Architect (Amazon, 2021)"]
+        projects: []
+
+    CvExperienceItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        employer: { type: string, nullable: true }
+        title: { type: string, nullable: true }
+        startDate: { type: string, nullable: true }
+        endDate: { type: string, nullable: true }
+        bullets:
+          type: array
+          items: { type: string }
+        confidence: { type: number, nullable: true, minimum: 0, maximum: 1 }
+
+    CvEducationItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        institution: { type: string, nullable: true }
+        qualification: { type: string, nullable: true }
+        endDate: { type: string, nullable: true }
+        confidence: { type: number, nullable: true, minimum: 0, maximum: 1 }
+
+    CvSkillItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        category: { type: string, nullable: true }
+
+    JobPostAccepted:
+      type: object
+      properties:
+        jobPostId: { type: string, format: uuid }
+        processingJobId: { type: string, format: uuid }
+        status: { type: string, enum: [queued] }
+
+    JobPost:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        sourceType: { type: string, enum: [url, pasted_text] }
+        sourceUrl: { type: string, nullable: true }
+        rawText: { type: string }
+        parsingStatus: { type: string, enum: [queued, structuring, completed, failed] }
+        structuredProfile:
+          type: object
+          nullable: true
+          properties:
+            jobTitle: { type: string, nullable: true }
+            employer: { type: string, nullable: true }
+            requiredCriteria:
+              type: array
+              items: { type: string }
+            preferredCriteria:
+              type: array
+              items: { type: string }
+            keywords:
+              type: array
+              items: { type: string }
+            locationConstraints: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+
+    JobPostListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/JobPost' }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+
+    MatchRun:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        cvProfileVersionId: { type: string, format: uuid }
+        jobPostProfileId: { type: string, format: uuid }
+        status: { type: string, enum: [queued, processing, completed, failed] }
+        summaryAnalysis: { type: object, additionalProperties: true }
+        unsupportedRequirementCount: { type: integer }
+        evidenceItems:
+          type: array
+          items: { $ref: '#/components/schemas/MatchEvidenceItem' }
+        createdAt: { type: string, format: date-time }
+      example:
+        id: "9a8b7c6d-5e4f-4321-8888-aabbccddeeff"
+        cvProfileVersionId: "5566aabb-1122-4c33-9d44-eeff00112233"
+        jobPostProfileId: "1a2b3c4d-5e6f-4788-9900-112233445566"
+        status: completed
+        summaryAnalysis: { totalRequirements: 8, supported: 5, partiallySupported: 2, unsupported: 1, score: 75.0 }
+        unsupportedRequirementCount: 1
+        evidenceItems:
+          - id: "req_1"
+            requirementText: "5+ years Python experience"
+            requirementType: required
+            supportLevel: supported
+            sourceReferences: ["exp_1"]
+          - id: "req_4"
+            requirementText: "Leadership experience"
+            requirementType: required
+            supportLevel: partially_supported
+            sourceReferences: ["exp_1"]
+          - id: "req_5"
+            requirementText: "Terraform experience"
+            requirementType: preferred
+            supportLevel: unsupported
+            sourceReferences: []
+        createdAt: "2026-08-03T10:30:00Z"
+
+    MatchEvidenceItem:
+      type: object
+      description: >
+        supportLevel: unsupported, contradictory, and unclear are three
+        distinct failure modes, not variants of one "not usable" state —
+        see 03-data-model.md section on match_evidence_items for the full
+        definition of each and what's permitted in generated output.
+        None of the three ever trigger fabrication upstream: each is
+        surfaced to the user (directly, or via a cover letter question)
+        rather than papered over in generation.
+      properties:
+        id: { type: string, format: uuid }
+        requirementText: { type: string }
+        requirementType: { type: string, enum: [required, preferred] }
+        supportLevel: { type: string, enum: [supported, partially_supported, unsupported, contradictory, unclear] }
+        sourceReferences:
+          type: array
+          items: { type: string, description: "Reference to a cv_experience_items.id, cv_skill_items.id, cv_education_items.id, or cover_letter_answers.id. Empty array only valid when supportLevel is unsupported or unclear. For contradictory, holds the conflicting sources themselves." }
+
+    TailoredCvDraft:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        matchRunId: { type: string, format: uuid }
+        versionNumber: { type: integer }
+        status: { type: string, enum: [generated, user_edited, approved, archived] }
+        sections:
+          type: array
+          items: { $ref: '#/components/schemas/TailoredCvSection' }
+        validationResult:
+          type: object
+          properties:
+            passed: { type: boolean }
+            issues:
+              type: array
+              items: { type: string }
+        improvementChecklist:
+          type: array
+          nullable: true
+          description: "Product extension 3 (see 11-product-extensions.md) — synthesised from this draft's match_evidence_items, not a separate generation call. Template-based suggestion text only; never free-form model output describing experience the user doesn't have."
+          items:
+            type: object
+            properties:
+              requirementText: { type: string }
+              supportLevel: { type: string, enum: [supported, partially_supported, unsupported, contradictory, unclear] }
+              suggestion: { type: string }
+              priority: { type: string, enum: [high, medium, low] }
+        createdAt: { type: string, format: date-time }
+        approvedAt: { type: string, format: date-time, nullable: true }
+
+    AtsReadinessCheck:
+      type: object
+      description: "Product extension 1 (see 11-product-extensions.md). A rules-based structural check, distinct from the Docling/Textract agreement check in structuralValidation — this evaluates the merged result against known ATS-parsing-hostile patterns."
+      properties:
+        id: { type: string, format: uuid }
+        cvId: { type: string, format: uuid }
+        cvProfileVersionId: { type: string, format: uuid }
+        overallScore: { type: number, minimum: 0, maximum: 1 }
+        contactInfoParseable: { type: boolean }
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              checkType: { type: string, enum: [text_in_image, layout_structure, contact_info_location, non_standard_characters, section_heading_recognizability, file_format_signals] }
+              passed: { type: boolean }
+              severity: { type: string, enum: [low, medium, high] }
+              detail: { type: string }
+        createdAt: { type: string, format: date-time }
+      example:
+        id: "ats_check_1"
+        cvId: "b3e1f2a0-1234-4c56-8abc-9f0e1d2c3b4a"
+        cvProfileVersionId: "5566aabb-1122-4c33-9d44-eeff00112233"
+        overallScore: 0.72
+        contactInfoParseable: true
+        checks:
+          - checkType: layout_structure
+            passed: false
+            severity: high
+            detail: "Two-column layout detected in the experience section — reading order may not be preserved by common ATS parsers."
+          - checkType: text_in_image
+            passed: true
+            severity: low
+            detail: "No image-embedded text detected."
+        createdAt: "2026-08-03T10:15:00Z"
+
+    JobPostCollection:
+      type: object
+      description: "Product extension 2 (see 11-product-extensions.md)."
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        jobPostIds:
+          type: array
+          items: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    CoverageReport:
+      type: object
+      description: "Product extension 2 (see 11-product-extensions.md). An aggregation over existing match_runs — no new matching logic, no new evidence-binding surface."
+      properties:
+        id: { type: string, format: uuid }
+        cvProfileVersionId: { type: string, format: uuid }
+        collectionId: { type: string, format: uuid }
+        matchRunIds:
+          type: array
+          items: { type: string, format: uuid }
+        status: { type: string, enum: [pending, processing, completed, failed] }
+        aggregateGaps:
+          type: array
+          items:
+            type: object
+            properties:
+              requirementTextCluster: { type: string }
+              recurrenceCount: { type: integer }
+              recurrenceRatio: { type: number, minimum: 0, maximum: 1 }
+              affectedJobPostIds:
+                type: array
+                items: { type: string, format: uuid }
+              currentSupportLevelDistribution:
+                type: object
+                additionalProperties: { type: integer }
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time, nullable: true }
+      example:
+        id: "cov_report_1"
+        cvProfileVersionId: "5566aabb-1122-4c33-9d44-eeff00112233"
+        collectionId: "collection_1"
+        matchRunIds: ["match_1", "match_2", "match_3"]
+        status: completed
+        aggregateGaps:
+          - requirementTextCluster: "Kubernetes / container orchestration experience"
+            recurrenceCount: 6
+            recurrenceRatio: 0.75
+            affectedJobPostIds: ["jp_1", "jp_2"]
+            currentSupportLevelDistribution: { unsupported: 5, unclear: 1 }
+        createdAt: "2026-08-03T11:00:00Z"
+        completedAt: "2026-08-03T11:02:00Z"
+
+    TailoredCvSection:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        sectionType: { type: string, enum: [summary, experience, education, skills, certifications, projects] }
+        contentText: { type: string }
+        evidenceReferences:
+          type: array
+          items: { type: string }
+          description: "Must be non-empty for any generated content — enforced at validation time."
+        generationTask: { type: string, nullable: true, description: "Which generation step produced this section, e.g. tailored_cv_experience_bullet." }
+        promptVersion: { type: string, nullable: true, description: "Versioned prompt template used, for tracing a prompt regression to affected sections." }
+        modelId: { type: string, nullable: true, description: "Model/provider that generated this section." }
+        validationStatus: { type: string, nullable: true, enum: [passed, warning, failed] }
+        orderIndex: { type: integer }
+      example:
+        id: "sec_1"
+        sectionType: experience
+        contentText: "Designed and implemented AWS-based microservices architecture, leading a team of 5 engineers."
+        evidenceReferences: ["exp_1"]
+        generationTask: tailored_cv_experience_bullet
+        promptVersion: "cv_rewrite_v3"
+        modelId: "selected-model"
+        validationStatus: passed
+        orderIndex: 1
+
+    CoverLetterWorkflow:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        cvId: { type: string, format: uuid }
+        jobPostId: { type: string, format: uuid }
+        matchId: { type: string, format: uuid, nullable: true }
+        currentStep: { type: integer }
+        status: { type: string, enum: [awaiting_answers, generating, draft_ready, approved] }
+        questionSetVersion: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    CoverLetterQuestion:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        stepNumber: { type: integer }
+        questionText: { type: string }
+        questionCategory:
+          type: string
+          enum: [employer_interest, motivation, relevant_example, tone_preference, availability, clarification]
+
+    CoverLetterDraft:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        workflowId: { type: string, format: uuid }
+        versionNumber: { type: integer }
+        status: { type: string, enum: [generated, user_edited, approved, archived] }
+        bodyText: { type: string }
+        evidenceReferences:
+          type: array
+          items: { type: string }
+          description: "Must be non-empty — same evidence-gate rule as tailored CV sections. May reference cv_experience_items.id or cover_letter_answers.id."
+        promptVersion: { type: string, nullable: true, description: "Versioned prompt template used for this draft version." }
+        modelId: { type: string, nullable: true, description: "Model/provider that generated this draft version." }
+        createdAt: { type: string, format: date-time }
+        approvedAt: { type: string, format: date-time, nullable: true }
+      example:
+        id: "cl_draft_1"
+        workflowId: "wf_1234"
+        versionNumber: 1
+        status: generated
+        bodyText: "Dear Hiring Manager,\n\nI am writing to express my interest in the Senior Software Engineer position at TechCorp..."
+        evidenceReferences: ["exp_1", "answer_q2"]
+        promptVersion: "cover_letter_v2"
+        modelId: "selected-model"
+        createdAt: "2026-08-03T10:50:00Z"
+        approvedAt: null
+
+    ProcessingJob:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        jobType:
+          type: string
+          enum: [docling_extract, textract_extract, merge_parse, job_post_parse, match, cv_generate, cover_letter_generate]
+        sourceEntityType: { type: string }
+        sourceEntityId: { type: string, format: uuid }
+        status: { type: string, enum: [queued, processing, completed, failed, retrying] }
+        retryCount: { type: integer }
+        lastError: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time, nullable: true }
+
+    ProcessingJobRef:
+      type: object
+      properties:
+        jobId: { type: string, format: uuid }
+        status: { type: string, enum: [queued] }
+
+    AuditEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        entityType: { type: string }
+        entityId: { type: string, format: uuid }
+        eventType: { type: string }
+        actorType: { type: string, enum: [user, admin, system_worker] }
+        metadata: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+
+    ExportRequest:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [queued, processing, completed, failed] }
+        sourceDraftType: { type: string, enum: [tailored_cv, cover_letter, application_pack] }
+        fileReference: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
