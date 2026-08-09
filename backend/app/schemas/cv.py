@@ -20,6 +20,7 @@ class CvFileResponse(BaseModel):
     original_filename: str = Field(alias="originalFilename")
     mime_type: str = Field(alias="mimeType")
     file_size_bytes: int = Field(alias="fileSizeBytes")
+    status: str  # Derived lifecycle status — the single value frontends should display
     upload_status: str = Field(alias="uploadStatus")
     processing_status: str = Field(alias="processingStatus")
     job_status: str | None = Field(None, alias="jobStatus")

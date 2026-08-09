@@ -48,6 +48,25 @@ def _active_cv_query(user_id: str):
     )
 
 
+def _derive_status(cv_status: str, job_status: str | None) -> str:
+    """Derive a single lifecycle status for frontend consumption.
+    
+    Combines cv_files.status and processing_jobs.status into one clear enum:
+      failed | deleted | parsed | completed | processing | pending
+    """
+    if cv_status == "failed":
+        return "failed"
+    if cv_status == "deleted":
+        return "deleted"
+    if cv_status == "parsed":
+        return "parsed"
+    if cv_status == "completed":
+        return "completed"
+    if job_status in ("queued", "processing", "retrying"):
+        return "processing"
+    return "pending"
+
+
 # ──────────────────────────────────────────────────────────────────────
 # POST /cvs — upload
 # ──────────────────────────────────────────────────────────────────────
@@ -196,6 +215,7 @@ async def list_cvs(
             original_filename=f.filename,
             mime_type=f.mime_type,
             file_size_bytes=f.file_size,
+            status=_derive_status(f.status, job_status_map.get(f.id)),
             upload_status="stored" if f.storage_key else "pending",
             processing_status=f.status,
             job_status=job_status_map.get(f.id),
@@ -249,6 +269,7 @@ async def get_cv(
         original_filename=cv_file.filename,
         mime_type=cv_file.mime_type,
         file_size_bytes=cv_file.file_size,
+        status=_derive_status(cv_file.status, job_status),
         upload_status="stored" if cv_file.storage_key else "pending",
         processing_status=cv_file.status,
         job_status=job_status,

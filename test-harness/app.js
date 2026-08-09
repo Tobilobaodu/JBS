@@ -155,15 +155,21 @@ async function loadCVList() {
       container.innerHTML = "<p>No CVs uploaded yet.</p>";
       return;
     }
-    container.innerHTML = data.items.map(cv => `
+    container.innerHTML = data.items.map(cv => {
+      const s = cv.status || "pending";
+      const ps = cv.processingStatus || "—";
+      const js = cv.jobStatus || "—";
+      return `
       <div class="cv-item">
         <div>
-          <strong>${esc(cv.filename || "unnamed")}</strong>
+          <strong>${esc(cv.originalFilename || cv.filename || "unnamed")}</strong>
           <br><small>${cv.id}</small>
+          <br><small style="color: #888">processing: ${ps} | job: ${js}</small>
         </div>
-        <span class="status-badge ${cv.status || "pending"}">${cv.status || "pending"}</span>
+        <span class="status-badge ${s}">${s}</span>
       </div>
-    `).join("");
+      `;
+    }).join("");
   } catch (err) {
     container.innerHTML = `<p class="result error">Failed to load: ${esc(err.message)}</p>`;
   }
