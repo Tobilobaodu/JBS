@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.rate_limit import check_rate_limit, get_client_key
 from app.core.security import (
     create_access_token,
     generate_refresh_token,
@@ -76,9 +77,18 @@ async def register(
 ):
     """Create a new user account.
 
+    Rate-limited per client IP (5 attempts per 60s window).
     Returns 409 if the email is already registered.
     Password is hashed with bcrypt (cost factor >= 12).
     """
+    # Rate limit
+    client_key = get_client_key(request)
+    if not check_rate_limit(client_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many registration attempts. Please wait and try again.",
+        )
+
     # Check for duplicate email
     existing = await session.execute(
         select(User).where(User.email == body.email)
@@ -119,10 +129,19 @@ async def login(
 ):
     """Authenticate a user and issue tokens.
 
+    Rate-limited per client IP (5 attempts per 60s window).
     Returns the SAME generic error for "email not found" and "wrong password"
     to prevent user enumeration (per security plan §1). Response timing is
     identical via bcrypt's timing-safe comparison.
     """
+    # Rate limit
+    client_key = get_client_key(request)
+    if not check_rate_limit(client_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Please wait and try again.",
+        )
+
     result = await session.execute(
         select(User).where(User.email == body.email)
     )
