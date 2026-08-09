@@ -3,23 +3,21 @@
 Per 10-security-plan.md §4: validates scheme, resolved IP, redirect chain,
 timeout, and response size before fetching a user-supplied URL.
 
-This is a standalone, pure-Python utility with no dependencies beyond the
-standard library. It does NOT call out to any internal service, database,
-or queue — it only opens TCP connections to validated public addresses.
-
-BUILD ORDER: This must be built and tested BEFORE the job post fetch worker
-or endpoint. Once a "just fetch the URL" implementation exists and works for
-the happy path, retrofitting these controls is a bigger, riskier change.
+Uses httpx with DNS pinning to eliminate the DNS-rebinding TOCTOU gap:
+the validated IP is pinned before the TCP connection, so a second DNS
+resolution (which could return a different answer) never happens.
 """
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import re
-import socket
+import socket as std_socket
 import urllib.parse
-from http.client import HTTPConnection, HTTPSConnection, HTTPResponse
 from typing import Tuple
+
+import httpx
 
 # ──────────────────────────────────────────────────────────────────────
 # Constants
@@ -39,6 +37,7 @@ _PRIVATE_NETWORKS = [
     ipaddress.IPv4Network("0.0.0.0/8"),        # "This host on this network"
     ipaddress.IPv6Network("::1/128"),           # IPv6 loopback
     ipaddress.IPv6Network("fe80::/10"),         # IPv6 link-local
+    ipaddress.IPv6Network("fc00::/7"),          # Unique local (private IPv6)
 ]
 
 # Default limits
@@ -68,7 +67,7 @@ def ssrf_safe_fetch(
 
     1. Validate the scheme.
     2. Resolve the hostname and validate the IP is public.
-    3. Connect with timeout.
+    3. Connect with timeout, pinning the validated IP (no DNS rebinding).
     4. Follow redirects, re-validating the target IP at every hop.
     5. Enforce a maximum response size.
 
@@ -97,22 +96,29 @@ def ssrf_safe_fetch(
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         scheme = parsed.scheme
 
-        # Resolve and validate the IP
-        ip_addr = resolve_and_validate_ip(host)
+        # Resolve and validate the IP — this is the single DNS resolution
+        # that gates the connection.  The validated IP is then pinned through
+        # _connect_and_read_pinned() so the TCP connection never re-resolves.
+        validated_ip = resolve_and_validate_ip(host)
 
         try:
-            body, redirect_url = _connect_and_read(
-                scheme, host, port, parsed.path or "/", timeout, max_bytes
+            body, redirect_url = _connect_and_read_pinned(
+                scheme, host, port, parsed, validated_ip, timeout, max_bytes
             )
-        except (socket.timeout, TimeoutError):
+        except (TimeoutError, httpx.TimeoutException):
             raise FetchError(
                 f"Timed out fetching {scheme}://{host}:{port} after {timeout}s"
             )
-        except (ConnectionError, OSError) as exc:
+        except (ConnectionError, httpx.ConnectError) as exc:
             raise FetchError(f"Cannot connect to {scheme}://{host}:{port}: {exc}")
+        except httpx.HTTPStatusError as exc:
+            raise FetchError(
+                f"HTTP {exc.response.status_code} fetching {scheme}://{host}{parsed.path or '/'}"
+            )
 
         if redirect_url is not None:
-            # Normalise relative redirects
+            # Normalise relative redirects against the _original_ URL so
+            # a relative Location on a redirect chain is resolved correctly.
             current_url = urllib.parse.urljoin(current_url, redirect_url)
             continue
 
@@ -133,8 +139,8 @@ def resolve_and_validate_ip(hostname: str) -> str:
     """
     try:
         # getaddrinfo returns *all* addresses; check every one.
-        addrinfo = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-    except socket.gaierror as exc:
+        addrinfo = std_socket.getaddrinfo(hostname, None, std_socket.AF_UNSPEC, std_socket.SOCK_STREAM)
+    except std_socket.gaierror as exc:
         raise SSRFRejection(f"Cannot resolve hostname '{hostname}': {exc}")
 
     seen = set()
@@ -196,55 +202,74 @@ def _is_private(addr: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     return False
 
 
-def _connect_and_read(
+@contextlib.contextmanager
+def _pinned_dns(hostname: str, ip: str):
+    """Temporarily resolve *hostname* to the validated *ip*.
+
+    Celery workers use the prefork pool (process-based concurrency) so
+    patching `socket.getaddrinfo` is process-local and not visible to
+    other worker processes.  The patch is always reverted on exit.
+    """
+    original_getaddrinfo = std_socket.getaddrinfo
+
+    def _patched(host, port, family=0, type=0, proto=0, flags=0):
+        if host == hostname:
+            addr_family = std_socket.AF_INET6 if ":" in ip else std_socket.AF_INET
+            return [(addr_family, std_socket.SOCK_STREAM, 6, "", (ip, port))]
+        return original_getaddrinfo(host, port, family, type, proto, flags)
+
+    std_socket.getaddrinfo = _patched
+    try:
+        yield
+    finally:
+        std_socket.getaddrinfo = original_getaddrinfo
+
+
+def _connect_and_read_pinned(
     scheme: str,
     host: str,
     port: int,
-    path: str,
+    parsed: urllib.parse.ParseResult,
+    validated_ip: str,
     timeout: int,
     max_bytes: int,
 ) -> Tuple[bytes, str | None]:
-    """Connect to *host:port*, read up to *max_bytes*, return (body, redirect_url).
+    """Connect to *validated_ip* while presenting *host* for SNI and Host header.
 
-    redirect_url is None if the response is not a redirect.
+    Uses httpx with DNS pinning so that the TCP connection goes to the
+    pre-validated IP.  httpx handles TLS SNI and the Host header
+    correctly because it sees the original hostname in the URL.
+
+    Returns (body_bytes, redirect_url_or_None).
     """
-    if scheme == "https":
-        conn = HTTPSConnection(host, port, timeout=timeout)
-    else:
-        conn = HTTPConnection(host, port, timeout=timeout)
+    # Reconstruct the URL using the original hostname (not the IP) so
+    # httpx sets SNI and Host correctly.
+    path_qs = parsed.path or "/"
+    if parsed.query:
+        path_qs += f"?{parsed.query}"
+    url = f"{scheme}://{host}{path_qs}"
 
-    try:
-        conn.request("GET", path, headers={"User-Agent": "CV-Tailoring/1.0"})
-        response = conn.getresponse()
+    with _pinned_dns(host, validated_ip):
+        with httpx.Client(
+            timeout=timeout,
+            follow_redirects=False,
+            headers={"User-Agent": "CV-Tailoring/1.0"},
+        ) as client:
+            response = client.get(url)
 
-        # Handle redirects (301, 302, 303, 307, 308)
-        if response.status in (301, 302, 303, 307, 308):
-            location = response.getheader("Location")
-            conn.close()
-            return b"", location  # caller re-validates
+            # Handle redirects — the caller re-validates the target hop.
+            if response.status_code in (301, 302, 303, 307, 308):
+                location = response.headers.get("Location")
+                return b"", location
 
-        if response.status >= 400:
-            conn.close()
-            raise FetchError(
-                f"HTTP {response.status} fetching {scheme}://{host}{path}"
-            )
+            if response.status_code >= 400:
+                response.raise_for_status()  # raises HTTPStatusError
 
-        # Read body with size cap
-        chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = response.read(min(8192, max_bytes - total))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            total += len(chunk)
-            if total >= max_bytes:
+            # Read body with size cap
+            body = response.content
+            if len(body) > max_bytes:
                 raise FetchError(
                     f"Response exceeds maximum size of {max_bytes} bytes "
-                    f"(got {total}+ bytes)."
+                    f"(got {len(body)} bytes)."
                 )
-        conn.close()
-        return b"".join(chunks), None
-    except Exception:
-        conn.close()
-        raise
+            return body, None

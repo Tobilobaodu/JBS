@@ -15,6 +15,7 @@ from app.services.ssrf_safe_fetch import (
     FetchError,
     ssrf_safe_fetch,
     resolve_and_validate_ip,
+    _pinned_dns,
 )
 
 
@@ -40,10 +41,7 @@ class TestSchemeValidation:
 
     def test_http_and_https_allowed(self):
         """http and https are the only allowed schemes."""
-        # We don't actually connect — the mock will prevent real DNS/network
         with patch.object(socket, "getaddrinfo", side_effect=SSRFRejection("mock")):
-            # Scheme validation happens BEFORE DNS, so an https URL gets past
-            # scheme check and then hits the mocked DNS failure.
             with pytest.raises(SSRFRejection):
                 ssrf_safe_fetch("https://example.com")
 
@@ -108,6 +106,13 @@ class TestIPValidation:
             with pytest.raises(SSRFRejection):
                 resolve_and_validate_ip("linklocal.local")
 
+    def test_private_ipv6_rejected(self):
+        """Unique local IPv6 addresses (fc00::/7) must be rejected."""
+        with patch.object(socket, "getaddrinfo",
+                          _mock_dns(["fc00::1"])):
+            with pytest.raises(SSRFRejection, match="private IP"):
+                resolve_and_validate_ip("ula.local")
+
     def test_public_ip_allowed(self):
         """A genuine public IP (e.g. 8.8.8.8) must pass validation."""
         with patch.object(socket, "getaddrinfo",
@@ -116,28 +121,14 @@ class TestIPValidation:
             assert result == "8.8.8.8"
 
     def test_mixed_private_and_public_rejected(self):
-        """If ANY resolved address is private, the entire resolution fails.
-
-        A hostname returning both a public and a private address (DNS
-        rebinding scenario) must be rejected — the private one is checked
-        first and fails before the public one is considered.
-        """
-        # getaddrinfo order is typically IPv6-first, then IPv4.
-        # Make the first address public, second private — the check
-        # iterates ALL addresses.
+        """If ANY resolved address is private, the entire resolution fails."""
         with patch.object(socket, "getaddrinfo",
                           _mock_dns(["8.8.8.8", "10.0.0.1"])):
             with pytest.raises(SSRFRejection):
                 resolve_and_validate_ip("dual.local")
 
     def test_decimal_encoded_private_ip_rejected(self):
-        """Decimal-encoded private IP (e.g. http://2130706433/ for 127.0.0.1).
-
-        URL parsing doesn't decode decimal integers — the hostname string
-        "2130706433" must be caught when it's resolved to an actual IP.
-        Since DNS won't resolve a bare integer, this test verifies that
-        if something DOES manage to resolve to a private IP, it's blocked.
-        """
+        """If something resolves to a private IP, it's blocked."""
         with patch.object(socket, "getaddrinfo",
                           _mock_dns(["127.0.0.1"])):
             with pytest.raises(SSRFRejection):
@@ -145,22 +136,105 @@ class TestIPValidation:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Redirect re-validation
+# DNS pinning — the core fix for Bug #3
+# ──────────────────────────────────────────────────────────────────────
+
+class TestDNSPinning:
+    """_pinned_dns must force the validated IP through socket.getaddrinfo."""
+
+    def test_pinned_dns_returns_validated_ip(self):
+        """Within the _pinned_dns context, getaddrinfo returns the pinned IP."""
+        hostname = "example.com"
+        pinned_ip = "93.184.216.34"
+
+        with _pinned_dns(hostname, pinned_ip):
+            result = socket.getaddrinfo(hostname, 443, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            assert len(result) >= 1
+            assert result[0][4][0] == pinned_ip
+
+    def test_pinned_dns_does_not_affect_other_hostnames(self):
+        """Other hostnames resolve normally — only the pinned hostname is overridden."""
+        with patch.object(socket, "getaddrinfo", wraps=socket.getaddrinfo) as spy:
+            with _pinned_dns("pinned.example", "8.8.8.8"):
+                # Pinned hostname returns the pinned IP
+                pinned = socket.getaddrinfo("pinned.example", 80, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                assert pinned[0][4][0] == "8.8.8.8"
+
+                # Other hostname goes through to the real getaddrinfo
+                socket.getaddrinfo("other.example", 80, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                spy.assert_any_call("other.example", 80, socket.AF_UNSPEC, socket.SOCK_STREAM, 0)
+
+    def test_pinned_dns_restored_on_exit(self):
+        """getaddrinfo is restored to the original after the context manager exits."""
+        original = socket.getaddrinfo
+        with _pinned_dns("example.com", "1.2.3.4"):
+            assert socket.getaddrinfo is not original
+        assert socket.getaddrinfo is original
+
+
+# ──────────────────────────────────────────────────────────────────────
+# DNS rebinding: first-to-public, then-to-private
+# ──────────────────────────────────────────────────────────────────────
+
+class TestDNSRebinding:
+    """DNS rebinding — where the validated IP is public but a subsequent
+    resolution returns a private IP — must be prevented by DNS pinning."""
+
+    def test_pinned_ip_preempts_second_resolution(self):
+        """After validation, getaddrinfo is pinned — a second DNS lookup
+        that would return a private address is never seen by httpx."""
+        # Arrange: validate to a public IP, then patch getaddrinfo to
+        # simulate DNS changing to a private address after validation.
+        # The _pinned_dns context manager makes this impossible because
+        # it overrides getaddrinfo for the pinned hostname.
+        with patch.object(
+            socket, "getaddrinfo", _mock_dns(["8.8.8.8"])
+        ):
+            validated = resolve_and_validate_ip("evil.example.com")
+            assert validated == "8.8.8.8"
+
+        # Now simulate what happens if DNS later returns a private address.
+        # _pinned_dns intercepts getaddrinfo for the pinned hostname.
+        with _pinned_dns("evil.example.com", "8.8.8.8"):
+            # getaddrinfo is overridden — always returns 8.8.8.8
+            result = socket.getaddrinfo("evil.example.com", 443, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            assert result[0][4][0] == "8.8.8.8"
+            # The "real" DNS (which might return a private IP) is never called
+            # for this hostname inside the pinned context.
+
+    def test_dns_rebind_private_ip_never_used(self):
+        """Even if the system resolver starts returning a private IP for the
+        hostname, the pinned IP is used for the TCP connection."""
+        with patch.object(
+            socket, "getaddrinfo",
+            # First call: public IP (during validation).
+            # If called again (without pinning): private IP.
+            side_effect=[
+                [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("8.8.8.8", 80))],
+                [(socket.AF_INET, socket.SOCK_STREAM, 0, "", ("10.0.0.1", 80))],
+            ],
+        ):
+            validated = resolve_and_validate_ip("rebind.local")
+            assert validated == "8.8.8.8"
+
+        # Pinning ensures the private IP is never queried.
+        with _pinned_dns("rebind.local", "8.8.8.8"):
+            result = socket.getaddrinfo("rebind.local", 443, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            assert result[0][4][0] == "8.8.8.8"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Redirect re-validation (per-hop)
 # ──────────────────────────────────────────────────────────────────────
 
 class TestRedirectRevalidation:
     """After every redirect, the new target IP must be re-validated."""
 
-    def test_redirect_to_internal_rejected(self):
+    def test_redirect_to_private_rejected(self):
         """A public URL that 302-redirects to a private IP is BLOCKED."""
-        # First hop: public IP, returns a 302 to a private address.
-        # Second hop: resolve_and_validate_ip sees the private IP → SSRFRejection.
-
-        # Patch resolve_and_validate_ip directly so the first call succeeds
-        # and the second (redirect) call fails.
         resolve_calls = [
-            "8.8.8.8",  # first hop — public
-            SSRFRejection("private"),  # second hop — private
+            "8.8.8.8",                       # first hop — public
+            SSRFRejection("private IP"),      # second hop — private
         ]
         def _resolve_side_effect(hostname):
             result = resolve_calls.pop(0)
@@ -172,12 +246,53 @@ class TestRedirectRevalidation:
                           _mock_dns(["8.8.8.8"])):
             with patch("app.services.ssrf_safe_fetch.resolve_and_validate_ip",
                        side_effect=_resolve_side_effect):
-                with patch("app.services.ssrf_safe_fetch._connect_and_read") as mock_fetch:
-                    # First call returns a redirect; second won't be reached
-                    # because SSRFRejection will fire at validation.
-                    mock_fetch.return_value = (b"", "http://10.0.0.1/redirect-target")
+                with patch("app.services.ssrf_safe_fetch._connect_and_read_pinned") as mock_connect:
+                    mock_connect.return_value = (b"", "http://10.0.0.1/redirect-target")
                     with pytest.raises(SSRFRejection):
                         ssrf_safe_fetch("http://safe.example.com")
+
+    def test_redirect_across_schemes_rejected(self):
+        """A redirect from https to http with a different host: the new host
+        is validated — if it's private, it must be rejected."""
+        resolve_calls = [
+            "8.8.8.8",                       # first hop (https): public
+            SSRFRejection("private IP"),      # redirect target: private
+        ]
+        def _resolve_side_effect(hostname):
+            result = resolve_calls.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with patch.object(socket, "getaddrinfo",
+                          _mock_dns(["8.8.8.8"])):
+            with patch("app.services.ssrf_safe_fetch.resolve_and_validate_ip",
+                       side_effect=_resolve_side_effect):
+                with patch("app.services.ssrf_safe_fetch._connect_and_read_pinned") as mock_connect:
+                    mock_connect.return_value = (b"", "http://10.0.0.1/secret")
+                    with pytest.raises(SSRFRejection):
+                        ssrf_safe_fetch("https://public.example.com")
+
+    def test_redirect_to_public_allowed(self):
+        """A redirect to another public IP passes validation."""
+        resolve_calls = [
+            "8.8.8.8",    # first hop
+            "1.1.1.1",    # redirect target (public)
+        ]
+        def _resolve_side_effect(hostname):
+            result = resolve_calls.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+        with patch.object(socket, "getaddrinfo",
+                          _mock_dns(["8.8.8.8"])):
+            with patch("app.services.ssrf_safe_fetch.resolve_and_validate_ip",
+                       side_effect=_resolve_side_effect):
+                with patch("app.services.ssrf_safe_fetch._connect_and_read_pinned") as mock_connect:
+                    mock_connect.return_value = (b"OK!", None)
+                    result = ssrf_safe_fetch("http://safe.example.com")
+                    assert "OK!" in result
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -189,10 +304,9 @@ class TestSizeAndTimeout:
 
     def test_response_too_large_raises(self):
         """A response exceeding max_bytes must raise FetchError."""
-        large_body = b"A" * (2 * 1024 * 1024 + 1)
         with patch("app.services.ssrf_safe_fetch.resolve_and_validate_ip",
                    return_value="8.8.8.8"):
-            with patch("app.services.ssrf_safe_fetch._connect_and_read",
+            with patch("app.services.ssrf_safe_fetch._connect_and_read_pinned",
                        side_effect=FetchError("Response exceeds maximum size")):
                 with pytest.raises(FetchError):
                     ssrf_safe_fetch("http://example.com", max_bytes=100)
@@ -201,7 +315,7 @@ class TestSizeAndTimeout:
         """A timeout must raise FetchError (not a raw socket.timeout)."""
         with patch("app.services.ssrf_safe_fetch.resolve_and_validate_ip",
                    return_value="8.8.8.8"):
-            with patch("app.services.ssrf_safe_fetch._connect_and_read",
+            with patch("app.services.ssrf_safe_fetch._connect_and_read_pinned",
                        side_effect=FetchError("Timed out fetching")):
                 with pytest.raises(FetchError):
                     ssrf_safe_fetch("http://example.com", timeout=1)
