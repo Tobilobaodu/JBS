@@ -37,7 +37,7 @@ class Settings(BaseSettings):
 
     # LLM (Phase 3)
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o"
+    openai_model: str = "gpt-4o-mini"
 
     # JWT
     jwt_secret: str = ""
