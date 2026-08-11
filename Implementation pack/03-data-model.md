@@ -421,6 +421,10 @@ Indexes: `idx_jobs_user` on `user_id`; `idx_jobs_status` on `status`; `idx_jobs_
 
 **One processing_jobs row represents one pipeline; job_type represents the current stage.** Multi-stage pipelines (CV: docling → textract → merge → cv_parse; job post: fetch → parse) reuse the same row. Each worker updates `job.job_type` to the next stage before enqueueing the downstream task.
 
+**Not every `job_type` value is a stage in a multi-stage pipeline.** `match`, `cv_generate`, `cover_letter_generate`, and `export` are each a single-stage, one-shot job: the row is created with that `job_type` and never transitions to another value before completing or failing. Only the CV-extraction family (`docling_extract` → `textract_extract` → `merge_parse`) and the job-post family (`job_post_fetch`/`job_post_parse`) reuse a row across stages. Don't assume every `processing_jobs` row's `job_type` changes over its lifetime — check whether the specific value is part of a documented multi-stage family before writing code that waits for a transition.
+
+`job_type` is `VARCHAR(50)`, not a Postgres `ENUM` or a `CHECK`-constrained column — deliberately, so a new stage or job type can ship without a migration. The value set is enforced at the application layer (the worker/orchestration code that sets it), not the database. This is the same trade-off as `status` and the other lifecycle-string columns in this table.
+
 ### `audit_events`
 | Column | Type | Notes |
 |---|---|---|

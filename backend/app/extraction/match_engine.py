@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import Optional
 
 # ──────────────────────────────────────────────────────────────────────
@@ -167,6 +168,71 @@ def run_match(
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _parse_cv_date(value) -> "date | None":
+    """Parse a CV date string into a comparable date, or None if it can't be.
+
+    CV extraction is heuristic (per the module's no-LLM design), so dates
+    show up as full ISO ("2020-01-15"), year-month ("2020-01"), a bare
+    year ("2020"), or occasionally free text with a year buried in it.
+    Missing month/day default to January 1st — coarse, but sufficient for
+    an overlap check, and this function never needs to be more precise
+    than that.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value:
+        return None
+
+    for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+
+    match = re.search(r"(19|20)\d{2}", value)
+    if match:
+        try:
+            return datetime.strptime(match.group(0), "%Y").date()
+        except ValueError:
+            return None
+    return None
+
+
+def _date_ranges_overlap(entry_a: dict, entry_b: dict) -> bool | None:
+    """Return whether two workExperience entries' date ranges overlap.
+
+    Returns True/False when both entries have enough date information to
+    tell, or None when they don't (e.g. no startDate on one side, or an
+    open-ended range where `current` isn't set). Callers must treat None
+    as "don't flag" — per _build_consistency_map's conservative-by-design
+    rule, an indeterminate overlap is not evidence of a contradiction.
+
+    Uses a strict `<` comparison at the boundary rather than `<=`: CV
+    dates are frequently year- or month-granular, so two roles where one
+    ends the same period the next begins (a normal back-to-back job
+    change) must not register as "overlapping."
+    """
+    start_a = _parse_cv_date(entry_a.get("startDate") or entry_a.get("start_date"))
+    start_b = _parse_cv_date(entry_b.get("startDate") or entry_b.get("start_date"))
+    if start_a is None or start_b is None:
+        return None
+
+    end_a = _parse_cv_date(entry_a.get("endDate") or entry_a.get("end_date"))
+    if end_a is None:
+        if not entry_a.get("current"):
+            return None
+        end_a = date.max
+
+    end_b = _parse_cv_date(entry_b.get("endDate") or entry_b.get("end_date"))
+    if end_b is None:
+        if not entry_b.get("current"):
+            return None
+        end_b = date.max
+
+    return start_a < end_b and start_b < end_a
+
+
 def _build_consistency_map(cv_payload: dict) -> dict[str, dict]:
     """Scan cv_experience_items for internal contradictions.
 
@@ -183,7 +249,12 @@ def _build_consistency_map(cv_payload: dict) -> dict[str, dict]:
     This is intentionally conservative — it only flags clear conflicts,
     not every possible ambiguity.  False positives are worse than missed
     contradictions because they would incorrectly mark supported skills
-    as contradictory.
+    as contradictory.  In particular, two different role families at the
+    same company are only flagged when their date ranges are confirmed to
+    overlap — a normal sequential job change (different title, same
+    company, non-overlapping dates) is not a contradiction, and when
+    dates are missing or unparseable on either side, the overlap can't be
+    confirmed, so nothing is flagged.
     """
     consistency: dict[str, dict] = {}
     exp_items = cv_payload.get("workExperience", []) or []
@@ -207,13 +278,15 @@ def _build_consistency_map(cv_payload: dict) -> dict[str, dict]:
             # Same company, different titles: check for date overlaps.
             # If the dates overlap and the titles are substantially different
             # (not "junior" vs "senior" at the same employer — that's normal
-            # progression), flag as contradictory.
+            # progression), flag as contradictory. A title change with no
+            # confirmed date overlap is a normal job change, not a conflict.
             if company_a == company_b and title_a != title_b:
-                if _roles_conflict(title_a, title_b):
+                if _roles_conflict(title_a, title_b) and _date_ranges_overlap(a, b):
                     detail = (
                         f"You list both '{a.get('title')}' and '{b.get('title')}' "
-                        f"at {a.get('company')}. These titles conflict — "
-                        f"resolve this before using either as evidence."
+                        f"at {a.get('company')}, with overlapping dates. These "
+                        f"titles conflict — resolve this before using either as "
+                        f"evidence."
                     )
                     # Mark both entities' technologies/skills as suspect
                     for tech in (a.get("technologies") or []):
