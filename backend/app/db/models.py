@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -96,18 +97,63 @@ class UserSession(Base):
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Anonymous trial support (Sprint 2)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TrialSession(Base):
+    """An anonymous 'try before you register' identity.
+
+    Not a User and not a UserSession — no password, no email, no login.
+    Created by POST /trial-sessions, presented on subsequent requests via
+    the X-Trial-Session-Id header, and reconciled into a real account by
+    POST /auth/claim-trial. Short-lived by design: unclaimed rows are
+    deleted by the expiry cleanup task, not kept indefinitely.
+    """
+
+    __tablename__ = "trial_sessions"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    claimed_by_user_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=True, index=True
+    )
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+
+
+# ──────────────────────────────────────────────────────────────────────
 # CV ingestion
 # ──────────────────────────────────────────────────────────────────────
 
 
 class CvFile(Base):
     __tablename__ = "cv_files"
+    __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NOT NULL AND trial_session_id IS NULL) OR "
+            "(user_id IS NULL AND trial_session_id IS NOT NULL)",
+            name="ck_cv_files_exactly_one_owner",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), primary_key=True, default=_new_uuid
     )
-    user_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("users.id"), nullable=False, index=True
+    user_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=True, index=True
+    )
+    trial_session_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("trial_sessions.id"), nullable=True, index=True
     )
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -231,6 +277,13 @@ class CvProfileVersion(Base):
     """Immutable profile snapshot. Never updated after insert (per modelling rule 1)."""
 
     __tablename__ = "cv_profile_versions"
+    __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NOT NULL AND trial_session_id IS NULL) OR "
+            "(user_id IS NULL AND trial_session_id IS NOT NULL)",
+            name="ck_cv_profile_versions_exactly_one_owner",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), primary_key=True, default=_new_uuid
@@ -238,8 +291,14 @@ class CvProfileVersion(Base):
     cv_file_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("cv_files.id"), nullable=False, index=True
     )
-    user_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("users.id"), nullable=False
+    # Copied from cv_files at parse time (see worker_jobs.py cv_parse) —
+    # mirrors cv_files' owner exactly, including which side is populated,
+    # since a profile version can't outlive or reassign from its file.
+    user_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=True
+    )
+    trial_session_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("trial_sessions.id"), nullable=True, index=True
     )
     version_number: Mapped[int] = mapped_column(Integer, nullable=False)
     profile_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -278,6 +337,9 @@ class ProcessingJob(Base):
     user_id: Mapped[str | None] = mapped_column(
         UUID(as_uuid=False), ForeignKey("users.id"), nullable=True, index=True
     )
+    trial_session_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("trial_sessions.id"), nullable=True, index=True
+    )
     status: Mapped[str] = mapped_column(
         String(20), default="pending", nullable=False, index=True
     )  # pending, queued, processing, completed, failed, retrying
@@ -302,6 +364,15 @@ class ProcessingJob(Base):
     )
 
     __table_args__ = (
+        # Every current code path sets exactly one of user_id/trial_session_id;
+        # unlike audit_events, processing_jobs has no genuine system-initiated
+        # (neither-populated) use today, so this stays symmetric with the
+        # other trial-eligible tables rather than allowing a third state.
+        CheckConstraint(
+            "(user_id IS NOT NULL AND trial_session_id IS NULL) OR "
+            "(user_id IS NULL AND trial_session_id IS NOT NULL)",
+            name="ck_processing_jobs_exactly_one_owner",
+        ),
         {"info": {"polymorphic_source": True}},
     )
 
@@ -349,12 +420,22 @@ class AuditEvent(Base):
 
 class JobPost(Base):
     __tablename__ = "job_posts"
+    __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NOT NULL AND trial_session_id IS NULL) OR "
+            "(user_id IS NULL AND trial_session_id IS NOT NULL)",
+            name="ck_job_posts_exactly_one_owner",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), primary_key=True, default=_new_uuid
     )
-    user_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("users.id"), nullable=False, index=True
+    user_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=True, index=True
+    )
+    trial_session_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("trial_sessions.id"), nullable=True, index=True
     )
     source_type: Mapped[str] = mapped_column(
         String(20), nullable=False
@@ -503,12 +584,22 @@ class CvSkillItem(Base):
 
 class MatchRun(Base):
     __tablename__ = "match_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NOT NULL AND trial_session_id IS NULL) OR "
+            "(user_id IS NULL AND trial_session_id IS NOT NULL)",
+            name="ck_match_runs_exactly_one_owner",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), primary_key=True, default=_new_uuid
     )
-    user_id: Mapped[str] = mapped_column(
-        UUID(as_uuid=False), ForeignKey("users.id"), nullable=False, index=True
+    user_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=True, index=True
+    )
+    trial_session_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("trial_sessions.id"), nullable=True, index=True
     )
     cv_profile_version_id: Mapped[str] = mapped_column(
         UUID(as_uuid=False), ForeignKey("cv_profile_versions.id"), nullable=False, index=True

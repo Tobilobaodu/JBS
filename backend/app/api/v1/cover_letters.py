@@ -19,12 +19,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
+from app.core.rate_limit import check_generation_rate_limit, get_client_key
 from app.core.security import get_current_user
 from app.db import get_session
 from app.db.models import (
     AuditEvent, CoverLetterAnswer, CoverLetterDraft, CoverLetterQuestion,
-    CoverLetterWorkflow, CvProfile, CvProfileVersion, JobPostProfile,
-    MatchEvidenceItem, MatchRun, ProcessingJob, User,
+    CoverLetterWorkflow, CvFile, CvProfile, CvProfileVersion, JobPost,
+    JobPostProfile, MatchEvidenceItem, MatchRun, ProcessingJob, User,
 )
 from app.schemas.cover_letter import (
     StartWorkflowRequest, CoverLetterWorkflowResponse,
@@ -78,10 +79,27 @@ async def start_workflow(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Start a guided cover letter workflow from a CV and job post."""
-    # Verify CV profile version exists (via current profile pointer)
+    """Start a guided cover letter workflow from a CV and job post.
+
+    Rate-limited per client IP (generation tier, see `10-security-plan.md` §9).
+    """
+    client_key = get_client_key(request)
+    if not check_generation_rate_limit(client_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many cover letter requests. Please wait and try again.",
+        )
+
+    # Verify CV profile version exists (via current profile pointer),
+    # scoped to the caller — without this join, any authenticated user
+    # could start a workflow against another user's CV.
     profile_result = await session.execute(
-        select(CvProfile).where(CvProfile.cv_file_id == body.cvId)
+        select(CvProfile)
+        .join(CvFile, CvFile.id == CvProfile.cv_file_id)
+        .where(
+            CvProfile.cv_file_id == body.cvId,
+            CvFile.user_id == current_user.id,
+        )
     )
     profile = profile_result.scalar_one_or_none()
     if profile is None or profile.current_version_id is None:
@@ -90,10 +108,14 @@ async def start_workflow(
             detail="No parsed CV profile found. Process a CV first.",
         )
 
-    # Verify job post profile exists (1:1 with job_posts)
+    # Verify job post profile exists (1:1 with job_posts), scoped to the
+    # caller for the same reason.
     jp_result = await session.execute(
-        select(JobPostProfile).where(
+        select(JobPostProfile)
+        .join(JobPost, JobPost.id == JobPostProfile.job_post_id)
+        .where(
             JobPostProfile.job_post_id == body.jobPostId,
+            JobPost.user_id == current_user.id,
         )
     )
     jp_profile = jp_result.scalar_one_or_none()
@@ -338,11 +360,22 @@ async def get_draft(
 @router.post("/cover-letters/{workflowId}/regenerate", status_code=202,
              response_model=ProcessingJobRef)
 async def regenerate(
+    request: Request,
     workflowId: str,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Regenerate the letter (after user edits or new answers)."""
+    """Regenerate the letter (after user edits or new answers).
+
+    Rate-limited per client IP (generation tier).
+    """
+    client_key = get_client_key(request)
+    if not check_generation_rate_limit(client_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many cover letter requests. Please wait and try again.",
+        )
+
     wf = await _verify_ownership(session, workflowId, current_user.id)
     if wf.status not in ("draft_ready", "approved"):
         raise HTTPException(

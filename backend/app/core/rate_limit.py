@@ -94,6 +94,128 @@ def check_rate_limit(key: str) -> bool:
     return True
 
 
+# ── Non-auth tiers (upload / generation / url_fetch) ───────────────────
+#
+# Per security plan §1 / Phase 2.4: the same brute-force-slowing rationale
+# applies to expensive, queue-consuming endpoints (file upload, job-post
+# URL fetch, match/generation creation) as to auth. Deliberately separate
+# state from the auth tier above — and from each other, via a tier-
+# prefixed bucket key — so exhausting one tier's budget for a client never
+# affects another tier's counters for that same client.
+
+_tier_attempts: dict[str, list[float]] = defaultdict(list)
+_tier_blocked: dict[str, float] = {}
+_tier_last_cleanup = time.time()
+
+# Largest configured window across all tiers — used only to size the
+# cleanup sweep conservatively so it never purges an entry that might
+# still be inside some tier's active window.
+_MAX_TIER_WINDOW_SECONDS = max(
+    settings.rate_limit_upload_window,
+    settings.rate_limit_generation_window,
+    settings.rate_limit_url_fetch_window,
+    settings.rate_limit_trial_session_window,
+)
+
+
+def _cleanup_stale_tier_entries(now: float) -> None:
+    """Periodic cleanup for the non-auth tiers' state (mirrors the auth cleanup above)."""
+    global _tier_last_cleanup
+    if now - _tier_last_cleanup < BLOCKLIST_CLEANUP_INTERVAL:
+        return
+    _tier_last_cleanup = now
+
+    window_start = now - _MAX_TIER_WINDOW_SECONDS
+    expired_keys: list[str] = []
+
+    for key, timestamps in _tier_attempts.items():
+        active = [t for t in timestamps if t > window_start]
+        if active:
+            _tier_attempts[key] = active
+        else:
+            expired_keys.append(key)
+
+    for key in expired_keys:
+        del _tier_attempts[key]
+
+    expired_blocked = [k for k, until in _tier_blocked.items() if until <= now]
+    for k in expired_blocked:
+        del _tier_blocked[k]
+
+
+def check_tier_rate_limit(tier: str, key: str, max_attempts: int, window_seconds: int) -> bool:
+    """Sliding-window rate limit for a non-auth tier.
+
+    Same algorithm as check_rate_limit() above, but keyed by `{tier}:{key}`
+    against separate state, so this never interacts with the auth limiter
+    or with a different tier's budget for the same client.
+
+    Args:
+        tier: Tier name, e.g. "upload", "generation", "url_fetch" — used
+            only to namespace the bucket key.
+        key: Client identifier, from get_client_key().
+        max_attempts: Requests allowed per window for this tier.
+        window_seconds: Window length in seconds for this tier.
+
+    Returns:
+        True if the request should proceed, False if it should be blocked.
+    """
+    now = time.time()
+    _cleanup_stale_tier_entries(now)
+
+    bucket_key = f"{tier}:{key}"
+
+    if bucket_key in _tier_blocked and _tier_blocked[bucket_key] > now:
+        return False
+
+    window_start = now - window_seconds
+    active = [t for t in _tier_attempts[bucket_key] if t > window_start]
+
+    if len(active) >= max_attempts:
+        _tier_blocked[bucket_key] = now + 300
+        _tier_attempts[bucket_key] = []
+        return False
+
+    active.append(now)
+    _tier_attempts[bucket_key] = active
+    return True
+
+
+def check_upload_rate_limit(key: str) -> bool:
+    """Rate limit for CV file uploads (POST /cvs and reprocess)."""
+    return check_tier_rate_limit(
+        "upload", key, settings.rate_limit_upload_requests, settings.rate_limit_upload_window,
+    )
+
+
+def check_generation_rate_limit(key: str) -> bool:
+    """Rate limit for job-creating endpoints that aren't upload or URL fetch
+    (job-post text submission/reprocess, match creation, cover-letter
+    workflow start/regenerate)."""
+    return check_tier_rate_limit(
+        "generation", key, settings.rate_limit_generation_requests, settings.rate_limit_generation_window,
+    )
+
+
+def check_url_fetch_rate_limit(key: str) -> bool:
+    """Rate limit for job-post URL submission (the SSRF-relevant fetch path)."""
+    return check_tier_rate_limit(
+        "url_fetch", key, settings.rate_limit_url_fetch_requests, settings.rate_limit_url_fetch_window,
+    )
+
+
+def check_trial_session_rate_limit(key: str) -> bool:
+    """Rate limit for trial-session *creation* (POST /trial-sessions).
+
+    This is the one unauthenticated way to mint a new identity that can
+    then consume upload/generation/url_fetch budget on its own — deserves
+    its own, tighter tier rather than sharing one of the above.
+    """
+    return check_tier_rate_limit(
+        "trial_session", key, settings.rate_limit_trial_session_requests, settings.rate_limit_trial_session_window,
+    )
+
+
 def get_client_key(request) -> str:
     """Extract a rate-limiting key from the incoming request.
 

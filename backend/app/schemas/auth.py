@@ -31,6 +31,21 @@ class LoginResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class ClaimTrialRequest(BaseModel):
+    trial_session_id: str = Field(alias="trialSessionId")
+
+    model_config = {"populate_by_name": True}
+
+
+class ClaimTrialResponse(BaseModel):
+    claimed: bool
+    cv_files_reassigned: int = Field(alias="cvFilesReassigned")
+    job_posts_reassigned: int = Field(alias="jobPostsReassigned")
+    match_runs_reassigned: int = Field(alias="matchRunsReassigned")
+
+    model_config = {"populate_by_name": True}
+
+
 class ErrorDetail(BaseModel):
     field: str | None = None
     reason: str | None = None

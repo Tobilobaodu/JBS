@@ -23,6 +23,7 @@ from app.api.v1.jobs import router as jobs_router
 from app.api.v1.job_posts import router as job_posts_router
 from app.api.v1.matches import router as matches_router
 from app.api.v1.cover_letters import router as cover_letters_router
+from app.api.v1.trial_sessions import router as trial_sessions_router
 
 logger = get_logger(__name__)
 
@@ -99,6 +100,7 @@ app.include_router(jobs_router, prefix="/api/v1")
 app.include_router(job_posts_router, prefix="/api/v1")
 app.include_router(matches_router, prefix="/api/v1")
 app.include_router(cover_letters_router, prefix="/api/v1")
+app.include_router(trial_sessions_router, prefix="/api/v1")
 
 # Prometheus metrics at /metrics
 metrics_app = make_asgi_app()

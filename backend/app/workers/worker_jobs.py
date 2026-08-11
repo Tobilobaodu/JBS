@@ -21,7 +21,7 @@ import sqlalchemy as sa  # noqa: F401 — used by cv_parse helpers
 
 from celery import shared_task
 from celery.exceptions import MaxRetriesExceededError
-from sqlalchemy import select, create_engine
+from sqlalchemy import select, delete, create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -35,14 +35,20 @@ from app.core.metrics import (
 )
 from app.core.storage import download_file
 from app.db.models import (
+    CvEducationItem,
+    CvExperienceItem,
     CvFile,
     CvExtractionPass,
+    CvProfile,
+    CvProfileVersion,
     CvRawText,
+    CvSkillItem,
     JobPost,
     JobPostProfile,
     MatchEvidenceItem,
     MatchRun,
     ProcessingJob,
+    TrialSession,
 )
 from app.extraction.parser_interface import ExtractionResult
 from app.extraction.docling_parser import DoclingParser
@@ -460,6 +466,7 @@ def process_cv_parse(self, job_id: str) -> None:
         pv = CvProfileVersion(
             cv_file_id=cv_file.id,
             user_id=cv_file.user_id,
+            trial_session_id=cv_file.trial_session_id,
             version_number=version_number,
             profile_hash=profile_hash,
             schema_version="1.0",
@@ -1262,5 +1269,102 @@ def process_job_post_parse(self, job_id: str) -> None:
     finally:
         session.close()
         structlog.contextvars.unbind_contextvars("job_id")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sprint 2: Anonymous trial support — expiry cleanup
+# ──────────────────────────────────────────────────────────────────────
+
+
+@shared_task(
+    name="app.workers.worker_jobs.cleanup_expired_trial_sessions",
+    queue="maintenance",
+)
+def cleanup_expired_trial_sessions() -> None:
+    """Delete expired, unclaimed trial sessions and everything still
+    attached to them, per 06-non-functional-requirements.md's retention
+    discipline — unclaimed trial data shouldn't accumulate indefinitely.
+
+    Only UNCLAIMED sessions are touched: claim-trial already reassigns a
+    claimed session's rows to a real user_id and clears trial_session_id,
+    so a claimed session's data is never visible to the queries below
+    regardless of how old the trial_session row itself is.
+
+    Deletes in FK-dependency order (children before parents) since these
+    relationships aren't set up for ON DELETE CASCADE at the DB level:
+    processing_jobs and match_evidence_items first, then match_runs; the
+    three cv_profile_versions child tables, then cv_profiles (which
+    points at both cv_profile_versions and cv_files) and
+    cv_profile_versions itself; cv_extraction_passes/cv_raw_text, then
+    cv_files; job_post_profiles, then job_posts; finally the
+    trial_sessions rows.
+
+    Not wired to any scheduler yet — this codebase has no Celery beat
+    (or other cron) infrastructure for any task today. Invoke manually,
+    or via `celery -A app.workers.tasks.celery_app call
+    app.workers.worker_jobs.cleanup_expired_trial_sessions`, until a
+    periodic-task mechanism is set up — that's a separate infra decision
+    this task can't wire up for itself.
+    """
+    session = _get_sync_session()
+    try:
+        now = datetime.now(timezone.utc)
+        expired_ids = session.execute(
+            select(TrialSession.id).where(
+                TrialSession.expires_at <= now,
+                TrialSession.claimed_by_user_id.is_(None),
+            )
+        ).scalars().all()
+
+        if not expired_ids:
+            logger.info("trial_session_cleanup_none_expired")
+            return
+
+        cv_file_ids = session.execute(
+            select(CvFile.id).where(CvFile.trial_session_id.in_(expired_ids))
+        ).scalars().all()
+        cv_profile_version_ids = session.execute(
+            select(CvProfileVersion.id).where(CvProfileVersion.trial_session_id.in_(expired_ids))
+        ).scalars().all()
+        job_post_ids = session.execute(
+            select(JobPost.id).where(JobPost.trial_session_id.in_(expired_ids))
+        ).scalars().all()
+        match_run_ids = session.execute(
+            select(MatchRun.id).where(MatchRun.trial_session_id.in_(expired_ids))
+        ).scalars().all()
+
+        session.execute(delete(ProcessingJob).where(ProcessingJob.trial_session_id.in_(expired_ids)))
+        session.execute(delete(MatchEvidenceItem).where(MatchEvidenceItem.match_run_id.in_(match_run_ids)))
+        session.execute(delete(MatchRun).where(MatchRun.id.in_(match_run_ids)))
+
+        session.execute(delete(CvExperienceItem).where(CvExperienceItem.cv_profile_version_id.in_(cv_profile_version_ids)))
+        session.execute(delete(CvEducationItem).where(CvEducationItem.cv_profile_version_id.in_(cv_profile_version_ids)))
+        session.execute(delete(CvSkillItem).where(CvSkillItem.cv_profile_version_id.in_(cv_profile_version_ids)))
+        session.execute(delete(CvProfile).where(CvProfile.cv_file_id.in_(cv_file_ids)))
+        session.execute(delete(CvProfileVersion).where(CvProfileVersion.id.in_(cv_profile_version_ids)))
+
+        session.execute(delete(CvExtractionPass).where(CvExtractionPass.cv_file_id.in_(cv_file_ids)))
+        session.execute(delete(CvRawText).where(CvRawText.cv_file_id.in_(cv_file_ids)))
+        session.execute(delete(CvFile).where(CvFile.id.in_(cv_file_ids)))
+
+        session.execute(delete(JobPostProfile).where(JobPostProfile.job_post_id.in_(job_post_ids)))
+        session.execute(delete(JobPost).where(JobPost.id.in_(job_post_ids)))
+
+        session.execute(delete(TrialSession).where(TrialSession.id.in_(expired_ids)))
+
+        session.commit()
+        logger.info(
+            "trial_session_cleanup_complete",
+            expired_sessions=len(expired_ids),
+            cv_files=len(cv_file_ids),
+            job_posts=len(job_post_ids),
+            match_runs=len(match_run_ids),
+        )
+    except Exception as e:
+        session.rollback()
+        logger.error("trial_session_cleanup_failed", error=str(e))
+        raise
+    finally:
+        session.close()
 
 

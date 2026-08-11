@@ -12,6 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
+from app.core.rate_limit import (
+    check_generation_rate_limit,
+    check_url_fetch_rate_limit,
+    get_client_key,
+)
 from app.services.orchestration import enforce_concurrent_job_limit, mark_job_publish_failed
 from app.db import get_session
 from app.db.models import (
@@ -21,7 +26,12 @@ from app.db.models import (
     ProcessingJob,
     User,
 )
-from app.core.security import get_current_user
+from app.core.security import (
+    RequestIdentity,
+    get_current_user,
+    get_current_user_or_trial_session,
+    identity_owner_filter,
+)
 from app.workers.tasks import (
     enqueue_job_post_fetch,
     enqueue_job_post_parse,
@@ -104,10 +114,21 @@ def _now_iso() -> str:
 async def submit_job_post_url(
     request: Request,
     body: JobPostUrlRequest,
-    current_user: User = Depends(get_current_user),
+    identity: RequestIdentity = Depends(get_current_user_or_trial_session),
     session: AsyncSession = Depends(get_session),
 ):
-    """Submit a job post URL for SSRF-safe fetching and structuring."""
+    """Submit a job post URL for SSRF-safe fetching and structuring.
+
+    Trial-accessible (Sprint 2). Rate-limited per client IP (url_fetch
+    tier, see `10-security-plan.md` §9).
+    """
+    client_key = get_client_key(request)
+    if not check_url_fetch_rate_limit(client_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many job post URL submissions. Please wait and try again.",
+        )
+
     # Fast pre-check: URL must be parseable with http/https scheme.
     # Full SSRF validation (DNS/IP, redirect chain, timeout, size) happens
     # at fetch time in the worker — per 10-security-plan.md §4.
@@ -122,7 +143,8 @@ async def submit_job_post_url(
 
     # Create job_post row
     job_post = JobPost(
-        user_id=current_user.id,
+        user_id=identity.user_id,
+        trial_session_id=identity.trial_session_id,
         source_type="url",
         source_url=body.url,
         raw_text="",  # populated by fetch worker
@@ -132,13 +154,14 @@ async def submit_job_post_url(
     await session.flush()
 
     # Create processing job after concurrency check
-    await enforce_concurrent_job_limit(session, current_user.id)
+    await enforce_concurrent_job_limit(session, user_id=identity.user_id, trial_session_id=identity.trial_session_id)
 
     proc_job = ProcessingJob(
         job_type="job_post_fetch",
         source_entity_type="job_post",
         source_entity_id=job_post.id,
-        user_id=current_user.id,
+        user_id=identity.user_id,
+        trial_session_id=identity.trial_session_id,
         status="pending",
     )
     session.add(proc_job)
@@ -146,11 +169,11 @@ async def submit_job_post_url(
 
     # Audit
     session.add(AuditEvent(
-        user_id=current_user.id,
+        user_id=identity.user_id,
         entity_type="job_post",
         entity_id=job_post.id,
         event_type="upload",  # reuse existing event type
-        actor_type="user",
+        actor_type="user" if identity.user else "trial_session",
     ))
 
     await session.commit()
@@ -185,13 +208,25 @@ async def submit_job_post_url(
 async def submit_job_post_text(
     request: Request,
     body: JobPostTextRequest,
-    current_user: User = Depends(get_current_user),
+    identity: RequestIdentity = Depends(get_current_user_or_trial_session),
     session: AsyncSession = Depends(get_session),
 ):
-    """Submit pasted job post text for structuring."""
+    """Submit pasted job post text for structuring.
+
+    Trial-accessible (Sprint 2). Rate-limited per client IP (generation
+    tier, see `10-security-plan.md` §9).
+    """
+    client_key = get_client_key(request)
+    if not check_generation_rate_limit(client_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many job post submissions. Please wait and try again.",
+        )
+
     # Create job_post row with raw_text populated directly
     job_post = JobPost(
-        user_id=current_user.id,
+        user_id=identity.user_id,
+        trial_session_id=identity.trial_session_id,
         source_type="text",
         source_url=None,
         raw_text=body.text,
@@ -201,24 +236,25 @@ async def submit_job_post_text(
     await session.flush()
 
     # Create processing job — goes straight to parse
-    await enforce_concurrent_job_limit(session, current_user.id)
+    await enforce_concurrent_job_limit(session, user_id=identity.user_id, trial_session_id=identity.trial_session_id)
 
     proc_job = ProcessingJob(
         job_type="job_post_parse",
         source_entity_type="job_post",
         source_entity_id=job_post.id,
-        user_id=current_user.id,
+        user_id=identity.user_id,
+        trial_session_id=identity.trial_session_id,
         status="pending",
     )
     session.add(proc_job)
     await session.flush()
 
     session.add(AuditEvent(
-        user_id=current_user.id,
+        user_id=identity.user_id,
         entity_type="job_post",
         entity_id=job_post.id,
         event_type="upload",
-        actor_type="user",
+        actor_type="user" if identity.user else "trial_session",
     ))
 
     await session.commit()
@@ -292,16 +328,20 @@ async def list_job_posts(
 @router.get("/job-posts/{jobPostId}", response_model=JobPostResponse)
 async def get_job_post(
     jobPostId: str,
-    current_user: User = Depends(get_current_user),
+    identity: RequestIdentity = Depends(get_current_user_or_trial_session),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get a single job post with its structured profile (IDOR-safe)."""
+    """Get a single job post with its structured profile (IDOR-safe).
+
+    Trial-accessible (Sprint 2) — a trial session needs the structured
+    profile to exist (status == "completed") before calling POST /matches.
+    """
     result = await session.execute(
         select(JobPost)
         .options(selectinload(JobPost.profile))
         .where(
             JobPost.id == jobPostId,
-            JobPost.user_id == current_user.id,
+            identity_owner_filter(JobPost, identity),
         )
     )
     job_post = result.unique().scalar_one_or_none()
@@ -318,6 +358,7 @@ async def get_job_post(
 
 @router.post("/job-posts/{jobPostId}/reprocess", response_model=JobPostAccepted, status_code=202)
 async def reprocess_job_post(
+    request: Request,
     jobPostId: str,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
@@ -325,7 +366,15 @@ async def reprocess_job_post(
     """Re-run the structuring logic for an already-fetched job post.
 
     Does NOT re-fetch the URL — only re-parses existing raw_text.
+    Rate-limited per client IP (generation tier).
     """
+    client_key = get_client_key(request)
+    if not check_generation_rate_limit(client_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many job post submissions. Please wait and try again.",
+        )
+
     result = await session.execute(
         select(JobPost).where(
             JobPost.id == jobPostId,

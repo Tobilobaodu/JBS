@@ -9,6 +9,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
+from app.core.rate_limit import check_upload_rate_limit, get_client_key
 from app.core.storage import generate_storage_key, upload_file
 from app.db import get_session
 from app.db.models import (
@@ -34,7 +35,12 @@ from app.schemas.jobs import ProcessingJobResponse
 from app.services.file_validation import validate_file_type, validate_file_size
 from app.services.malware_scan import scan_file
 from app.services.orchestration import start_extraction_pipeline
-from app.core.security import get_current_user
+from app.core.security import (
+    RequestIdentity,
+    get_current_user,
+    get_current_user_or_trial_session,
+    identity_owner_filter,
+)
 
 router = APIRouter(tags=["cvs"])
 logger = get_logger(__name__)
@@ -76,14 +82,25 @@ def _derive_status(cv_status: str, job_status: str | None) -> str:
 async def upload_cv(
     request: Request,
     file: UploadFile,
-    current_user: User = Depends(get_current_user),
+    identity: RequestIdentity = Depends(get_current_user_or_trial_session),
     session: AsyncSession = Depends(get_session),
 ):
     """Upload a CV file (PDF or DOCX). Validates, scans, stores, then enqueues extraction.
 
     Returns 202 immediately with cvId and processingJobId. The extraction pipeline
     (Docling → Textract → merge) runs asynchronously.
+
+    Accepts either a real authenticated user or an anonymous trial session
+    (Sprint 2) — this is one of the trial-accessible routes.
+    Rate-limited per client IP (upload tier, see `10-security-plan.md` §9).
     """
+    client_key = get_client_key(request)
+    if not check_upload_rate_limit(client_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many upload attempts. Please wait and try again.",
+        )
+
     # Read file content
     file_content = await file.read()
 
@@ -119,7 +136,8 @@ async def upload_cv(
 
     # Create database records
     cv_file = CvFile(
-        user_id=current_user.id,
+        user_id=identity.user_id,
+        trial_session_id=identity.trial_session_id,
         filename=file.filename or "unnamed",
         mime_type=mime_type,
         file_size=file_size,
@@ -132,18 +150,21 @@ async def upload_cv(
     # Audit
     session.add(
         AuditEvent(
-            user_id=current_user.id,
+            user_id=identity.user_id,
             event_type="upload",
             entity_type="cv_file",
             entity_id=cv_file.id,
-            actor_type="user",
+            actor_type="user" if identity.user else "trial_session",
             ip_address=request.client.host if request.client else None,
         )
     )
 
     # Kick off the extraction pipeline
     processing_job = await start_extraction_pipeline(
-        session=session, cv_file_id=cv_file.id, user_id=current_user.id
+        session=session,
+        cv_file_id=cv_file.id,
+        user_id=identity.user_id,
+        trial_session_id=identity.trial_session_id,
     )
 
     await session.commit()
@@ -236,14 +257,18 @@ async def list_cvs(
 @router.get("/cvs/{cv_id}", response_model=CvFileResponse)
 async def get_cv(
     cv_id: str,
-    current_user: User = Depends(get_current_user),
+    identity: RequestIdentity = Depends(get_current_user_or_trial_session),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get CV metadata. Returns 404 if not found, not owned by current user, or soft-deleted."""
+    """Get CV metadata. Returns 404 if not found, not owned by current identity, or soft-deleted.
+
+    Trial-accessible (Sprint 2) — a trial session needs to poll its own
+    upload's processing status before an account exists to check it with.
+    """
     result = await session.execute(
         select(CvFile).where(
             CvFile.id == cv_id,
-            CvFile.user_id == current_user.id,
+            identity_owner_filter(CvFile, identity),
             CvFile.deleted_at.is_(None),
         )
     )
@@ -326,11 +351,23 @@ async def delete_cv(
 
 @router.post("/cvs/{cv_id}/reprocess", status_code=202)
 async def reprocess_cv(
+    request: Request,
     cv_id: str,
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
-    """Re-trigger the extraction pipeline. Creates new extraction passes."""
+    """Re-trigger the extraction pipeline. Creates new extraction passes.
+
+    Rate-limited per client IP (upload tier — a reprocess re-runs the same
+    extraction pipeline as a fresh upload).
+    """
+    client_key = get_client_key(request)
+    if not check_upload_rate_limit(client_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many upload attempts. Please wait and try again.",
+        )
+
     result = await session.execute(
         select(CvFile).where(
             CvFile.id == cv_id,
@@ -455,15 +492,19 @@ async def get_cv_extraction_detail(
 @router.get("/cvs/{cv_id}/parsed-profile")
 async def get_cv_parsed_profile(
     cv_id: str,
-    current_user: User = Depends(get_current_user),
+    identity: RequestIdentity = Depends(get_current_user_or_trial_session),
     session: AsyncSession = Depends(get_session),
 ):
-    """Return the current structured candidate profile (Phase 2)."""
+    """Return the current structured candidate profile (Phase 2).
+
+    Trial-accessible (Sprint 2) — a trial session needs its own
+    profileVersionId to call POST /matches.
+    """
     # Ownership check, excluding soft-deleted CVs
     cv_result = await session.execute(
         select(CvFile).where(
             CvFile.id == cv_id,
-            CvFile.user_id == current_user.id,
+            identity_owner_filter(CvFile, identity),
             CvFile.deleted_at.is_(None),
         )
     )

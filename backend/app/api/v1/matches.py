@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.logging import get_logger
+from app.core.rate_limit import check_generation_rate_limit, get_client_key
 from app.services.orchestration import enforce_concurrent_job_limit, mark_job_publish_failed
 from app.db import get_session
 from app.db.models import (
@@ -19,13 +20,17 @@ from app.db.models import (
     CvProfile,
     CvProfileVersion,
     CvSkillItem,
+    JobPost,
     JobPostProfile,
     MatchRun,
     MatchEvidenceItem,
     ProcessingJob,
-    User,
 )
-from app.core.security import get_current_user
+from app.core.security import (
+    RequestIdentity,
+    get_current_user_or_trial_session,
+    identity_owner_filter,
+)
 from app.workers.tasks import enqueue_match
 
 router = APIRouter(tags=["matches"])
@@ -91,25 +96,41 @@ class MatchResponse(BaseModel):
 async def create_match(
     request: Request,
     body: MatchRequest,
-    current_user: User = Depends(get_current_user),
+    identity: RequestIdentity = Depends(get_current_user_or_trial_session),
     session: AsyncSession = Depends(get_session),
 ):
-    """Create a match analysis between a CV profile and a job post."""
-    # Validate CV profile version exists and belongs to user
+    """Create a match analysis between a CV profile and a job post.
+
+    Trial-accessible (Sprint 2). Rate-limited per client IP (generation
+    tier, see `10-security-plan.md` §9).
+    """
+    client_key = get_client_key(request)
+    if not check_generation_rate_limit(client_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many match requests. Please wait and try again.",
+        )
+
+    # Validate CV profile version exists and belongs to this identity
     cv_result = await session.execute(
         select(CvProfileVersion).where(
             CvProfileVersion.id == body.cvProfileVersionId,
-            CvProfileVersion.user_id == current_user.id,
+            identity_owner_filter(CvProfileVersion, identity),
         )
     )
     cv_profile = cv_result.scalar_one_or_none()
     if cv_profile is None:
         raise HTTPException(status_code=404, detail="CV profile version not found")
 
-    # Look up job post profile from jobPostId (1:1 relationship)
+    # Look up job post profile from jobPostId (1:1 relationship), scoped
+    # to this identity — without this join, any identity could match
+    # against any job post's structured profile, not just their own.
     jp_result = await session.execute(
-        select(JobPostProfile).where(
+        select(JobPostProfile)
+        .join(JobPost, JobPost.id == JobPostProfile.job_post_id)
+        .where(
             JobPostProfile.job_post_id == body.jobPostId,
+            identity_owner_filter(JobPost, identity),
         )
     )
     jp_profile = jp_result.scalar_one_or_none()
@@ -118,7 +139,8 @@ async def create_match(
 
     # Create match_run row
     match_run = MatchRun(
-        user_id=current_user.id,
+        user_id=identity.user_id,
+        trial_session_id=identity.trial_session_id,
         cv_profile_version_id=body.cvProfileVersionId,
         job_post_profile_id=jp_profile.id,
         status="pending",
@@ -127,23 +149,24 @@ async def create_match(
     await session.flush()
 
     # Create processing job after concurrency check
-    await enforce_concurrent_job_limit(session, current_user.id)
+    await enforce_concurrent_job_limit(session, user_id=identity.user_id, trial_session_id=identity.trial_session_id)
 
     proc_job = ProcessingJob(
         job_type="match",
         source_entity_type="match_run",
         source_entity_id=match_run.id,
-        user_id=current_user.id,
+        user_id=identity.user_id,
+        trial_session_id=identity.trial_session_id,
         status="pending",
     )
     session.add(proc_job)
 
     session.add(AuditEvent(
-        user_id=current_user.id,
+        user_id=identity.user_id,
         entity_type="match_run",
         entity_id=match_run.id,
         event_type="match",
-        actor_type="user",
+        actor_type="user" if identity.user else "trial_session",
     ))
 
     await session.commit()
@@ -177,14 +200,18 @@ async def create_match(
 @router.get("/matches/{matchId}", response_model=MatchResponse)
 async def get_match(
     matchId: str,
-    current_user: User = Depends(get_current_user),
+    identity: RequestIdentity = Depends(get_current_user_or_trial_session),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get a match analysis with its evidence items (IDOR-safe)."""
+    """Get a match analysis with its evidence items (IDOR-safe).
+
+    Trial-accessible (Sprint 2) — a trial session needs to see its own
+    match result before deciding to register.
+    """
     result = await session.execute(
         select(MatchRun).where(
             MatchRun.id == matchId,
-            MatchRun.user_id == current_user.id,
+            identity_owner_filter(MatchRun, identity),
         )
     )
     match_run = result.scalar_one_or_none()

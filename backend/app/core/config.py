@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     rate_limit_url_fetch_window: int = 3600
     max_concurrent_jobs_per_user: int = 5
 
+    # Trial session creation (Sprint 2) — deliberately tighter than the
+    # other tiers: this is the one unauthenticated way to mint a new
+    # identity that can then consume upload/generation/url_fetch budget.
+    rate_limit_trial_session_requests: int = 5
+    rate_limit_trial_session_window: int = 3600
+    trial_session_ttl_hours: int = 48
+
     # ClamAV
     clamd_host: str = "localhost"
     clamd_port: int = 3310

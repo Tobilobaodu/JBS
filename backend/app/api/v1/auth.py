@@ -25,7 +25,10 @@ from app.core.security import (
 )
 from app.db import get_session
 from app.db.models import AuditEvent, User, UserSession
+from app.services.trial_session import claim_trial_session
 from app.schemas.auth import (
+    ClaimTrialRequest,
+    ClaimTrialResponse,
     LoginRequest,
     LoginResponse,
     RegisterRequest,
@@ -250,3 +253,56 @@ async def logout(
 async def me(current_user: User = Depends(get_current_user)):
     """Return the current user's profile and permissions."""
     return _map_user(current_user)
+
+
+@router.post("/claim-trial", response_model=ClaimTrialResponse)
+async def claim_trial(
+    body: ClaimTrialRequest,
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Attach an anonymous trial session's data to the just-registered/
+    logged-in account (Sprint 2). Call immediately after register/login
+    when the frontend is carrying a trial session id.
+
+    Single transaction: every cv_files/cv_profile_versions/job_posts/
+    match_runs/processing_jobs row still pointing at the trial session is
+    reassigned to the new user_id (trial_session_id cleared) and the
+    trial_session itself is marked claimed, all before the one commit at
+    the end — if anything here raises, nothing is persisted and no row
+    is left half-reassigned or orphaned.
+
+    404 if the trial session doesn't exist; 409 if it's expired or was
+    already claimed (by this or another account) — claiming is a one-time
+    transition, not idempotent, so a second call is a conflict, not a
+    no-op.
+    """
+    result = await claim_trial_session(session, body.trial_session_id, current_user.id)
+
+    await _create_audit_event(
+        session=session,
+        event_type="trial_claimed",
+        user_id=current_user.id,
+        entity_type="trial_session",
+        entity_id=body.trial_session_id,
+        ip_address=request.client.host if request.client else None,
+    )
+
+    await session.commit()
+
+    logger.info(
+        "trial_session_claimed",
+        trial_session_id=body.trial_session_id,
+        user_id=current_user.id,
+        cv_files=result.cv_files_reassigned,
+        job_posts=result.job_posts_reassigned,
+        match_runs=result.match_runs_reassigned,
+    )
+
+    return ClaimTrialResponse(
+        claimed=True,
+        cv_files_reassigned=result.cv_files_reassigned,
+        job_posts_reassigned=result.job_posts_reassigned,
+        match_runs_reassigned=result.match_runs_reassigned,
+    )
