@@ -164,6 +164,9 @@ def _tokenize(text: str) -> set[str]:
     return set(_TOKEN_RE.findall(text.lower()))
 
 
+_SENTENCE_START_RE = re.compile(r"[.!?]\s+$")
+
+
 def _extract_facts(text: str) -> list[str]:
     """Digit sequences (numbers, percentages, years, dollar amounts) and
     multi-word capitalized spans (named entities: employers, products,
@@ -173,9 +176,31 @@ def _extract_facts(text: str) -> list[str]:
     sentence-initial word is capitalized); requiring 2+ consecutive
     capitalized words trades recall for precision, consistent with this
     check's role as a hard reject gate, not a style linter.
+
+    Caught during testing: a claim like "Experienced Python engineer..."
+    matched _PROPER_NOUN_RE as a single 2-word span ("Experienced
+    Python") because ordinary sentence-initial capitalization ("Experienced")
+    sits directly next to a real proper noun ("Python") — the resulting
+    "fact" then fails verification even though "Python" alone is
+    genuinely grounded, a false positive that would reject good content
+    for no real safety benefit. When a match starts at the beginning of
+    the text or right after a sentence boundary, its first word is
+    dropped and only the remainder (if 2+ words are still left) is kept
+    as a fact — "Google Cloud Platform" at a sentence start still yields
+    "Cloud Platform" to check, but "Experienced Python" correctly yields
+    nothing (one word left, below the multi-word threshold).
     """
     facts = list(_NUMBER_RE.findall(text))
-    facts.extend(_PROPER_NOUN_RE.findall(text))
+    for match in _PROPER_NOUN_RE.finditer(text):
+        span_text = match.group(0)
+        preceding = text[:match.start()]
+        at_sentence_start = match.start() == 0 or bool(_SENTENCE_START_RE.search(preceding))
+        if at_sentence_start:
+            remaining_words = span_text.split()[1:]
+            if len(remaining_words) < 2:
+                continue
+            span_text = " ".join(remaining_words)
+        facts.append(span_text)
     return facts
 
 

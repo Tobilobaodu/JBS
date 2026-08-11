@@ -42,20 +42,31 @@ def _evidence(support_level, requirement_text, requirement_type="required",
 
 
 class FakeCompletions:
-    """Returns a fixed, faithful response for every call by default;
-    tests can override via a response queue for failure-path testing."""
+    """Returns a fixed, minimal, generically-grounded response for every
+    call by default (mentions only "Python" — present in every fixture in
+    this file, so the default never accidentally fails verification
+    against a specific test's evidence). Tests needing precise per-call
+    behavior pass responses_by_schema, keyed by the schema_name
+    generate_structured() sends — real calls include both a summary and
+    an experience call in most tests here, so a flat, order-based queue
+    would silently drain into whichever section runs first rather than
+    the one the test actually means to target; keying by schema avoids
+    that entirely.
+    """
 
-    def __init__(self, content_text="Experienced Python engineer building REST APIs.",
-                 evidence_indexes=None, responses=None):
+    def __init__(self, content_text="Experienced Python engineer.",
+                 evidence_indexes=None, responses_by_schema=None):
         self.calls = []
         self._default_content_text = content_text
         self._default_evidence_indexes = evidence_indexes if evidence_indexes is not None else [0]
-        self._responses = list(responses) if responses is not None else None
+        self._queues = {k: list(v) for k, v in (responses_by_schema or {}).items()}
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        if self._responses is not None:
-            item = self._responses.pop(0)
+        schema_name = kwargs["response_format"]["json_schema"]["name"]
+        queue = self._queues.get(schema_name)
+        if queue:
+            item = queue.pop(0)
             if isinstance(item, Exception):
                 raise item
             content = json.dumps(item)
@@ -168,10 +179,15 @@ class TestGenerateDraftSections:
     def test_corrective_retry_can_succeed_on_second_attempt(self):
         exp = _exp(bullets=["Built REST APIs serving 2M requests/day"], technologies=[])
         evidence_items = [_evidence("partially_supported", "REST APIs")]
-        client = FakeClient(responses=[
-            {"contentText": "Handled 50M requests per day.", "evidenceIndexes": [0]},  # rejected
-            {"contentText": "Built REST APIs handling 2M requests per day.", "evidenceIndexes": [0]},  # passes
-        ])
+        # Only the experience-bullet schema gets the reject-then-pass
+        # queue — the summary call (also triggered by this evidence) uses
+        # the generic default and succeeds trivially on its own.
+        client = FakeClient(responses_by_schema={
+            "tailored_cv_experience_bullet": [
+                {"contentText": "Handled 50M requests per day.", "evidenceIndexes": [0]},  # rejected
+                {"contentText": "Built REST APIs handling 2M requests per day.", "evidenceIndexes": [0]},  # passes
+            ],
+        })
 
         outcome = generate_draft_sections(
             match_evidence_items=evidence_items,
