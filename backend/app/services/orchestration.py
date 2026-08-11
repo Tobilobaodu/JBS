@@ -15,6 +15,7 @@ from app.workers.tasks import (
     enqueue_docling_extract,
     enqueue_textract_extract,
     enqueue_merge_parse,
+    enqueue_ats_check,
 )
 from datetime import datetime, timezone
 from app.core.logging import get_logger
@@ -85,8 +86,10 @@ async def create_processing_job(
 
     Returns the job row so the API can return the job_id immediately.
     """
-    if not user_id and not trial_session_id:
-        raise ValueError("create_processing_job requires user_id or trial_session_id")
+    if (user_id is None) == (trial_session_id is None):
+        raise ValueError(
+            "create_processing_job requires exactly one of user_id/trial_session_id"
+        )
 
     await enforce_concurrent_job_limit(session, user_id=user_id, trial_session_id=trial_session_id)
 
@@ -108,6 +111,8 @@ async def create_processing_job(
         enqueue_textract_extract(str(job.id))
     elif job_type == "merge_parse":
         enqueue_merge_parse(str(job.id))
+    elif job_type == "ats_check":
+        enqueue_ats_check(str(job.id))
     else:
         logger.warning("unknown_job_type_not_enqueued", job_type=job_type)
         job.status = "failed"
@@ -124,8 +129,6 @@ async def create_processing_job(
     return job
 
 
-
-
 def mark_job_publish_failed(job: ProcessingJob, error: str) -> None:
     """Set the standard publish-failure terminal state on a job row.
 
@@ -136,6 +139,8 @@ def mark_job_publish_failed(job: ProcessingJob, error: str) -> None:
     job.status = "failed"
     job.last_error = error
     job.failed_at = datetime.now(timezone.utc)
+
+
 async def start_extraction_pipeline(
     session: AsyncSession,
     cv_file_id: str,

@@ -32,9 +32,12 @@ from app.core.metrics import (
     EXTRACTION_CHARS,
     MERGE_STRATEGY_COUNTER,
     STRUCTURAL_ANOMALY_COUNTER,
+    LLM_TOKENS_COUNTER,
+    LLM_GENERATION_COUNTER,
 )
 from app.core.storage import download_file
 from app.db.models import (
+    AtsReadinessCheck,
     CvEducationItem,
     CvExperienceItem,
     CvFile,
@@ -48,6 +51,8 @@ from app.db.models import (
     MatchEvidenceItem,
     MatchRun,
     ProcessingJob,
+    TailoredCvDraft,
+    TailoredCvSection,
     TrialSession,
 )
 from app.extraction.parser_interface import ExtractionResult
@@ -1299,12 +1304,13 @@ def cleanup_expired_trial_sessions() -> None:
     cv_files; job_post_profiles, then job_posts; finally the
     trial_sessions rows.
 
-    Not wired to any scheduler yet — this codebase has no Celery beat
-    (or other cron) infrastructure for any task today. Invoke manually,
-    or via `celery -A app.workers.tasks.celery_app call
-    app.workers.worker_jobs.cleanup_expired_trial_sessions`, until a
-    periodic-task mechanism is set up — that's a separate infra decision
-    this task can't wire up for itself.
+    Invoked periodically by Celery beat (`beat_schedule` in
+    app/workers/tasks.py, interval set by
+    settings.trial_session_cleanup_interval_seconds), consumed by the
+    `worker_maintenance` service (docker-compose.yml) on the `maintenance`
+    queue. Can also be triggered manually via `celery -A
+    app.workers.tasks.celery_app call
+    app.workers.worker_jobs.cleanup_expired_trial_sessions`.
     """
     session = _get_sync_session()
     try:
@@ -1367,4 +1373,297 @@ def cleanup_expired_trial_sessions() -> None:
     finally:
         session.close()
 
+
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Product Extension #1: ATS structural-readiness check
+# ──────────────────────────────────────────────────────────────────────
+
+
+@shared_task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+    name="app.workers.worker_jobs.process_ats_check",
+    queue="ats_check",
+)
+def process_ats_check(self, job_id: str) -> None:
+    """Run the rules-based ATS readiness check against a CV's merged
+    extraction and structured profile.
+
+    This is a one-shot terminal job (like 'match' / 'cv_generate') — it
+    never transitions to another job_type, only completes or fails.
+    """
+    structlog.contextvars.bind_contextvars(job_id=job_id)
+    t_start = time.monotonic()
+    session = _get_sync_session()
+    try:
+        job = session.get(ProcessingJob, job_id)
+        if job is None:
+            logger.error("job_not_found", job_id=job_id)
+            return
+
+        job.status = "processing"
+        job.started_at = datetime.now(timezone.utc)
+        session.commit()
+
+        cv_file = session.get(CvFile, job.source_entity_id)
+        if cv_file is None:
+            raise ValueError(f"CV file {job.source_entity_id} not found")
+
+        # Resolve the current profile version via the pointer row
+        profile = session.execute(
+            select(CvProfile).where(CvProfile.cv_file_id == cv_file.id)
+        ).scalar_one_or_none()
+
+        cv_profile_version_id = None
+        structured_payload = None
+        if profile is not None and profile.current_version_id is not None:
+            cv_profile_version_id = profile.current_version_id
+            pv = session.get(CvProfileVersion, profile.current_version_id)
+            if pv is not None:
+                structured_payload = pv.structured_payload
+
+        # Gather extraction data
+        raw_text = session.execute(
+            select(CvRawText).where(CvRawText.cv_file_id == cv_file.id)
+        ).scalar_one_or_none()
+
+        canonical_text = raw_text.canonical_text if raw_text else ""
+        ocr_used = raw_text.ocr_used if raw_text else False
+        merge_meta = raw_text.merge_strategy_metadata if raw_text else None
+        structural_validation = (
+            raw_text.structural_validation_result if raw_text else None
+        )
+
+        # Docling and Textract pass texts (needed for text_in_image check)
+        passes = session.execute(
+            select(CvExtractionPass)
+            .where(CvExtractionPass.cv_file_id == cv_file.id)
+        ).scalars().all()
+
+        docling_text = ""
+        textract_text = ""
+        for p in passes:
+            if p.pass_type == "docling":
+                docling_text = p.extracted_text or ""
+            elif p.pass_type == "textract":
+                textract_text = p.extracted_text or ""
+
+        from app.extraction.ats_check import run_ats_check as ats_scorer
+
+        result = ats_scorer(
+            canonical_text=canonical_text,
+            docling_text=docling_text,
+            textract_text=textract_text,
+            ocr_used=ocr_used,
+            structural_validation=structural_validation,
+            structured_payload=structured_payload,
+            mime_type=cv_file.mime_type or "",
+            merge_strategy_metadata=merge_meta,
+        )
+
+        check_row = AtsReadinessCheck(
+            cv_file_id=cv_file.id,
+            cv_profile_version_id=cv_profile_version_id,
+            overall_score=result.overall_score,
+            checks=result.checks,
+            contact_info_parseable=result.contact_info_parseable,
+        )
+        session.add(check_row)
+
+        job.status = "completed"
+        job.completed_at = datetime.now(timezone.utc)
+        session.commit()
+
+        JOB_THROUGHPUT.labels(job_type="ats_check", status="completed").inc()
+        duration_s = time.monotonic() - t_start
+        JOB_DURATION_SECONDS.labels(job_type="ats_check").observe(duration_s)
+        logger.info(
+            "ats_check_complete",
+            job_id=job_id,
+            cv_id=cv_file.id,
+            overall_score=result.overall_score,
+        )
+
+    except Exception as e:
+        session.rollback()
+        duration_s = time.monotonic() - t_start
+        logger.error("ats_check_failed", job_id=job_id, error=str(e))
+        JOB_THROUGHPUT.labels(job_type="ats_check", status="failed").inc()
+        JOB_DURATION_SECONDS.labels(job_type="ats_check").observe(duration_s)
+        try:
+            job = session.get(ProcessingJob, job_id)
+            if job is not None:
+                job.status = "failed"
+                job.last_error = str(e)
+                job.failed_at = datetime.now(timezone.utc)
+                session.commit()
+        except Exception as finalize_err:
+            logger.error(
+                "ats_check_finalize_failed",
+                job_id=job_id, error=str(finalize_err),
+            )
+        raise
+    finally:
+        session.close()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sprint 3: Tailored CV generation
+# ──────────────────────────────────────────────────────────────────────
+
+
+@shared_task(
+    bind=True,
+    max_retries=1,
+    default_retry_delay=30,
+    name="app.workers.worker_jobs.process_cv_generate",
+    queue="cv_generate",
+)
+def process_cv_generate(self, job_id: str) -> None:
+    """Generate a tailored CV draft's sections from its match_run's
+    evidence. One-shot terminal job, like 'match'/'ats_check' — never
+    transitions to another job_type.
+
+    Deliberately low max_retries (1, not the usual 3): a schema/
+    verification failure inside generate_draft_sections() already retries
+    internally per section (settings.tailored_cv_max_generation_retries)
+    and degrades gracefully by omitting sections, not by raising — this
+    task only raises for something outside that (DB error, missing rows),
+    which a Celery-level retry is unlikely to fix by itself.
+    """
+    structlog.contextvars.bind_contextvars(job_id=job_id)
+    t_start = time.monotonic()
+    session = _get_sync_session()
+    try:
+        job = session.get(ProcessingJob, job_id)
+        if job is None:
+            logger.error("job_not_found", job_id=job_id)
+            return
+
+        job.status = "processing"
+        job.started_at = datetime.now(timezone.utc)
+        session.commit()
+
+        draft = session.get(TailoredCvDraft, job.source_entity_id)
+        if draft is None:
+            raise ValueError(f"TailoredCvDraft {job.source_entity_id} not found")
+
+        match_run = session.get(MatchRun, draft.match_run_id)
+        if match_run is None:
+            raise ValueError(f"MatchRun {draft.match_run_id} not found")
+
+        match_evidence_items = session.execute(
+            select(MatchEvidenceItem).where(MatchEvidenceItem.match_run_id == match_run.id)
+        ).scalars().all()
+
+        experience_items = session.execute(
+            select(CvExperienceItem).where(
+                CvExperienceItem.cv_profile_version_id == match_run.cv_profile_version_id
+            )
+        ).scalars().all()
+        education_items = session.execute(
+            select(CvEducationItem).where(
+                CvEducationItem.cv_profile_version_id == match_run.cv_profile_version_id
+            )
+        ).scalars().all()
+        skill_items = session.execute(
+            select(CvSkillItem).where(
+                CvSkillItem.cv_profile_version_id == match_run.cv_profile_version_id
+            )
+        ).scalars().all()
+
+        jp_profile = session.get(JobPostProfile, match_run.job_post_profile_id)
+        job_requirements = [
+            *(jp_profile.required_skills or [] if jp_profile else []),
+            *(jp_profile.preferred_skills or [] if jp_profile else []),
+        ]
+
+        from app.services.tailored_cv_generation import (
+            generate_draft_sections, assemble_content_json, render_text_from_sections,
+            build_validation_result, build_improvement_checklist,
+        )
+
+        outcome = generate_draft_sections(
+            match_evidence_items=match_evidence_items,
+            experience_items=experience_items,
+            education_items=education_items,
+            skill_items=skill_items,
+            job_requirements=job_requirements,
+            instructions=draft.instructions,
+        )
+
+        for section in outcome.sections:
+            session.add(TailoredCvSection(
+                draft_id=draft.id,
+                section_type=section.section_type,
+                content_text=section.content_text,
+                evidence_references=section.evidence_references,
+                generation_task=section.generation_task,
+                prompt_version=section.prompt_version,
+                model_id=section.model_id,
+                validation_status=section.validation_status,
+                order_index=section.order_index,
+            ))
+
+        draft.content_json = assemble_content_json(outcome.sections)
+        draft.render_text = render_text_from_sections(outcome.sections)
+        draft.validation_result = build_validation_result(outcome)
+        draft.improvement_checklist = build_improvement_checklist(match_evidence_items)
+        draft.status = "generated" if outcome.sections else "failed"
+        draft.updated_at = datetime.now(timezone.utc)
+
+        job.status = "completed"
+        job.completed_at = datetime.now(timezone.utc)
+        session.commit()
+
+        LLM_TOKENS_COUNTER.labels(generation_task="tailored_cv_all", token_type="prompt").inc(
+            outcome.total_prompt_tokens
+        )
+        LLM_TOKENS_COUNTER.labels(generation_task="tailored_cv_all", token_type="completion").inc(
+            outcome.total_completion_tokens
+        )
+        LLM_GENERATION_COUNTER.labels(
+            generation_task="tailored_cv_draft",
+            outcome="success" if outcome.sections else "verification_failed",
+        ).inc()
+
+        JOB_THROUGHPUT.labels(job_type="cv_generate", status="completed").inc()
+        duration_s = time.monotonic() - t_start
+        JOB_DURATION_SECONDS.labels(job_type="cv_generate").observe(duration_s)
+        logger.info(
+            "cv_generate_complete",
+            job_id=job_id,
+            draft_id=draft.id,
+            sections_generated=len(outcome.sections),
+            issues=outcome.issues,
+        )
+
+    except Exception as e:
+        session.rollback()
+        duration_s = time.monotonic() - t_start
+        logger.error("cv_generate_failed", job_id=job_id, error=str(e))
+        LLM_GENERATION_COUNTER.labels(generation_task="tailored_cv_draft", outcome="api_error").inc()
+        JOB_THROUGHPUT.labels(job_type="cv_generate", status="failed").inc()
+        JOB_DURATION_SECONDS.labels(job_type="cv_generate").observe(duration_s)
+        try:
+            job = session.get(ProcessingJob, job_id)
+            if job is not None:
+                job.status = "failed"
+                job.last_error = str(e)
+                job.failed_at = datetime.now(timezone.utc)
+            draft = session.get(TailoredCvDraft, job.source_entity_id) if job is not None else None
+            if draft is not None:
+                draft.status = "failed"
+            session.commit()
+        except Exception as finalize_err:
+            logger.error(
+                "cv_generate_finalize_failed",
+                job_id=job_id, error=str(finalize_err),
+            )
+        raise
+    finally:
+        session.close()
 

@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.logging import get_logger
 from app.db.models import (
     CvFile,
     CvProfileVersion,
@@ -21,6 +22,8 @@ from app.db.models import (
     ProcessingJob,
     TrialSession,
 )
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -88,6 +91,15 @@ async def claim_trial_session(
 
     trial_session.claimed_by_user_id = user_id
     trial_session.claimed_at = datetime.now(timezone.utc)
+
+    logger.info(
+        "trial_claimed",
+        trial_session_id=trial_session_id,
+        user_id=user_id,
+        cv_files_reassigned=cv_files_result.rowcount,
+        job_posts_reassigned=job_posts_result.rowcount,
+        match_runs_reassigned=match_runs_result.rowcount,
+    )
 
     return ClaimTrialResult(
         cv_files_reassigned=cv_files_result.rowcount,

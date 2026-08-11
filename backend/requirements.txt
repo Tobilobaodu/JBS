@@ -24,6 +24,9 @@ redis==5.2.1
 # Document processing
 docling==2.14.0
 
+# LLM (Phase 3 — tailored CV generation)
+openai==2.53.0
+
 # File validation
 python-magic==0.4.27
 

@@ -42,3 +42,15 @@ STRUCTURAL_ANOMALY_COUNTER = Counter(
     "Structural anomalies detected during merge validation",
     ["anomaly_detected"],
 )
+
+LLM_TOKENS_COUNTER = Counter(
+    "llm_tokens_total",
+    "LLM tokens used, by generation task and token type",
+    ["generation_task", "token_type"],
+)
+
+LLM_GENERATION_COUNTER = Counter(
+    "llm_generations_total",
+    "LLM generation calls, by generation task and outcome",
+    ["generation_task", "outcome"],
+)

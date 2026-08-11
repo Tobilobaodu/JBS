@@ -482,6 +482,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProcessingJobRef' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: "Match not in a 'completed' state, or a draft already exists for this match (use /regenerate for subsequent versions instead of repeating this call)"
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /tailored-cvs/{draftId}:
     parameters:
@@ -516,6 +522,12 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProcessingJobRef' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Draft is in a 'pending' or 'archived' state and cannot be regenerated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /tailored-cvs/{draftId}/approve:
     parameters:
@@ -1118,7 +1130,7 @@ components:
         id: { type: string, format: uuid }
         matchRunId: { type: string, format: uuid }
         versionNumber: { type: integer }
-        status: { type: string, enum: [generated, user_edited, approved, archived] }
+        status: { type: string, enum: [pending, generated, user_edited, approved, archived, failed], description: "pending/failed added beyond the original four values — the draft row is created before its generation worker runs (same pattern as MatchRun.status), so it needs a not-generated-yet and a generation-failed state." }
         sections:
           type: array
           items: { $ref: '#/components/schemas/TailoredCvSection' }
@@ -1149,7 +1161,7 @@ components:
       properties:
         id: { type: string, format: uuid }
         cvId: { type: string, format: uuid }
-        cvProfileVersionId: { type: string, format: uuid }
+        cvProfileVersionId: { type: string, format: uuid, nullable: true, description: "Null if the check ran before CV parsing produced a structured profile — the check still runs on the four checks that only need canonical_text." }
         overallScore: { type: number, minimum: 0, maximum: 1 }
         contactInfoParseable: { type: boolean }
         checks:

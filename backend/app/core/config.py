@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     # LLM (Phase 3)
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
+    openai_request_timeout_seconds: int = 30
+
+    # Tailored CV generation (Sprint 3)
+    tailored_cv_evidence_overlap_threshold: float = 0.35
+    tailored_cv_max_generation_retries: int = 2
+    tailored_cv_max_experience_items: int = 6
 
     # JWT
     jwt_secret: str = ""
@@ -62,6 +68,7 @@ class Settings(BaseSettings):
     rate_limit_trial_session_requests: int = 5
     rate_limit_trial_session_window: int = 3600
     trial_session_ttl_hours: int = 48
+    trial_session_cleanup_interval_seconds: int = 3600
 
     # ClamAV
     clamd_host: str = "localhost"

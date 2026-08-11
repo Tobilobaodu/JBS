@@ -77,3 +77,25 @@ class CvRawTextResponse(BaseModel):
     model_config = {"from_attributes": True, "populate_by_name": True}
 
 
+
+
+class AtsCheckItem(BaseModel):
+    check_type: str = Field(alias="checkType")
+    passed: bool
+    severity: str
+    detail: str
+
+    model_config = {"populate_by_name": True}
+
+
+class AtsReadinessCheckResponse(BaseModel):
+    id: str
+    cv_id: str = Field(alias="cvId")
+    cv_profile_version_id: str | None = Field(None, alias="cvProfileVersionId")
+    overall_score: float = Field(alias="overallScore")
+    contact_info_parseable: bool | None = Field(None, alias="contactInfoParseable")
+    checks: list[AtsCheckItem]
+    created_at: datetime = Field(alias="createdAt")
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
+

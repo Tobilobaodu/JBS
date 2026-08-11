@@ -222,6 +222,91 @@ services:
       - default
       - no_internet
 
+  # Celery worker - tailored CV generation (Sprint 3)
+  worker_cv_generate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q cv_generate --concurrency=2 --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+    # Calls the OpenAI API — needs outbound internet, unlike the other
+    # CV-processing workers, which is exactly why it's not on the
+    # no_internet network like worker_cv_parse/worker_docling.
+    networks:
+      - default
+
+  # Celery worker - ATS structural-readiness check (Product Extension #1)
+  worker_ats_check:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q ats_check --concurrency=2 --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+    # Rules-based check over already-extracted text/profile data already in
+    # the DB — no external input, no outbound network need. Deny-all egress.
+    networks:
+      - default
+      - no_internet
+
+  # Celery worker - maintenance tasks (trial-session expiry cleanup)
+  worker_maintenance:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q maintenance --concurrency=1 --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+    # Only ever touches the DB via internal deletes on expired rows —
+    # no external input, no outbound network need. Deny-all egress.
+    networks:
+      - default
+      - no_internet
+
+  # Celery beat — schedules periodic tasks (see beat_schedule in
+  # app/workers/tasks.py). A pure scheduler process: publishes task
+  # messages to Redis on schedule, does not execute them itself — the
+  # relevant queue still needs a worker consuming it (e.g. worker_maintenance
+  # for the maintenance queue).
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks beat --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+
   # Prometheus — scrapes /metrics from the API
   prometheus:
     image: prom/prometheus:latest

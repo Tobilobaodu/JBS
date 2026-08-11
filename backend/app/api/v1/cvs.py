@@ -9,10 +9,15 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
-from app.core.rate_limit import check_upload_rate_limit, get_client_key
+from app.core.rate_limit import (
+    check_generation_rate_limit,
+    check_upload_rate_limit,
+    get_client_key,
+)
 from app.core.storage import generate_storage_key, upload_file
 from app.db import get_session
 from app.db.models import (
+    AtsReadinessCheck,
     AuditEvent,
     CvFile,
     CvExtractionPass,
@@ -23,6 +28,7 @@ from app.db.models import (
     User,
 )
 from app.schemas.cv import (
+    AtsReadinessCheckResponse,
     CvUploadAccepted,
     CvFileResponse,
     CvListResponse,
@@ -34,7 +40,7 @@ from app.schemas.cv import (
 from app.schemas.jobs import ProcessingJobResponse
 from app.services.file_validation import validate_file_type, validate_file_size
 from app.services.malware_scan import scan_file
-from app.services.orchestration import start_extraction_pipeline
+from app.services.orchestration import start_extraction_pipeline, create_processing_job
 from app.core.security import (
     RequestIdentity,
     get_current_user,
@@ -547,3 +553,104 @@ async def get_cv_parsed_profile(
         "structuredPayload": version.structured_payload,
         "createdAt": version.created_at.isoformat() if version.created_at else None,
     }
+
+# ──────────────────────────────────────────────────────────────────────
+# POST /cvs/{cv_id}/ats-check  — Product Extension #1
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.post("/cvs/{cv_id}/ats-check", status_code=202)
+async def run_ats_check_for_cv(
+    request: Request,
+    cv_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Run an ATS structural-readability check against this CV.
+
+    Authenticated only. Creates an async processing job (job_type
+    'ats_check') and returns 202 with the job_id immediately.
+
+    Rate-limited on the generation tier — same bucket as /matches, the
+    other rules-based (non-LLM) analysis job in this codebase.
+    """
+    client_key = get_client_key(request)
+    if not check_generation_rate_limit(client_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests. Please wait and try again.",
+        )
+
+    result = await session.execute(
+        select(CvFile).where(
+            CvFile.id == cv_id,
+            CvFile.user_id == current_user.id,
+            CvFile.deleted_at.is_(None),
+        )
+    )
+    cv_file = result.scalar_one_or_none()
+    if cv_file is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="CV not found.")
+
+    processing_job = await create_processing_job(
+        session=session,
+        job_type="ats_check",
+        source_entity_type="cv_file",
+        source_entity_id=cv_file.id,
+        user_id=current_user.id,
+    )
+
+    await session.commit()
+
+    from app.schemas.jobs import ProcessingJobRef
+    return ProcessingJobRef(job_id=processing_job.id, status="queued")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GET /cvs/{cv_id}/ats-check  — Product Extension #1
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.get("/cvs/{cv_id}/ats-check",
+            response_model=AtsReadinessCheckResponse)
+async def get_ats_check(
+    cv_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Retrieve the latest ATS readiness result for this CV.
+
+    Returns 404 if no check has been run yet.
+    """
+    result = await session.execute(
+        select(CvFile).where(
+            CvFile.id == cv_id,
+            CvFile.user_id == current_user.id,
+            CvFile.deleted_at.is_(None),
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="CV not found.")
+
+    check_result = await session.execute(
+        select(AtsReadinessCheck)
+        .where(AtsReadinessCheck.cv_file_id == cv_id)
+        .order_by(AtsReadinessCheck.created_at.desc())
+        .limit(1)
+    )
+    check = check_result.scalar_one_or_none()
+    if check is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="No ATS check result available yet.")
+
+    return AtsReadinessCheckResponse(
+        id=check.id,
+        cv_id=check.cv_file_id,
+        cv_profile_version_id=check.cv_profile_version_id,
+        overall_score=float(check.overall_score),
+        contact_info_parseable=check.contact_info_parseable,
+        checks=check.checks,
+        created_at=check.created_at,
+    )

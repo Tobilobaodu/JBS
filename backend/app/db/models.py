@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -769,3 +770,149 @@ class CoverLetterDraft(Base):
     approved_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Product Extension #1: ATS structural-readiness checks
+# ──────────────────────────────────────────────────────────────────────
+
+
+class AtsReadinessCheck(Base):
+    """ATS structural-readability score per 11-product-extensions.md §1.
+
+    One row per check run against a specific extraction result — distinct
+    from cv_raw_text.structural_validation_result, which compares Docling
+    against Textract; this table evaluates the *merged* result against
+    known ATS-parsing-hostile patterns.
+    """
+
+    __tablename__ = "ats_readiness_checks"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    cv_file_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("cv_files.id"), nullable=False,
+        index=True,
+    )
+    cv_profile_version_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("cv_profile_versions.id"),
+        nullable=True, index=True,
+    )
+    overall_score: Mapped[float] = mapped_column(
+        Numeric(3, 2), nullable=False,
+    )
+    checks: Mapped[list] = mapped_column(JSONB, nullable=False)
+    contact_info_parseable: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sprint 3: Tailored CV generation
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TailoredCvDraft(Base):
+    """AI-generated, job-tailored CV draft per 03-data-model.md.
+
+    user_id/trial_session_id are nullable with an exactly-one-owner CHECK,
+    same treatment as cv_files/job_posts/match_runs (Sprint 2) — generation
+    is trial-session-accessible, the free-tier value delivered before the
+    account wall.
+
+    status includes 'pending'/'failed' beyond the four documented in
+    05-openapi.yaml (generated/user_edited/approved/archived) — this row
+    is created before its worker runs (same create-entity-then-job pattern
+    as MatchRun), so it needs a "not generated yet" and a "generation
+    failed" state, exactly like MatchRun.status already does.
+    """
+
+    __tablename__ = "tailored_cv_drafts"
+    __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NOT NULL AND trial_session_id IS NULL) OR "
+            "(user_id IS NULL AND trial_session_id IS NOT NULL)",
+            name="ck_tailored_cv_drafts_exactly_one_owner",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=True, index=True
+    )
+    trial_session_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("trial_sessions.id"), nullable=True, index=True
+    )
+    match_run_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("match_runs.id"), nullable=False, index=True
+    )
+    version_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending", nullable=False, index=True
+    )  # pending, generated, user_edited, approved, archived, failed
+    content_json: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    render_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    validation_result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    improvement_checklist: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class TailoredCvSection(Base):
+    """One generated section of a TailoredCvDraft.
+
+    evidence_references is ARRAY(String), not JSONB — matching the actual
+    shipped convention for this shape (match_evidence_items.source_references,
+    cover_letter_drafts.evidence_references), not 03-data-model.md's literal
+    JSONB claim, which is wrong for both existing precedents too.
+
+    The non-empty CHECK constraint is new, stronger than what
+    03-data-model.md specifies (app-level validation only) — belt-and-
+    suspenders enforcement of the non-fabrication rule at the DB layer.
+    """
+
+    __tablename__ = "tailored_cv_sections"
+    __table_args__ = (
+        CheckConstraint(
+            "cardinality(evidence_references) > 0",
+            name="ck_tailored_cv_sections_evidence_nonempty",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    draft_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("tailored_cv_drafts.id"), nullable=False, index=True
+    )
+    section_type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # summary, experience, education, skills, certifications, projects
+    content_text: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_references: Mapped[list[str]] = mapped_column(
+        ARRAY(String), nullable=False
+    )
+    generation_task: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    model_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    validation_status: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )  # passed, warning, failed
+    order_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
