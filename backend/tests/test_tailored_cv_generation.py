@@ -16,6 +16,8 @@ from app.services.tailored_cv_generation import (
     SECTION_SUMMARY,
     SECTION_EXPERIENCE,
     SECTION_SKILLS,
+    SECTION_EDUCATION,
+    SECTION_PROJECTS,
 )
 
 
@@ -31,6 +33,23 @@ def _exp(id="exp1", title="Software Engineer", company="Acme Corp",
 
 def _skill(id="sk1", skill_name="Python"):
     return SimpleNamespace(id=id, skill_name=skill_name)
+
+
+def _edu(id="ed1", institution="MIT", degree="BSc", field="Computer Science", year=2019):
+    return SimpleNamespace(id=id, institution=institution, degree=degree, field=field, year=year)
+
+
+def _cert(id="cert1", name="AWS Certified Solutions Architect", issuer="Amazon", year=2022):
+    return SimpleNamespace(id=id, name=name, issuer=issuer, year=year)
+
+
+def _project(id="proj1", name="Finance Tracker", description="A budgeting app",
+             bullets=None, technologies=None):
+    return SimpleNamespace(
+        id=id, name=name, description=description,
+        bullets=bullets if bullets is not None else ["Reduced manual entry by 80%"],
+        technologies=technologies if technologies is not None else ["React", "Node"],
+    )
 
 
 def _evidence(support_level, requirement_text, requirement_type="required",
@@ -254,6 +273,156 @@ class TestGenerateDraftSections:
         )
         experience_sections = [s for s in outcome.sections if s.section_type == SECTION_EXPERIENCE]
         assert len(experience_sections) == 1
+
+
+class TestEducationSection:
+    """Direct tests of the product requirement: certifications/diplomas
+    count as the same class of checkable qualifications evidence as a
+    formal degree — a CV with a cert but no degree must not have its
+    education-type section omitted. Deterministic, no LLM call."""
+
+    def test_education_only_cv_produces_section(self):
+        client = FakeClient()
+        outcome = generate_draft_sections(
+            match_evidence_items=[],
+            experience_items=[], education_items=[_edu()], skill_items=[],
+            job_requirements=[], llm_client_override=client,
+        )
+        edu_sections = [s for s in outcome.sections if s.section_type == SECTION_EDUCATION]
+        assert len(edu_sections) == 1
+        assert edu_sections[0].model_id == "rules-based"
+        assert edu_sections[0].prompt_version is None
+        assert "BSc" in edu_sections[0].content_text
+
+    def test_certification_only_cv_still_produces_education_section(self):
+        """The direct test of the union gate: no formal degree, but a
+        certification exists — the education-type section must NOT be
+        omitted."""
+        client = FakeClient()
+        outcome = generate_draft_sections(
+            match_evidence_items=[],
+            experience_items=[], education_items=[], skill_items=[],
+            certification_items=[_cert()],
+            job_requirements=[], llm_client_override=client,
+        )
+        edu_sections = [s for s in outcome.sections if s.section_type == SECTION_EDUCATION]
+        assert len(edu_sections) == 1
+        assert "AWS Certified Solutions Architect" in edu_sections[0].content_text
+        assert len(client.chat.completions.calls) == 0, "education section must never call the LLM"
+
+    def test_both_empty_omits_section(self):
+        """Same silent-omission precedent as the skills section: no LLM
+        call was attempted, so nothing 'failed' — no issue is logged."""
+        client = FakeClient()
+        outcome = generate_draft_sections(
+            match_evidence_items=[],
+            experience_items=[], education_items=[], skill_items=[],
+            job_requirements=[], llm_client_override=client,
+        )
+        edu_sections = [s for s in outcome.sections if s.section_type == SECTION_EDUCATION]
+        assert edu_sections == []
+
+    def test_projects_present_but_no_education_or_certifications_still_omits(self):
+        """Direct regression test: projects must never satisfy the
+        education gate — the union is education + certifications only."""
+        client = FakeClient()
+        outcome = generate_draft_sections(
+            match_evidence_items=[],
+            experience_items=[], education_items=[], skill_items=[],
+            project_items=[_project()],
+            job_requirements=[], llm_client_override=client,
+        )
+        edu_sections = [s for s in outcome.sections if s.section_type == SECTION_EDUCATION]
+        assert edu_sections == []
+
+    def test_evidence_references_are_non_empty_when_present(self):
+        client = FakeClient()
+        outcome = generate_draft_sections(
+            match_evidence_items=[],
+            experience_items=[], education_items=[_edu()], skill_items=[],
+            certification_items=[_cert()],
+            job_requirements=[], llm_client_override=client,
+        )
+        edu_sections = [s for s in outcome.sections if s.section_type == SECTION_EDUCATION]
+        assert set(edu_sections[0].evidence_references) == {"ed1", "cert1"}
+
+
+class TestProjectsSection:
+
+    def test_faithful_project_rewrite_produces_section(self):
+        proj = _project()
+        evidence_items = [_evidence("supported", "React")]
+        client = FakeClient(content_text="Built a React and Node budgeting app.")
+
+        outcome = generate_draft_sections(
+            match_evidence_items=evidence_items,
+            experience_items=[], education_items=[], skill_items=[],
+            project_items=[proj],
+            job_requirements=["React"], llm_client_override=client,
+        )
+        proj_sections = [s for s in outcome.sections if s.section_type == SECTION_PROJECTS]
+        assert len(proj_sections) == 1
+        assert proj_sections[0].generation_task == "tailored_cv_project"
+        assert proj_sections[0].prompt_version == "v1"
+
+    def test_fabricated_project_claim_is_rejected_and_omitted(self):
+        proj = _project(bullets=["Reduced manual entry by 80%"], technologies=[])
+        evidence_items = [_evidence("partially_supported", "Finance Tracker")]
+        client = FakeClient(content_text="Reduced manual entry by 95% for 10,000 users.")
+
+        outcome = generate_draft_sections(
+            match_evidence_items=evidence_items,
+            experience_items=[], education_items=[], skill_items=[],
+            project_items=[proj],
+            job_requirements=["Finance Tracker"], llm_client_override=client,
+        )
+        proj_sections = [s for s in outcome.sections if s.section_type == SECTION_PROJECTS]
+        assert proj_sections == []
+        assert any("failed verification" in issue for issue in outcome.issues)
+
+    def test_no_projects_means_no_llm_call_for_projects(self):
+        client = FakeClient()
+        outcome = generate_draft_sections(
+            match_evidence_items=[],
+            experience_items=[], education_items=[], skill_items=[],
+            job_requirements=[], llm_client_override=client,
+        )
+        proj_sections = [s for s in outcome.sections if s.section_type == SECTION_PROJECTS]
+        assert proj_sections == []
+
+    def test_project_count_exceeding_cap_is_respected(self, monkeypatch):
+        from app.core.config import settings
+        monkeypatch.setattr(settings, "tailored_cv_max_project_items", 1)
+
+        proj1 = _project(id="p1", bullets=["Built API"], technologies=["Python"])
+        proj2 = _project(id="p2", name="CLI Tool", bullets=["Wrote a CLI"], technologies=["Python"])
+        evidence_items = [_evidence("supported", "Python")]
+        client = FakeClient(content_text="Built API using Python.")
+
+        outcome = generate_draft_sections(
+            match_evidence_items=evidence_items,
+            experience_items=[], education_items=[], skill_items=[],
+            project_items=[proj1, proj2],
+            job_requirements=["Python"], llm_client_override=client,
+        )
+        proj_sections = [s for s in outcome.sections if s.section_type == SECTION_PROJECTS]
+        assert len(proj_sections) == 1
+
+    def test_zero_relevance_project_is_still_attempted_not_excluded(self):
+        """Direct regression test of the 'ranking, not gating' divergence:
+        unlike experience, a project with zero job-match relevance must
+        still get a generation attempt."""
+        proj = _project(bullets=["Reduced manual entry by 80%"], technologies=[])
+        client = FakeClient(content_text="Reduced manual entry by 80%.")
+
+        outcome = generate_draft_sections(
+            match_evidence_items=[],  # nothing to rank relevance from
+            experience_items=[], education_items=[], skill_items=[],
+            project_items=[proj],
+            job_requirements=[], llm_client_override=client,
+        )
+        proj_sections = [s for s in outcome.sections if s.section_type == SECTION_PROJECTS]
+        assert len(proj_sections) == 1
 
 
 class TestAssembleAndRender:

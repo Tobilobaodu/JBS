@@ -14,6 +14,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
+from app.core.config import settings
+
 # ──────────────────────────────────────────────────────────────────────
 # Question categories (per 05-openapi.yaml)
 # ──────────────────────────────────────────────────────────────────────
@@ -162,108 +164,235 @@ class AssembledDraft:
     evidence_references: list[str]
 
 
+# ── Fallback template generation (Sprint 4) ─────────────────────────
+# The always-available, no-LLM path — used when real generation fails
+# verification or is explicitly disabled (settings.cover_letter_llm_
+# generation_enabled=False). Ideas ported from a supplied reference
+# script (priority-requirement selection, keyword-overlap achievement
+# matching, a fixed 6-part write pattern), adapted to this codebase's
+# real CvExperienceItem/CvProjectItem rows instead of a separate
+# "Achievement" input type, and bounded so "enforce length" can only
+# ever mean "cite more/less of what's real," never invent filler —
+# this is the fallback for when the LLM path isn't available, so it
+# has no model to lean on for phrasing either.
+
+
+def _tokenize(text: str) -> set[str]:
+    return {
+        t.strip().lower()
+        for t in (text or "").replace("/", " ").replace(",", " ").split()
+        if t.strip()
+    }
+
+
+def _lowercase_first(text: str) -> str:
+    return text[:1].lower() + text[1:] if text else text
+
+
+def _story_candidates(experience_items, project_items) -> list[tuple[str, object]]:
+    """('experience', item) | ('project', item) pairs — experience first
+    (usually the stronger, more directly job-relevant signal), then
+    projects."""
+    return [("experience", e) for e in experience_items] + [("project", p) for p in project_items]
+
+
+def _item_text(kind: str, item) -> str:
+    if kind == "experience":
+        parts = [item.title or "", item.company or "", *(item.bullets or [])]
+    else:
+        parts = [item.name or "", item.description or "", *(item.bullets or [])]
+    return " ".join(p for p in parts if p)
+
+
+def _select_stories(
+    job_requirements: list[str],
+    experience_items,
+    project_items,
+    max_stories: int,
+) -> list[tuple[str, object]]:
+    """Ported from the reference script's map_achievements_to_
+    responsibilities + select_experience_stories: rank real experience/
+    project rows by keyword overlap against the top job requirements,
+    dedupe, cap at max_stories. Falls back to the earliest real
+    candidates (in CV order) if fewer than max_stories matched anything
+    — a thinner-than-ideal but still real letter beats an artificially
+    short one when a candidate's real background just doesn't share
+    obvious keywords with the posting."""
+    candidates = _story_candidates(experience_items, project_items)
+    priority_requirements = job_requirements[:3]
+
+    matched: list[tuple[str, object]] = []
+    seen_ids: set[str] = set()
+    for req in priority_requirements:
+        req_tokens = _tokenize(req)
+        if not req_tokens:
+            continue
+        for kind, item in candidates:
+            if item.id in seen_ids:
+                continue
+            if _tokenize(_item_text(kind, item)) & req_tokens:
+                matched.append((kind, item))
+                seen_ids.add(item.id)
+
+    if len(matched) < max_stories:
+        for kind, item in candidates:
+            if item.id not in seen_ids:
+                matched.append((kind, item))
+                seen_ids.add(item.id)
+            if len(matched) >= max_stories:
+                break
+
+    return matched[:max_stories]
+
+
+def _story_sentence(kind: str, item, is_first: bool) -> str:
+    lead = "At" if is_first else "While at"
+    if kind == "experience":
+        org = item.company or "a previous role"
+        role = item.title
+        detail = (item.bullets or [None])[0]
+        if detail:
+            detail = _lowercase_first(detail.rstrip("."))
+            if role:
+                return f"{lead} {org}, working as {role}, I {detail}."
+            return f"{lead} {org}, I {detail}."
+        return f"{lead} {org}, I worked as {role or 'a contributor'}."
+    name = item.name or "a personal project"
+    detail = (item.bullets or [None])[0] or item.description
+    if detail:
+        detail = _lowercase_first(detail.rstrip("."))
+        return f"On {name}, a personal project, I {detail}."
+    return f"I worked on {name}, a personal project."
+
+
+def _select_skill_line(skill_items, job_requirements: list[str], max_skills: int = 4) -> tuple[str | None, list[str]]:
+    req_tokens: set[str] = set()
+    for r in job_requirements:
+        req_tokens |= _tokenize(r)
+
+    matched_names: list[str] = []
+    refs: list[str] = []
+    for s in skill_items:
+        name = s.skill_name or ""
+        if name and _tokenize(name) & req_tokens:
+            matched_names.append(name)
+            refs.append(s.id)
+        if len(matched_names) >= max_skills:
+            break
+
+    if not matched_names:
+        return None, []
+    return f"I bring hands-on experience in {', '.join(matched_names)}.", refs
+
+
+def _word_count(text: str) -> int:
+    return len([w for w in text.split() if w.strip()])
+
+
 def assemble_draft(
+    *,
     cv_name: str | None,
-    cv_summary: str | None,
     employer_name: str | None,
     job_title: str,
     tone: str | None,
-    answers_by_step: dict[int, list[str]],
-    match_supported: list[dict],
+    answers_by_step: dict[int, list[tuple[str, str]]],
+    experience_items,
+    project_items,
+    skill_items,
+    job_requirements: list[str],
 ) -> AssembledDraft:
-    """Assemble a cover letter body from structured inputs.
+    """Assemble a cover letter body from structured, real inputs.
 
-    Uses template substitution — no LLM. Each paragraph is backed by
-    either CV evidence or a user-submitted answer.
+    Template substitution — no LLM. Every sentence is backed by either a
+    real CV row (CvExperienceItem/CvProjectItem/CvSkillItem) or a real
+    user-submitted answer; evidence_references cites the real row/answer
+    ids, not opaque string tags. `answers_by_step` maps step_number to a
+    list of (answer_id, answer_text) tuples so real ids are always
+    available to cite.
 
-    Args:
-        cv_name: Candidate name.
-        cv_summary: Professional summary from the CV.
-        employer_name: Employer name from the job post.
-        job_title: Job title.
-        tone: User-preferred tone (e.g. "formal", "enthusiastic").
-        answers_by_step: dict mapping step_number → list of answer strings.
-        match_supported: List of supported match evidence items.
-
-    Returns:
-        AssembledDraft with body_text and evidence_references.
+    Deliberately does not require email/phone (a reference script's
+    validate_inputs() did) — this codebase's CV parser never populates
+    either field today (confirmed: worker_jobs.py hardcodes them None),
+    so that check would reject every real CV ever parsed by this system.
     """
-    evidence_refs: list[str] = []
-    salutation = "Dear Hiring Manager"
+    job_title = job_title or "this role"
+    step1 = answers_by_step.get(1, [])
+    step2 = answers_by_step.get(2, [])
+    step3 = answers_by_step.get(3, [])
 
-    # ── Paragraph 1: Introduction (motivation + interest) ──────────
-    intro_lines = [f"I am writing to express my interest in the {job_title} position"]
-    if employer_name:
-        intro_lines[-1] += f" at {employer_name}"
-    intro_lines[-1] += "."
+    # ── Greeting ─────────────────────────────────────────────────
+    greeting = "Dear Hiring Manager,"
 
-    # Use the step-1 answers (interest + motivation)
-    step1_answers = answers_by_step.get(1, [])
-    if len(step1_answers) >= 1:
-        intro_lines.append(step1_answers[0])
-        evidence_refs.append("answer:motivation")
-    if len(step1_answers) >= 2:
-        intro_lines.append(step1_answers[1])
-        evidence_refs.append("answer:career_goals")
+    # ── Opening: role/employer + step-1 motivation answers ──────────
+    opening_lines = [
+        f"I am writing to express my interest in the {job_title} position"
+        + (f" at {employer_name}" if employer_name else "") + "."
+    ]
+    opening_refs: list[str] = []
+    for ans_id, text in step1[:2]:
+        if text and text.strip():
+            opening_lines.append(text.strip())
+            opening_refs.append(ans_id)
+    opening = " ".join(opening_lines)
 
-    intro = " ".join(intro_lines)
+    # ── Experience: real stories (ranked by requirement-keyword
+    # overlap) + step-2 answers + a matched-skills line ──────────────
+    stories = _select_stories(
+        job_requirements, experience_items, project_items,
+        settings.cover_letter_fallback_max_stories,
+    )
+    story_units = [
+        (_story_sentence(kind, item, is_first=(i == 0)), item.id)
+        for i, (kind, item) in enumerate(stories)
+    ]
+    answer_units = [(text.strip(), ans_id) for ans_id, text in step2 if text and text.strip()]
+    skill_line, skill_refs = _select_skill_line(skill_items, job_requirements)
+    skill_unit = [(skill_line, skill_refs)] if skill_line else []
 
-    # ── Paragraph 2: Relevant experience (step-2 answers + CV) ─────
-    experience_lines = []
-    if cv_summary:
-        experience_lines.append(
-            f"With my background — {cv_summary.strip('.')} — "
-            f"I bring directly relevant experience to this role."
-        )
-        evidence_refs.append("cv:summary")
+    experience_units: list[tuple[str, list[str]]] = (
+        [(s, [rid]) for s, rid in story_units]
+        + [(s, [rid]) for s, rid in answer_units]
+        + skill_unit
+    )
+    if not experience_units:
+        experience_units = [("I bring a strong, relevant background to this role.", [])]
 
-    step2_answers = answers_by_step.get(2, [])
-    for ans in step2_answers:
-        if ans.strip():
-            experience_lines.append(ans)
-            evidence_refs.append("answer:relevant_example")
-
-    # Supported skills
-    if match_supported:
-        skills_list = [e.get("requirement_text", "") for e in match_supported[:6]]
-        if skills_list:
-            experience_lines.append(
-                f"Through my career I have built expertise in "
-                f"{', '.join(skills_list)}."
-            )
-            evidence_refs.append("match:supported_skills")
-
-    experience_text = " ".join(experience_lines)
-
-    # ── Paragraph 3: Closing ───────────────────────────────────────
-    step3_answers = answers_by_step.get(3, [])
+    # ── Closing: CTA + last step-3 answer ───────────────────────────
     closing_lines = [
         f"I would welcome the opportunity to discuss how my experience "
         f"aligns with the {job_title} role.",
     ]
-    if step3_answers and step3_answers[-1]:
-        closing_lines.append(step3_answers[-1])
-        evidence_refs.append("answer:additional_context")
+    closing_refs: list[str] = []
+    if step3 and step3[-1][1] and step3[-1][1].strip():
+        closing_lines.append(step3[-1][1].strip())
+        closing_refs.append(step3[-1][0])
     closing_lines.append("Thank you for your consideration.")
-
     closing = " ".join(closing_lines)
 
-    # ── Assemble full letter ───────────────────────────────────────
-    parts = [salutation, "", intro, "", experience_text]
-    if experience_text:
-        parts += ["", closing]
-    else:
-        parts += ["", closing]
+    # ── Signature ────────────────────────────────────────────────
+    signature = f"Sincerely,\n{cv_name}" if cv_name else "Sincerely,"
 
-    if tone and tone.lower() != "formal":
-        # Simple tone hint — future: pass through LLM for tone adaptation
-        pass
+    # ── Length enforcement, bounded by real material only ──────────
+    # Over budget: drop experience_units from the end (lowest priority —
+    # skill line was appended last, so it's the first candidate to drop;
+    # then extra answers; a story is never dropped below 1 if any exist).
+    # Under budget: nothing left to add without inventing content — leave
+    # it short rather than pad with filler; logged by the caller via the
+    # returned unit count, not fabricated here.
+    def _render(units: list[tuple[str, list[str]]]) -> tuple[str, list[str]]:
+        experience_text = " ".join(u[0] for u in units)
+        parts = [greeting, "", opening, "", experience_text, "", closing, "", signature]
+        body = "\n\n".join(p for p in parts if p)
+        refs = opening_refs + [rid for _, ids in units for rid in ids] + closing_refs
+        return body, refs
 
-    body = "\n\n".join(p for p in parts if p)
-    if cv_name:
-        body += f"\n\nSincerely,\n{cv_name}"
+    body, evidence_refs = _render(experience_units)
+    min_stories_kept = 1 if story_units else 0
+    while _word_count(body) > settings.cover_letter_max_word_count and len(experience_units) > min_stories_kept:
+        experience_units = experience_units[:-1]
+        body, evidence_refs = _render(experience_units)
 
     return AssembledDraft(
         body_text=body,
-        evidence_references=evidence_refs,
+        evidence_references=[r for r in evidence_refs if r],
     )

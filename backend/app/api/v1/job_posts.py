@@ -59,11 +59,11 @@ class JobPostAccepted(BaseModel):
 
 
 class JobPostProfileOut(BaseModel):
-    jobTitle: str | None = Field(None, alias="job_title")
+    job_title: str | None = Field(None, alias="jobTitle")
     employer: str | None = None
     location: str | None = None
-    requiredSkills: list[str] | None = Field(None, alias="required_skills")
-    preferredSkills: list[str] | None = Field(None, alias="preferred_skills")
+    required_skills: list[str] | None = Field(None, alias="requiredSkills")
+    preferred_skills: list[str] | None = Field(None, alias="preferredSkills")
     responsibilities: list[str] | None = None
     qualifications: list[str] | None = None
     keywords: list[str] | None = None
@@ -77,17 +77,18 @@ class JobPostProfileOut(BaseModel):
 
 class JobPostResponse(BaseModel):
     id: str
-    sourceType: str = Field(alias="source_type")
-    sourceUrl: str | None = Field(None, alias="source_url")
-    rawText: str = Field(alias="raw_text")
+    source_type: str = Field(alias="sourceType")
+    source_url: str | None = Field(None, alias="sourceUrl")
+    raw_text: str = Field(alias="rawText")
     status: str
-    errorMessage: str | None = Field(None, alias="error_message")
-    createdAt: str = Field(alias="created_at")
-    updatedAt: str = Field(alias="updated_at")
+    error_message: str | None = Field(None, alias="errorMessage")
+    created_at: str = Field(alias="createdAt")
+    updated_at: str = Field(alias="updatedAt")
     profile: JobPostProfileOut | None = None
 
     class Config:
         from_attributes = True
+        populate_by_name = True
         populate_by_name = True
 
 

@@ -569,6 +569,59 @@ class CvSkillItem(Base):
     source_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
+class CvCertificationItem(Base):
+    """Normalised certification/diploma rows — keyed off cv_profile_version_id.
+
+    Evaluated together with CvEducationItem when deciding whether the
+    tailored CV's education-type section has any evidence at all — a
+    certification without a formal degree still counts (see
+    tailored_cv_generation.py's combined education+certification gate).
+    """
+
+    __tablename__ = "cv_certification_items"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    cv_profile_version_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("cv_profile_versions.id"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    issuer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    source_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class CvProjectItem(Base):
+    """Normalised personal/portfolio project rows — keyed off
+    cv_profile_version_id. Deliberately kept as a distinct row_type from
+    EDUCATION/CERTIFICATION in evidence_binder.py — projects are general
+    technical evidence, never treated as a qualifications claim.
+    """
+
+    __tablename__ = "cv_project_items"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    cv_profile_version_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False),
+        ForeignKey("cv_profile_versions.id"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    technologies: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    bullets: Mapped[list[str] | None] = mapped_column(ARRAY(Text), nullable=True)
+    confidence: Mapped[float | None] = mapped_column(nullable=True)
+    source_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # CvProfileVersion extension: master CV lineage (product extension #4)
 # ──────────────────────────────────────────────────────────────────────
@@ -680,7 +733,11 @@ class CoverLetterWorkflow(Base):
     )
     status: Mapped[str] = mapped_column(
         String(50), default="awaiting_answers", nullable=False, index=True
-    )  # awaiting_answers, generating, draft_ready, approved, archived
+    )  # awaiting_answers, generating, draft_ready, approved, archived, generation_failed
+    # generation_failed added Sprint 4 — distinct from CoverLetterDraft's
+    # "failed" (a draft-level terminal state); this is workflow-level, so
+    # /regenerate has a state to recover from rather than a permanent
+    # dead end when generation genuinely fails.
     current_step: Mapped[int] = mapped_column(Integer, default=1)
     total_steps: Mapped[int] = mapped_column(Integer, default=3)
     question_set_version: Mapped[int] = mapped_column(Integer, default=1)
@@ -755,8 +812,14 @@ class CoverLetterDraft(Base):
     )
     version_number: Mapped[int] = mapped_column(Integer, default=1)
     status: Mapped[str] = mapped_column(
-        String(50), default="generated", nullable=False
-    )  # generated, user_edited, approved, archived
+        String(50), default="pending", nullable=False
+    )  # pending, generated, user_edited, approved, archived, failed
+    # pending/failed added Sprint 4 — the row is created before its
+    # worker runs (async generation, matching TailoredCvDraft's pattern),
+    # so "row exists, worker hasn't run yet" / "worker failed" both need
+    # a real value; no DB CHECK constraint exists on this column
+    # (confirmed against migration 005), so this is a documentation-only
+    # change, not a migration.
     body_text: Mapped[str] = mapped_column(Text, nullable=False)
     evidence_references: Mapped[list[str] | None] = mapped_column(
         ARRAY(String), nullable=True

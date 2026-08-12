@@ -4,8 +4,9 @@ Two jobs, both deterministic — no DB access, no LLM call, mirrors
 match_engine.py's pure-function style:
 
 1. bind_evidence_pool(): re-derives which real CvExperienceItem/
-   CvEducationItem/CvSkillItem rows actually back a supported/
-   partially_supported MatchEvidenceItem. Deliberately does NOT trust
+   CvEducationItem/CvSkillItem/CvCertificationItem/CvProjectItem rows
+   actually back a supported/partially_supported MatchEvidenceItem.
+   Deliberately does NOT trust
    MatchEvidenceItem.source_references — that field is populated for
    exactly one of five support-level branches in match_engine.py (the
    exact-skill-match case), and even then only with a "skill:<name>"
@@ -33,6 +34,9 @@ from dataclasses import dataclass
 EXPERIENCE = "experience"
 EDUCATION = "education"
 SKILL = "skill"
+CERTIFICATION = "certification"
+PROJECT = "project"
+ANSWER = "answer"
 
 # Support levels permitted to feed generation at all, per 03-data-model.md's
 # support-level table. unsupported/contradictory/unclear never reach the
@@ -42,7 +46,7 @@ _GENERATION_ELIGIBLE_SUPPORT_LEVELS = frozenset({"supported", "partially_support
 
 @dataclass
 class EvidenceCandidate:
-    row_type: str          # "experience" | "education" | "skill"
+    row_type: str          # "experience" | "education" | "skill" | "certification" | "project" | "answer"
     row_id: str
     searchable_text: str    # the row's own real content, lowercased comparison happens at match time
 
@@ -63,11 +67,50 @@ def _skill_candidate(item) -> EvidenceCandidate:
     return EvidenceCandidate(SKILL, item.id, item.skill_name or "")
 
 
-def build_candidate_pool(experience_items, education_items, skill_items) -> list[EvidenceCandidate]:
+def _certification_candidate(item) -> EvidenceCandidate:
+    parts = [item.name or "", item.issuer or ""]
+    return EvidenceCandidate(CERTIFICATION, item.id, " ".join(p for p in parts if p))
+
+
+def _project_candidate(item) -> EvidenceCandidate:
+    parts = [item.name or "", item.description or ""]
+    parts.extend(item.bullets or [])
+    parts.extend(item.technologies or [])
+    return EvidenceCandidate(PROJECT, item.id, " ".join(p for p in parts if p))
+
+
+def _answer_candidate(question_text: str, answer_item) -> EvidenceCandidate:
+    """Pairs the answer with its question text for grounding — a bare
+    answer like 'because I love their mission' has almost no token
+    overlap with anything on its own for verify_claim_against_evidence's
+    check; the question text gives real context for free."""
+    text = f"{question_text} — {answer_item.answer_text}" if question_text else (answer_item.answer_text or "")
+    return EvidenceCandidate(ANSWER, answer_item.id, text)
+
+
+def build_answer_candidates(questions_by_id: dict, answers: list) -> list[EvidenceCandidate]:
+    """Cover-letter-specific: a candidate's own Q&A answers, unconditionally
+    includable as real, citable evidence (unlike CV rows, these are never
+    relevance-filtered by the caller — each was purpose-written by the
+    user for this exact application)."""
+    return [
+        _answer_candidate(
+            getattr(questions_by_id.get(a.question_id), "question_text", ""), a,
+        )
+        for a in answers
+    ]
+
+
+def build_candidate_pool(
+    experience_items, education_items, skill_items,
+    certification_items=None, project_items=None,
+) -> list[EvidenceCandidate]:
     """Build the full candidate list from a CV profile version's child rows."""
     candidates = [_experience_candidate(e) for e in experience_items]
     candidates.extend(_education_candidate(e) for e in education_items)
     candidates.extend(_skill_candidate(s) for s in skill_items)
+    candidates.extend(_certification_candidate(c) for c in (certification_items or []))
+    candidates.extend(_project_candidate(p) for p in (project_items or []))
     return candidates
 
 
@@ -86,17 +129,20 @@ def _find_matches(item, all_candidates: list[EvidenceCandidate]) -> list[Evidenc
         if not cand_text:
             continue
 
-        if candidate.row_type == SKILL:
-            # Skills match on equality or containment either direction —
-            # mirrors match_engine's exact-match branch plus enough slack
-            # for "Docker" vs "Docker/Kubernetes"-style skill_name values.
+        if candidate.row_type in (SKILL, CERTIFICATION):
+            # Skills and certifications match on equality or containment
+            # either direction — mirrors match_engine's exact-match branch
+            # plus enough slack for "Docker" vs "Docker/Kubernetes"-style
+            # values. A credential's name matters as a whole, not as a
+            # fuzzy substring, so certifications get the same treatment
+            # as skills here, not the education/project fuzzy path.
             is_match = (
                 req_text == cand_text
                 or req_text in cand_text
                 or cand_text in req_text
             )
         else:
-            # Experience/education match on substring containment,
+            # Experience/education/project match on substring containment,
             # mirroring match_engine's fuzzy-substring branch.
             is_match = req_text in cand_text
 
@@ -130,21 +176,35 @@ def bind_evidence_pool(evidence_items, all_candidates: list[EvidenceCandidate]) 
     return pool
 
 
-def count_experience_relevance(evidence_items, all_candidates: list[EvidenceCandidate]) -> dict[str, int]:
-    """For each EXPERIENCE candidate, how many generation-eligible evidence
-    items' requirements matched it. Used by the generation orchestrator to
-    rank which experience items get their own generation call when there
-    are more eligible items than settings.tailored_cv_max_experience_items
-    allows — reuses the exact same matching logic as bind_evidence_pool,
-    not a separate heuristic."""
+def _count_relevance(
+    evidence_items, all_candidates: list[EvidenceCandidate], row_type: str,
+) -> dict[str, int]:
+    """For each candidate of one row_type, how many generation-eligible
+    evidence items' requirements matched it. Reuses the exact same
+    matching logic as bind_evidence_pool, not a separate heuristic."""
     counts: dict[str, int] = {}
     for item in evidence_items:
         if item.support_level not in _GENERATION_ELIGIBLE_SUPPORT_LEVELS:
             continue
         for candidate in _find_matches(item, all_candidates):
-            if candidate.row_type == EXPERIENCE:
+            if candidate.row_type == row_type:
                 counts[candidate.row_id] = counts.get(candidate.row_id, 0) + 1
     return counts
+
+
+def count_experience_relevance(evidence_items, all_candidates: list[EvidenceCandidate]) -> dict[str, int]:
+    """Used by the generation orchestrator to rank which experience items
+    get their own generation call when there are more eligible items than
+    settings.tailored_cv_max_experience_items allows."""
+    return _count_relevance(evidence_items, all_candidates, EXPERIENCE)
+
+
+def count_project_relevance(evidence_items, all_candidates: list[EvidenceCandidate]) -> dict[str, int]:
+    """Used by the generation orchestrator to rank project display order
+    when there are more projects than settings.tailored_cv_max_project_items
+    allows — ranks order only, never gates which projects are attempted
+    (unlike experience, a project with zero relevance is still generated)."""
+    return _count_relevance(evidence_items, all_candidates, PROJECT)
 
 
 # ── Verification ─────────────────────────────────────────────────────
@@ -189,6 +249,15 @@ def _extract_facts(text: str) -> list[str]:
     as a fact — "Google Cloud Platform" at a sentence start still yields
     "Cloud Platform" to check, but "Experienced Python" correctly yields
     nothing (one word left, below the multi-word threshold).
+
+    Caught during cover letter generation testing: "At Acme Corp I built..."
+    (no comma before "I") matches as a single 3-word span ("Acme Corp
+    I") because the capitalized first-person pronoun sits directly next
+    to a real proper noun with only whitespace between them — the
+    trailing "I" is never part of the entity and is always capitalized
+    regardless of position, so it's stripped from the end of any span
+    unconditionally (not just at sentence boundaries, unlike the
+    sentence-start case above, since "I" can appear anywhere).
     """
     facts = list(_NUMBER_RE.findall(text))
     for match in _PROPER_NOUN_RE.finditer(text):
@@ -200,6 +269,14 @@ def _extract_facts(text: str) -> list[str]:
             if len(remaining_words) < 2:
                 continue
             span_text = " ".join(remaining_words)
+
+        words = span_text.split()
+        if words and words[-1] == "I":
+            words = words[:-1]
+            if len(words) < 2:
+                continue
+            span_text = " ".join(words)
+
         facts.append(span_text)
     return facts
 

@@ -143,3 +143,15 @@ def enqueue_cv_generate(job_id: str) -> None:
     _send_task_with_retry(
         "app.workers.worker_jobs.process_cv_generate", job_id, "cv_generate",
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sprint 4: Cover letter generation
+# ──────────────────────────────────────────────────────────────────────
+
+
+def enqueue_cover_letter_generate(job_id: str) -> None:
+    """Dispatch a cover letter generation job to the cover_letter_generate queue."""
+    _send_task_with_retry(
+        "app.workers.worker_jobs.process_cover_letter_generate", job_id, "cover_letter_generate",
+    )

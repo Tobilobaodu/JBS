@@ -5,3 +5,9 @@ Test Cvs/
 
 # Temp files
 temp_metrics.txt
+
+# Raw ESCO source export (~760MB) — one-time input to
+# backend/scripts/ingest_esco.py, not a repo artifact. The generated
+# output (backend/app/data/skills_index.json, ~5MB) is what's committed.
+ESCO dataset*/
+ESCO dataset*.zip

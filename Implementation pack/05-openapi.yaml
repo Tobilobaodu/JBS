@@ -612,10 +612,22 @@ paths:
                       answerText: { type: string }
       responses:
         '202':
-          description: Answers accepted
+          description: >
+            Answers accepted. On the final step, the returned `status` is
+            `generating`, not `draft_ready` — draft generation now runs
+            asynchronously (Sprint 4, real LLM generation), not
+            synchronously inside this request. Poll
+            `GET /cover-letters/{workflowId}/draft` (returns 404 until the
+            draft is actually ready) rather than assuming readiness from
+            this response.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/CoverLetterWorkflow' }
+        '422':
+          description: A required question at the current step was left unanswered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /cover-letters/{workflowId}/draft:
     parameters:
@@ -1279,7 +1291,7 @@ components:
         jobPostId: { type: string, format: uuid }
         matchId: { type: string, format: uuid, nullable: true }
         currentStep: { type: integer }
-        status: { type: string, enum: [awaiting_answers, generating, draft_ready, approved] }
+        status: { type: string, enum: [awaiting_answers, generating, draft_ready, approved, archived, generation_failed] }
         questionSetVersion: { type: integer }
         createdAt: { type: string, format: date-time }
 
@@ -1299,14 +1311,14 @@ components:
         id: { type: string, format: uuid }
         workflowId: { type: string, format: uuid }
         versionNumber: { type: integer }
-        status: { type: string, enum: [generated, user_edited, approved, archived] }
+        status: { type: string, enum: [pending, generated, user_edited, approved, archived, failed] }
         bodyText: { type: string }
         evidenceReferences:
           type: array
           items: { type: string }
-          description: "Must be non-empty — same evidence-gate rule as tailored CV sections. May reference cv_experience_items.id or cover_letter_answers.id."
+          description: "Must be non-empty — same evidence-gate rule as tailored CV sections. May reference cv_experience_items.id, cv_project_items.id, cv_skill_items.id, or cover_letter_answers.id."
         promptVersion: { type: string, nullable: true, description: "Versioned prompt template used for this draft version." }
-        modelId: { type: string, nullable: true, description: "Model/provider that generated this draft version." }
+        modelId: { type: string, nullable: true, description: "Model/provider that generated this draft version — 'rules-based' when the deterministic fallback was used instead of a real LLM call." }
         createdAt: { type: string, format: date-time }
         approvedAt: { type: string, format: date-time, nullable: true }
       example:
@@ -1316,8 +1328,8 @@ components:
         status: generated
         bodyText: "Dear Hiring Manager,\n\nI am writing to express my interest in the Senior Software Engineer position at TechCorp..."
         evidenceReferences: ["exp_1", "answer_q2"]
-        promptVersion: "cover_letter_v2"
-        modelId: "selected-model"
+        promptVersion: "v1"
+        modelId: "gpt-4o-mini-2024-07-18"
         createdAt: "2026-08-03T10:50:00Z"
         approvedAt: null
 

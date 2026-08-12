@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Optional
 
+from app.extraction.skills_index import canonicalize
+
 # ──────────────────────────────────────────────────────────────────────
 # Support level definitions (per 03-data-model.md)
 # ──────────────────────────────────────────────────────────────────────
@@ -92,25 +94,58 @@ def run_match(
     # area.
     consistency = _build_consistency_map(cv_profile_payload)
 
-    # ── Required skills matching ───────────────────────────────────
+    # ── Requirements matching ────────────────────────────────────────
+    # Four possible sources, not just required/preferred skills — a job
+    # post's requirement content can land in any of them depending on how
+    # it was written, and restricting matching to just the first two means
+    # any post whose skills only show up as qualification bullets or
+    # keywords never produces a match at all. Each source carries its own
+    # weight (display type follows the weight: required-weight sources
+    # display as "required", preferred-weight as "preferred") and is
+    # deduped case-insensitively, keeping the higher-weight bucket on
+    # collision. Qualifications are capped so a long bullet list doesn't
+    # dominate the score; responsibilities are deliberately excluded —
+    # they're job duties, not CV-checkable claims.
     required_skills = job_post_profile.get("required_skills") or []
+    qualifications = (job_post_profile.get("qualifications") or [])[:15]
     preferred_skills = job_post_profile.get("preferred_skills") or []
+    keywords = job_post_profile.get("keywords") or []
 
-    # Combine all requirements for matching
-    all_requirements: list[tuple[str, str]] = []
-    for skill in required_skills:
-        all_requirements.append((skill, "required"))
-    for skill in preferred_skills:
-        all_requirements.append((skill, "preferred"))
+    all_requirements: list[tuple[str, str, float]] = []
+    seen_lower: set[str] = set()
+    for source, weight in (
+        (required_skills, 1.0),
+        (qualifications, 1.0),
+        (preferred_skills, 0.5),
+        (keywords, 0.5),
+    ):
+        display_type = "required" if weight == 1.0 else "preferred"
+        for skill in source:
+            key = skill.strip().lower()
+            if not key or key in seen_lower:
+                continue
+            seen_lower.add(key)
+            all_requirements.append((skill, display_type, weight))
 
     # Match each requirement against the CV
     cv_skills_lower = [s.lower() for s in cv_skills]
     cv_text_blob = _flatten_cv_text(cv_profile_payload).lower()
 
-    for req_text, req_type in all_requirements:
+    # Certifications are derived from the payload itself (not a separate
+    # query, unlike cv_skills) — both are written in the same
+    # process_cv_parse step, so they're always in sync, and this avoids
+    # touching process_match()'s call site for a new DB query.
+    cv_certifications = [
+        c.get("name") for c in (cv_profile_payload.get("certifications") or [])
+        if c.get("name")
+    ]
+    cv_certifications_lower = [c.lower() for c in cv_certifications]
+
+    for req_text, req_type, _weight in all_requirements:
         evidence = _match_requirement(
             req_text, req_type, cv_skills, cv_skills_lower,
             cv_text_blob, consistency, cv_profile_payload,
+            cv_certifications, cv_certifications_lower,
         )
         evidence_items.append(evidence)
 
@@ -135,7 +170,7 @@ def run_match(
             elif e.support_level == PARTIALLY_SUPPORTED:
                 weight += w * 0.5
             # unsupported, contradictory, unclear contribute 0
-        max_weight = sum(1.0 if t == "required" else 0.5 for _, t in all_requirements)
+        max_weight = sum(1.0 if t == "required" else 0.5 for _, t, _w in all_requirements)
         score = round(weight / max(max_weight, 1), 2)
 
     parts = [f"Matched {supported} of {total} requirements fully"]
@@ -334,11 +369,14 @@ def _match_requirement(
     cv_text_blob: str,
     consistency: dict[str, dict],
     cv_profile_payload: dict,
+    cv_certifications: list[str] | None = None,
+    cv_certifications_lower: list[str] | None = None,
 ) -> EvidenceItem:
     """Match a single requirement against CV evidence.
 
     Strategy (no LLM — heuristic for Phase 3 first pass):
       1. Exact skill name match in cv_skills → supported (0.85)
+      1.5. Exact certification-name match → supported (0.85)
       2. Skill appears as substring in CV text → partially_supported (0.6)
       3. If the requirement touches a contradictory area of the CV →
          contradictory (0.0) with warning referencing both sources
@@ -346,6 +384,8 @@ def _match_requirement(
          confidence → unclear (0.3)
       5. No match anywhere → unsupported (0.0)
     """
+    cv_certifications = cv_certifications or []
+    cv_certifications_lower = cv_certifications_lower or []
     req_lower = req_text.strip().lower()
 
     # ── Check consistency map (contradictory) ──────────────────────
@@ -371,6 +411,52 @@ def _match_requirement(
             confidence=0.85,
             source_references=[f"skill:{skill_name}"],
         )
+
+    # ── 1b. Exact certification-name match ──────────────────────────
+    # Mirrors the skill exact-match tier exactly: exact list-membership
+    # only, not substring. A near/fuzzy certification match still falls
+    # through to step 2's fuzzy-blob check (now that _flatten_cv_text
+    # includes certification text) and lands at partially_supported —
+    # exact gets supported, near stays partially_supported.
+    if req_lower in cv_certifications_lower:
+        idx = cv_certifications_lower.index(req_lower)
+        cert_name = cv_certifications[idx]
+        return EvidenceItem(
+            requirement_text=req_text,
+            requirement_type=req_type,
+            support_level=SUPPORTED,
+            confidence=0.85,
+            source_references=[f"certification:{cert_name}"],
+        )
+
+    # ── 1.5 ESCO synonym match ──────────────────────────────────────
+    # Same concept, different wording ("UX" vs "User Experience Design")
+    # — resolved via the ESCO taxonomy's canonical URI, not just literal
+    # string comparison. Only fires when req_text itself is a short,
+    # skill-phrase-like string (canonicalize() requires a whole-phrase
+    # match) — long qualification sentences fall through to step 2
+    # unchanged, since ESCO's controlled vocabulary rarely matches
+    # free-form prose verbatim (confirmed directly against real job-post
+    # text before wiring this in). Deliberately partially_supported, not
+    # supported — a synonym match is real but indirect evidence, and this
+    # codebase treats false positives as worse than missed matches.
+    req_esco = canonicalize(req_text)
+    if req_esco is not None:
+        for skill_name, skill_lower in zip(cv_skills, cv_skills_lower):
+            skill_esco = canonicalize(skill_name)
+            if skill_esco is not None and skill_esco.uri == req_esco.uri:
+                return EvidenceItem(
+                    requirement_text=req_text,
+                    requirement_type=req_type,
+                    support_level=PARTIALLY_SUPPORTED,
+                    confidence=0.7,
+                    source_references=[f"skill:{skill_name}"],
+                    suggestion=(
+                        f"Your CV lists '{skill_name}', which ESCO recognizes as "
+                        f"the same skill as '{req_text}' — consider using the "
+                        f"job posting's exact terminology for a stronger match."
+                    ),
+                )
 
     # ── 2. Fuzzy: skill appears as substring in CV text ────────────
     if req_lower in cv_text_blob:
@@ -477,5 +563,30 @@ def _flatten_cv_text(payload: dict) -> str:
     for cat in ("technical", "soft"):
         for s in skills.get(cat, []) or []:
             parts.append(str(s))
+
+    # Education/certifications: checkable qualifications evidence — a job's
+    # degree/certification requirement was structurally unable to match
+    # anything before this, since this function never read these keys.
+    for edu in payload.get("education", []) or []:
+        parts.append(str(edu.get("institution") or ""))
+        parts.append(str(edu.get("degree") or ""))
+        parts.append(str(edu.get("field") or ""))
+
+    for cert in payload.get("certifications", []) or []:
+        parts.append(str(cert.get("name") or ""))
+        parts.append(str(cert.get("issuer") or ""))
+
+    # Projects: general technical evidence, not a qualifications claim —
+    # kept out of the "education" categorization at the evidence_binder/
+    # tailored_cv_generation layer, but safe to flow into this shared
+    # matching blob since this function does undifferentiated substring
+    # matching and never needs to know which CV section a hit came from.
+    for proj in payload.get("projects", []) or []:
+        parts.append(str(proj.get("name") or ""))
+        parts.append(str(proj.get("description") or ""))
+        for bullet in proj.get("bullets", []) or []:
+            parts.append(str(bullet))
+        for tech in proj.get("technologies", []) or []:
+            parts.append(str(tech))
 
     return " ".join(parts)

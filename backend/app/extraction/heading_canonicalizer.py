@@ -47,6 +47,11 @@ _SECTION_MAPPINGS: list[Tuple[re.Pattern, str]] = [
     (re.compile(r"relevant\s+experience", re.I), WORK_EXPERIENCE),
     (re.compile(r"work\s+history", re.I), WORK_EXPERIENCE),
     (re.compile(r"career\s+summary", re.I), WORK_EXPERIENCE),
+    # Bare single-word heading — anchored to the FULL heading text (not a
+    # \b-bounded substring match) so "Experience & Projects" or "Voluntary
+    # Experience" don't accidentally qualify; only an exact standalone
+    # "Experience"/"Employment"/"Work" heading matches.
+    (re.compile(r"^(?:experience|employment|work)$", re.I), WORK_EXPERIENCE),
 
     # ── Education ─────────────────────────────────────────────────
     (re.compile(r"education", re.I), EDUCATION),

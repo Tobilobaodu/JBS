@@ -55,11 +55,11 @@ class MatchAccepted(BaseModel):
 
 class EvidenceItemOut(BaseModel):
     id: str
-    requirementText: str = Field(alias="requirement_text")
-    requirementType: str = Field(alias="requirement_type")
-    supportLevel: str = Field(alias="support_level")
+    requirement_text: str = Field(alias="requirementText")
+    requirement_type: str = Field(alias="requirementType")
+    support_level: str = Field(alias="supportLevel")
     confidence: float | None = None
-    sourceReferences: list[str] | None = Field(None, alias="source_references")
+    source_references: list[str] | None = Field(None, alias="sourceReferences")
     suggestion: str | None = None
     warning: str | None = None
 
@@ -72,15 +72,15 @@ class MatchResponse(BaseModel):
     id: str
     status: str
     score: float | None = None
-    supportedCount: int | None = Field(None, alias="supported_count")
-    partialCount: int | None = Field(None, alias="partial_count")
-    unsupportedCount: int | None = Field(None, alias="unsupported_count")
-    totalRequirements: int | None = Field(None, alias="total_requirements")
-    summaryAnalysis: str | None = Field(None, alias="summary_analysis")
-    evidenceItems: list[EvidenceItemOut] | None = Field(None, alias="evidence_items")
-    errorMessage: str | None = Field(None, alias="error_message")
-    createdAt: str = Field(alias="created_at")
-    completedAt: str | None = Field(None, alias="completed_at")
+    supported_count: int | None = Field(None, alias="supportedCount")
+    partial_count: int | None = Field(None, alias="partialCount")
+    unsupported_count: int | None = Field(None, alias="unsupportedCount")
+    total_requirements: int | None = Field(None, alias="totalRequirements")
+    summary_analysis: str | None = Field(None, alias="summaryAnalysis")
+    evidence_items: list[EvidenceItemOut] | None = Field(None, alias="evidenceItems")
+    error_message: str | None = Field(None, alias="errorMessage")
+    created_at: str = Field(alias="createdAt")
+    completed_at: str | None = Field(None, alias="completedAt")
 
     class Config:
         from_attributes = True

@@ -11,22 +11,29 @@ testable with a fake LLM client and no live DB.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.extraction import evidence_binder
 from app.prompts import tailored_cv_prompts as prompts
-from app.services.llm_client import LlmCallError, LlmSchemaValidationError, generate_structured
+from app.services.generation_core import (
+    GenerationOutcome,
+    SectionResult,
+    generate_and_verify_section,
+)
 
 logger = get_logger(__name__)
 
 SECTION_SUMMARY = "summary"
 SECTION_EXPERIENCE = "experience"
 SECTION_SKILLS = "skills"
+SECTION_EDUCATION = "education"
+SECTION_PROJECTS = "projects"
 
 SKILLS_GENERATION_TASK = "tailored_cv_skills"
 SKILLS_MODEL_ID = "rules-based"
+
+EDUCATION_GENERATION_TASK = "tailored_cv_education"
+EDUCATION_MODEL_ID = "rules-based"
 
 # Every support level except "supported" — surfaced via the improvement
 # checklist instead of generation. Includes partially_supported (usable
@@ -48,136 +55,6 @@ _SUGGESTION_TEMPLATES = {
     "unclear": "The evidence for '{req}' extracted with low confidence. Check the formatting of that section of your CV, or reprocess it.",
     "partially_supported": "Your CV touches on '{req}' but doesn't fully demonstrate it. Consider adding more specific detail if you have it.",
 }
-
-
-@dataclass
-class SectionResult:
-    section_type: str
-    content_text: str
-    evidence_references: list[str]
-    generation_task: str
-    prompt_version: str | None
-    model_id: str | None
-    validation_status: str
-    order_index: int
-
-
-@dataclass
-class GenerationOutcome:
-    sections: list[SectionResult] = field(default_factory=list)
-    issues: list[str] = field(default_factory=list)
-    total_prompt_tokens: int = 0
-    total_completion_tokens: int = 0
-
-
-def _generate_and_verify_section(
-    *,
-    section_type: str,
-    system_prompt: str,
-    generation_task: str,
-    prompt_version: str,
-    schema: dict,
-    schema_name: str,
-    candidates: list[evidence_binder.EvidenceCandidate],
-    job_requirements: list[str],
-    instructions: str | None,
-    order_index: int,
-    outcome: GenerationOutcome,
-    llm_client_override=None,
-) -> SectionResult | None:
-    """One generation task end to end: build the prompt, call the model,
-    verify the result against the real evidence it cited, retry once with
-    the specific failure appended on rejection, and omit (return None,
-    record an issue) if it still fails. Never returns unverified content —
-    'omit, don't fabricate' is enforced here, structurally, not by
-    convention.
-    """
-    if not candidates:
-        outcome.issues.append(f"{section_type}: no evidence available, section omitted")
-        return None
-
-    evidence_pool_text = prompts.format_evidence_pool(candidates)
-    base_payload = prompts.build_user_payload(
-        evidence_pool_text=evidence_pool_text,
-        job_requirements=job_requirements,
-        instructions=instructions,
-    )
-
-    correction: str | None = None
-    max_attempts = max(1, settings.tailored_cv_max_generation_retries)
-    for attempt in range(max_attempts):
-        payload = base_payload
-        if correction:
-            payload = (
-                f"{base_payload}\n\nYour previous attempt was rejected: {correction}\n"
-                f"Try again, using only the evidence pool above."
-            )
-
-        try:
-            result = generate_structured(
-                system_prompt=system_prompt,
-                user_payload=payload,
-                json_schema=schema,
-                schema_name=schema_name,
-                client=llm_client_override,
-            )
-        except (LlmCallError, LlmSchemaValidationError) as e:
-            correction = str(e)
-            logger.warning(
-                "tailored_cv_generation_call_failed",
-                section_type=section_type, attempt=attempt, error=str(e),
-            )
-            continue
-
-        outcome.total_prompt_tokens += result.prompt_tokens
-        outcome.total_completion_tokens += result.completion_tokens
-
-        content_text = (result.data.get("contentText") or "").strip()
-        evidence_indexes = result.data.get("evidenceIndexes")
-
-        if not content_text or not isinstance(evidence_indexes, list) or not evidence_indexes:
-            correction = (
-                "contentText was empty or evidenceIndexes was empty — every "
-                "generated section must cite at least one evidence index."
-            )
-            continue
-
-        cited_candidates = [
-            candidates[i] for i in evidence_indexes
-            if isinstance(i, int) and 0 <= i < len(candidates)
-        ]
-        if not cited_candidates:
-            correction = (
-                "evidenceIndexes did not reference any valid index from the "
-                "evidence pool you were given."
-            )
-            continue
-
-        verification = evidence_binder.verify_claim_against_evidence(
-            content_text,
-            [c.searchable_text for c in cited_candidates],
-            settings.tailored_cv_evidence_overlap_threshold,
-        )
-        if not verification.passed:
-            correction = verification.reason
-            continue
-
-        return SectionResult(
-            section_type=section_type,
-            content_text=content_text,
-            evidence_references=[c.row_id for c in cited_candidates],
-            generation_task=generation_task,
-            prompt_version=prompt_version,
-            model_id=result.model,
-            validation_status="passed",
-            order_index=order_index,
-        )
-
-    outcome.issues.append(
-        f"{section_type}: failed verification after {max_attempts} attempt(s) "
-        f"({correction}), section omitted"
-    )
-    return None
 
 
 def _generate_skills_section(
@@ -205,31 +82,94 @@ def _generate_skills_section(
     )
 
 
+def _format_education_line(item) -> str:
+    degree_field = ", ".join(p for p in [item.degree, item.field] if p)
+    tail_parts = [item.institution, f"({item.year})" if item.year else None]
+    tail = " ".join(p for p in tail_parts if p)
+    if degree_field and tail:
+        return f"{degree_field} — {tail}"
+    return degree_field or tail or ""
+
+
+def _format_certification_line(item) -> str:
+    parts = [item.name or ""]
+    if item.issuer:
+        parts.append(f"— {item.issuer}")
+    if item.year:
+        parts.append(f"({item.year})")
+    return " ".join(p for p in parts if p)
+
+
+def _generate_education_section(
+    *, education_items, certification_items, order_index: int,
+) -> SectionResult | None:
+    """Deterministic, no LLM call — a factual listing, not a claim needing
+    verification or creative rewriting, same reasoning as the skills
+    section. Built from the raw, unfiltered CV rows (not job-match-
+    relevance-filtered) — a real degree shouldn't disappear from a
+    tailored CV just because this particular posting didn't ask for one.
+
+    Certifications/diplomas are evaluated together with formal education
+    as one combined gate: omit only if BOTH lists are empty, so a
+    certification-only CV (no formal degree) still gets an education-type
+    section — the direct implementation of the product requirement that
+    certifications count as checkable qualifications evidence.
+    """
+    if not education_items and not certification_items:
+        return None
+
+    lines = [_format_education_line(e) for e in education_items]
+    lines.extend(_format_certification_line(c) for c in certification_items)
+    content_text = "\n".join(line for line in lines if line)
+
+    evidence_references = [e.id for e in education_items] + [c.id for c in certification_items]
+
+    return SectionResult(
+        section_type=SECTION_EDUCATION,
+        content_text=content_text,
+        evidence_references=evidence_references,
+        generation_task=EDUCATION_GENERATION_TASK,
+        prompt_version=None,
+        model_id=EDUCATION_MODEL_ID,
+        validation_status="passed",
+        order_index=order_index,
+    )
+
+
 def generate_draft_sections(
     *,
     match_evidence_items: list,
     experience_items: list,
     education_items: list,
     skill_items: list,
+    certification_items: list = (),
+    project_items: list = (),
     job_requirements: list[str],
     instructions: str | None = None,
     llm_client_override=None,
 ) -> GenerationOutcome:
-    """Generates every section of a tailored CV draft. education/
-    certifications/projects sections are never attempted — there's no
-    populated evidence source for them in this codebase today
-    (CvEducationItem rows are never inserted anywhere; no certification/
-    project tables exist at all) — omitting what has no evidence is
-    correct non-fabrication behavior, not a gap in this function.
+    """Generates every section of a tailored CV draft.
+
+    Section order: Summary → Education → Experience → Projects → Skills
+    (conventional CV layout). Education is deterministic (factual
+    listing); Projects are LLM-rewritten one call per project, mirroring
+    the experience-bullet loop's per-item evidence scoping and
+    verification. A project with zero job-match relevance is still
+    attempted (relevance only ranks display order, never gates inclusion,
+    unlike experience) — "if projects exist, give them a section" has no
+    "only if relevant to this job" qualifier.
     """
     outcome = GenerationOutcome()
     order_index = 0
 
-    all_candidates = evidence_binder.build_candidate_pool(experience_items, education_items, skill_items)
+    all_candidates = evidence_binder.build_candidate_pool(
+        experience_items, education_items, skill_items,
+        certification_items=certification_items, project_items=project_items,
+    )
     candidates_by_id = {c.row_id: c for c in all_candidates}
     full_pool = evidence_binder.bind_evidence_pool(match_evidence_items, all_candidates)
 
-    summary = _generate_and_verify_section(
+    summary = generate_and_verify_section(
         section_type=SECTION_SUMMARY,
         system_prompt=prompts.TAILORED_CV_SUMMARY_SYSTEM_PROMPT,
         generation_task=prompts.SUMMARY_GENERATION_TASK,
@@ -237,14 +177,26 @@ def generate_draft_sections(
         schema=prompts.SUMMARY_JSON_SCHEMA,
         schema_name="tailored_cv_summary",
         candidates=full_pool,
-        job_requirements=job_requirements,
-        instructions=instructions,
+        user_payload=prompts.build_user_payload(
+            evidence_pool_text=prompts.format_evidence_pool(full_pool),
+            job_requirements=job_requirements,
+            instructions=instructions,
+        ),
         order_index=order_index,
         outcome=outcome,
         llm_client_override=llm_client_override,
     )
     if summary:
         outcome.sections.append(summary)
+        order_index += 1
+
+    education_section = _generate_education_section(
+        education_items=education_items,
+        certification_items=certification_items,
+        order_index=order_index,
+    )
+    if education_section:
+        outcome.sections.append(education_section)
         order_index += 1
 
     relevance = evidence_binder.count_experience_relevance(match_evidence_items, all_candidates)
@@ -267,7 +219,7 @@ def generate_draft_sections(
         ]
         item_candidates = [exp_candidate] + related_skills
 
-        section = _generate_and_verify_section(
+        section = generate_and_verify_section(
             section_type=SECTION_EXPERIENCE,
             system_prompt=prompts.TAILORED_CV_EXPERIENCE_BULLET_SYSTEM_PROMPT,
             generation_task=prompts.EXPERIENCE_BULLET_GENERATION_TASK,
@@ -275,8 +227,56 @@ def generate_draft_sections(
             schema=prompts.EXPERIENCE_BULLET_JSON_SCHEMA,
             schema_name="tailored_cv_experience_bullet",
             candidates=item_candidates,
-            job_requirements=job_requirements,
-            instructions=instructions,
+            user_payload=prompts.build_user_payload(
+                evidence_pool_text=prompts.format_evidence_pool(item_candidates),
+                job_requirements=job_requirements,
+                instructions=instructions,
+            ),
+            order_index=order_index,
+            outcome=outcome,
+            llm_client_override=llm_client_override,
+        )
+        if section:
+            outcome.sections.append(section)
+            order_index += 1
+
+    # Projects: relevance ranks display order when there are more projects
+    # than the cap, but a zero-relevance project is still attempted rather
+    # than excluded (unlike experience) — see the docstring above.
+    project_relevance = evidence_binder.count_project_relevance(match_evidence_items, all_candidates)
+    ranked_project_ids = sorted(project_relevance, key=lambda rid: project_relevance[rid], reverse=True)
+    remaining_project_ids = [p.id for p in project_items if p.id not in ranked_project_ids]
+    ranked_project_ids = (ranked_project_ids + remaining_project_ids)[: settings.tailored_cv_max_project_items]
+
+    for proj_id in ranked_project_ids:
+        proj_candidate = candidates_by_id.get(proj_id)
+        if proj_candidate is None:
+            continue
+
+        proj_item = next((p for p in project_items if p.id == proj_id), None)
+        related_skill_names = {
+            t.strip().lower() for t in (proj_item.technologies or [])
+        } if proj_item else set()
+        related_skills = [
+            c for c in all_candidates
+            if c.row_type == evidence_binder.SKILL
+            and c.searchable_text.strip().lower() in related_skill_names
+        ]
+        item_candidates = [proj_candidate] + related_skills
+
+        section = generate_and_verify_section(
+            section_type=SECTION_PROJECTS,
+            system_prompt=prompts.TAILORED_CV_PROJECT_SYSTEM_PROMPT,
+            generation_task=prompts.PROJECT_GENERATION_TASK,
+            prompt_version=prompts.PROJECT_PROMPT_VERSION,
+            schema=prompts.PROJECT_JSON_SCHEMA,
+            schema_name="tailored_cv_project",
+            candidates=item_candidates,
+            user_payload=prompts.build_user_payload(
+                evidence_pool_text=prompts.format_evidence_pool(item_candidates),
+                job_requirements=job_requirements,
+                instructions=instructions,
+            ),
             order_index=order_index,
             outcome=outcome,
             llm_client_override=llm_client_override,

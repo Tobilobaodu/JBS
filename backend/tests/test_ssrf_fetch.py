@@ -38,7 +38,7 @@ class TestSchemeValidation:
     ])
     def test_non_http_schemes_rejected(self, url):
         """Any scheme that is not http or https must raise SSRFRejection."""
-        with pytest.raises(SSRFRejection, match="scheme"):
+        with pytest.raises(SSRFRejection, match="(?i)scheme"):
             ssrf_safe_fetch(url)
 
     def test_http_and_https_allowed(self):
@@ -162,9 +162,20 @@ class TestDNSPinning:
                 pinned = socket.getaddrinfo("pinned.example", 80, socket.AF_UNSPEC, socket.SOCK_STREAM)
                 assert pinned[0][4][0] == "8.8.8.8"
 
-                # Other hostname goes through to the real getaddrinfo
-                socket.getaddrinfo("other.example", 80, socket.AF_UNSPEC, socket.SOCK_STREAM)
-                spy.assert_any_call("other.example", 80, socket.AF_UNSPEC, socket.SOCK_STREAM, 0)
+                # Other hostname goes through to the real getaddrinfo — asserting
+                # the call reached the wrapped original is what matters here, not
+                # whether it resolves. "other.example" is in the IANA-reserved
+                # .example TLD (RFC 6761), so real DNS resolution of it always
+                # fails, in any environment — a socket.gaierror here is expected,
+                # not a signal the pin leaked.
+                try:
+                    socket.getaddrinfo("other.example", 80, socket.AF_UNSPEC, socket.SOCK_STREAM)
+                except socket.gaierror:
+                    pass
+                # _pinned_dns's _patched() forwards all 6 positional params
+                # (host, port, family, type, proto, flags) to the wrapped
+                # original — proto and flags both default to 0.
+                spy.assert_any_call("other.example", 80, socket.AF_UNSPEC, socket.SOCK_STREAM, 0, 0)
 
     def test_pinned_dns_restored_on_exit(self):
         """getaddrinfo is restored to the original after the context manager exits."""

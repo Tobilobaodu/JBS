@@ -12,9 +12,14 @@ from app.extraction.evidence_binder import (
     EXPERIENCE,
     EDUCATION,
     SKILL,
+    CERTIFICATION,
+    PROJECT,
+    ANSWER,
     build_candidate_pool,
+    build_answer_candidates,
     bind_evidence_pool,
     count_experience_relevance,
+    count_project_relevance,
     verify_claim_against_evidence,
 )
 
@@ -41,6 +46,28 @@ def _skill(id="sk1", skill_name="Python"):
 
 def _edu(id="ed1", institution="MIT", degree="BSc", field="Computer Science"):
     return SimpleNamespace(id=id, institution=institution, degree=degree, field=field)
+
+
+def _cert(id="cert1", name="AWS Certified Solutions Architect", issuer="Amazon"):
+    return SimpleNamespace(id=id, name=name, issuer=issuer)
+
+
+def _project(id="proj1", name="Finance Tracker", description="A budgeting app",
+             bullets=_UNSET, technologies=_UNSET):
+    if bullets is _UNSET:
+        bullets = ["Reduced manual entry by 80%"]
+    if technologies is _UNSET:
+        technologies = ["React", "Node"]
+    return SimpleNamespace(id=id, name=name, description=description,
+                            bullets=bullets, technologies=technologies)
+
+
+def _answer(id="ans1", question_id="q1", answer_text="I love the mission."):
+    return SimpleNamespace(id=id, question_id=question_id, answer_text=answer_text)
+
+
+def _question(question_text="Why this role?"):
+    return SimpleNamespace(question_text=question_text)
 
 
 def _evidence(support_level, requirement_text, requirement_type="required",
@@ -75,6 +102,68 @@ class TestBuildCandidatePool:
         exp = SimpleNamespace(id="e1", title=None, company=None, bullets=None, technologies=None)
         pool = build_candidate_pool([exp], [], [])
         assert pool[0].searchable_text == ""
+
+    def test_certification_and_project_items_are_pooled(self):
+        """Additive-only extension: existing 3-positional-arg call sites
+        (every other test in this class) keep working unchanged — the new
+        params are keyword-only with a None default."""
+        pool = build_candidate_pool(
+            [], [], [],
+            certification_items=[_cert()], project_items=[_project()],
+        )
+        assert len(pool) == 2
+        types = {c.row_type for c in pool}
+        assert types == {CERTIFICATION, PROJECT}
+
+    def test_certification_searchable_text_includes_issuer(self):
+        pool = build_candidate_pool([], [], [], certification_items=[_cert(name="CKA", issuer="CNCF")])
+        assert pool[0].searchable_text == "CKA CNCF"
+
+    def test_project_searchable_text_includes_bullets_and_technologies(self):
+        pool = build_candidate_pool(
+            [], [], [],
+            project_items=[_project(bullets=["Built a REST API"], technologies=["FastAPI"])],
+        )
+        assert "Built a REST API" in pool[0].searchable_text
+        assert "FastAPI" in pool[0].searchable_text
+
+    def test_omitting_new_params_defaults_to_empty(self):
+        pool = build_candidate_pool([_exp()], [_edu()], [_skill()])
+        assert len(pool) == 3
+
+
+class TestBuildAnswerCandidates:
+    """Cover-letter-specific (Sprint 4): a candidate's own Q&A answers as
+    real, citable evidence, unconditionally includable (never relevance-
+    filtered the way CV rows are)."""
+
+    def test_pairs_answer_with_question_text(self):
+        candidates = build_answer_candidates(
+            {"q1": _question("Why are you interested in this role?")},
+            [_answer(id="a1", question_id="q1", answer_text="I love the mission.")],
+        )
+        assert len(candidates) == 1
+        assert candidates[0].row_type == ANSWER
+        assert candidates[0].row_id == "a1"
+        assert "Why are you interested in this role?" in candidates[0].searchable_text
+        assert "I love the mission." in candidates[0].searchable_text
+
+    def test_missing_question_does_not_crash(self):
+        """An answer whose question_id doesn't resolve (shouldn't happen
+        in practice, but never guess/crash) still yields a candidate,
+        just without question-text pairing."""
+        candidates = build_answer_candidates(
+            {}, [_answer(id="a1", question_id="missing", answer_text="Some answer.")],
+        )
+        assert len(candidates) == 1
+        assert candidates[0].searchable_text == "Some answer."
+
+    def test_multiple_answers_each_become_a_candidate(self):
+        candidates = build_answer_candidates(
+            {"q1": _question("Q1?"), "q2": _question("Q2?")},
+            [_answer(id="a1", question_id="q1"), _answer(id="a2", question_id="q2")],
+        )
+        assert {c.row_id for c in candidates} == {"a1", "a2"}
 
 
 class TestBindEvidencePool:
@@ -137,6 +226,25 @@ class TestBindEvidencePool:
         items = [_evidence("supported", "")]
         assert bind_evidence_pool(items, pool) == []
 
+    def test_certification_matches_via_exact_containment_like_skill(self):
+        """Certifications get the same equality/containment treatment as
+        skills (a credential's name matters as a whole), not the
+        education/project fuzzy-substring path."""
+        pool = build_candidate_pool(
+            [], [], [], certification_items=[_cert(id="c1", name="AWS Certified Solutions Architect")],
+        )
+        items = [_evidence("supported", "AWS Certified Solutions Architect")]
+        bound = bind_evidence_pool(items, pool)
+        assert [c.row_id for c in bound] == ["c1"]
+
+    def test_project_matches_via_substring_containment(self):
+        pool = build_candidate_pool(
+            [], [], [], project_items=[_project(id="p1", description="A budgeting app using React")],
+        )
+        items = [_evidence("partially_supported", "React")]
+        bound = bind_evidence_pool(items, pool)
+        assert [c.row_id for c in bound] == ["p1"]
+
 
 class TestCountExperienceRelevance:
 
@@ -157,6 +265,26 @@ class TestCountExperienceRelevance:
         pool = build_candidate_pool([_exp(id="exp1")], [], [])
         items = [_evidence("unsupported", "Software Engineer")]
         assert count_experience_relevance(items, pool) == {}
+
+
+class TestCountProjectRelevance:
+
+    def test_ranks_more_referenced_project_higher(self):
+        proj1 = _project(id="p1", description="Built a React app", technologies=["React"])
+        proj2 = _project(id="p2", name="CLI Tool", description="A CLI utility", technologies=[])
+        pool = build_candidate_pool([], [], [], project_items=[proj1, proj2])
+        items = [
+            _evidence("supported", "React"),
+            _evidence("partially_supported", "Built a React app"),
+        ]
+        counts = count_project_relevance(items, pool)
+        assert counts == {"p1": 2}
+        assert "p2" not in counts
+
+    def test_ignores_ineligible_support_levels(self):
+        pool = build_candidate_pool([], [], [], project_items=[_project(id="p1")])
+        items = [_evidence("unsupported", "Finance Tracker")]
+        assert count_project_relevance(items, pool) == {}
 
 
 class TestVerifyClaimAgainstEvidence:
@@ -228,3 +356,31 @@ class TestVerifyClaimAgainstEvidence:
         )
         assert not result.passed
         assert "$50K" in result.unsupported_facts
+
+    def test_proper_noun_followed_by_capital_i_is_not_a_false_positive(self):
+        """Direct regression test for a bug found during cover letter
+        generation testing: 'At Acme Corp I built...' (no comma before
+        'I') matched _PROPER_NOUN_RE as a single 3-word span ('Acme Corp
+        I') since the capitalized first-person pronoun sits directly next
+        to a real proper noun — the resulting 'fact' then failed
+        verification even though 'Acme Corp' alone is genuinely grounded."""
+        result = verify_claim_against_evidence(
+            "At Acme Corp I built REST APIs using Python.",
+            ["Acme Corp Software Engineer Built REST APIs using Python."],
+            overlap_threshold=0.3,
+        )
+        assert result.passed
+
+    def test_trailing_capital_i_alone_still_yields_no_fact_below_threshold(self):
+        """Stripping a trailing 'I' from a 2-word span ('Acme I') must
+        drop below the multi-word threshold and be excluded entirely,
+        matching the existing sentence-start-trim precedent."""
+        result = verify_claim_against_evidence(
+            "Acme I worked hard.",
+            ["Nothing relevant here at all whatsoever really."],
+            overlap_threshold=0.0,
+        )
+        # No fact should be raised for "Acme" alone (dropped below the
+        # 2-word threshold once "I" is stripped) — only the overlap
+        # floor (deliberately set to 0.0 here) determines the outcome.
+        assert result.unsupported_facts is None or "Acme I" not in (result.unsupported_facts or [])

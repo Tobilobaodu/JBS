@@ -14,22 +14,22 @@ class StartWorkflowRequest(BaseModel):
 
 class CoverLetterWorkflowResponse(BaseModel):
     id: str
-    cvId: str = Field(alias="cvId")
-    jobPostId: str = Field(alias="jobPostId")
-    matchId: str | None = Field(None, alias="matchId")
-    currentStep: int = Field(alias="current_step")
+    cv_id: str = Field(alias="cvId")
+    job_post_id: str = Field(alias="jobPostId")
+    match_id: str | None = Field(None, alias="matchId")
+    current_step: int = Field(alias="currentStep")
     status: str
-    questionSetVersion: int = Field(alias="question_set_version")
-    createdAt: datetime = Field(alias="created_at")
+    question_set_version: int = Field(alias="questionSetVersion")
+    created_at: datetime = Field(alias="createdAt")
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 
 
 class CoverLetterQuestionResponse(BaseModel):
     id: str
-    stepNumber: int = Field(alias="step_number")
-    questionText: str = Field(alias="question_text")
-    questionCategory: str = Field(alias="question_category")
+    step_number: int = Field(alias="stepNumber")
+    question_text: str = Field(alias="questionText")
+    question_category: str = Field(alias="questionCategory")
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 
@@ -45,14 +45,14 @@ class SubmitAnswersRequest(BaseModel):
 
 class CoverLetterDraftResponse(BaseModel):
     id: str
-    workflowId: str = Field(alias="workflow_id")
-    versionNumber: int = Field(alias="version_number")
+    workflow_id: str = Field(alias="workflowId")
+    version_number: int = Field(alias="versionNumber")
     status: str
-    bodyText: str = Field(alias="body_text")
-    evidenceReferences: list[str] | None = Field(None, alias="evidence_references")
-    promptVersion: str | None = Field(None, alias="prompt_version")
-    modelId: str | None = Field(None, alias="model_id")
-    createdAt: str = Field(alias="created_at")
-    approvedAt: str | None = Field(None, alias="approved_at")
+    body_text: str = Field(alias="bodyText")
+    evidence_references: list[str] | None = Field(None, alias="evidenceReferences")
+    prompt_version: str | None = Field(None, alias="promptVersion")
+    model_id: str | None = Field(None, alias="modelId")
+    created_at: str = Field(alias="createdAt")
+    approved_at: str | None = Field(None, alias="approvedAt")
 
     model_config = {"from_attributes": True, "populate_by_name": True}

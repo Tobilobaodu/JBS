@@ -11,6 +11,8 @@ import re
 from abc import ABC, abstractmethod
 from pydantic import BaseModel
 
+from app.extraction.skills_index import match_terms as _esco_match_terms
+
 
 class JobPostProfileResult(BaseModel):
     """Structured job post output matching job_post_profiles shape."""
@@ -53,7 +55,7 @@ class JobPostParser(ABC):
 # Section markers — case-insensitive patterns that signal the start of
 # a new section in a job post.
 _SECTION_PATTERNS = [
-    (re.compile(r"(?:about|overview|summary|the\s+role|who\s+you\s+are)", re.I),
+    (re.compile(r"(?:about|overview|summary|the\s+role)", re.I),
      "description"),
     (re.compile(r"(?:responsibilit|duties?|what\s+you.{1,3}ll\s+do|key\s+acc)", re.I),
      "responsibilities"),
@@ -96,7 +98,7 @@ class RulesBasedJobPostParser(JobPostParser):
         sections = self._segment_sections(lines)
 
         # Extract fields
-        title = self._extract_title(text, lines[:5])
+        title = self._extract_title(lines)
         employer = self._extract_employer(text)
         location = self._extract_location(text)
 
@@ -161,29 +163,72 @@ class RulesBasedJobPostParser(JobPostParser):
     # responsibilities and qualifications parsed as empty.
     _BULLET_RE = re.compile(r"^\s*(?:[-•*✦➤►]|\d+[.)])\s+")
 
+    # Sentence-terminal punctuation — a glyph-less candidate line ending in
+    # one of these reads as prose, not a list item.
+    _SENTENCE_END_RE = re.compile(r"[.…?!:]\s*$")
+
     @staticmethod
     def _extract_bullet_list(text: str) -> list[str]:
-        """Extract bullet-point items from section text."""
+        """Extract bullet-point items from section text.
+
+        Symbolic/numbered bullets are the primary path. When a section has
+        none at all, many real postings (copy-pasted from a webpage's <li>
+        elements) render list items as plain lines with no glyph — fall
+        back to treating short, non-prose-looking lines as items, but only
+        when there are at least 2 of them, so an ordinary short paragraph
+        doesn't get misread as a list.
+        """
+        lines = [line.strip() for line in text.split("\n") if line.strip()]
+
         items = []
-        for line in text.split("\n"):
-            stripped = line.strip()
+        for stripped in lines:
             if RulesBasedJobPostParser._BULLET_RE.match(stripped):
                 clean = RulesBasedJobPostParser._BULLET_RE.sub("", stripped).strip()
                 if clean:
                     items.append(clean)
-        return items
+        if items:
+            return items
+
+        candidates = [
+            line for line in lines
+            if len(line) <= 160 and not RulesBasedJobPostParser._SENTENCE_END_RE.search(line)
+        ]
+        if len(candidates) >= 2:
+            return candidates
+        return []
 
     @staticmethod
-    def _extract_title(text: str, first_lines: list[str]) -> str | None:
-        """Extract job title from the first few lines."""
-        # Often the first non-empty line is the title
-        for line in first_lines:
+    def _extract_title(lines: list[str]) -> str | None:
+        """Extract job title from the preamble — the lines before the first
+        recognized section heading.
+
+        A fixed lines[:5] window fails when the real opening lines are long
+        descriptive paragraphs (common on real postings that open with
+        company/product context): it skips past them into whatever short
+        line comes next, which is often itself a section heading. Scanning
+        only the true preamble avoids picking a heading as the title, and
+        returns None — never a guess — when nothing confident is found.
+        """
+        preamble: list[str] = []
+        for line in lines:
             stripped = line.strip()
-            if stripped and not stripped.startswith("http") and len(stripped) < 120:
-                # Exclude lines that look like metadata
-                if not re.match(r"^(location|remote|full.time|part.time|salary)",
-                                stripped, re.I):
-                    return stripped
+            if not stripped:
+                continue
+            is_heading = any(
+                pattern.search(stripped) and len(stripped) < 80
+                for pattern, _ in _SECTION_PATTERNS
+            )
+            if is_heading:
+                break
+            preamble.append(stripped)
+
+        for stripped in preamble:
+            if stripped.startswith("http") or len(stripped) >= 120:
+                continue
+            if re.match(r"^(location|remote|full.time|part.time|salary)",
+                        stripped, re.I):
+                continue
+            return stripped
         return None
 
     @staticmethod
@@ -219,10 +264,20 @@ class RulesBasedJobPostParser(JobPostParser):
 
     @staticmethod
     def _extract_skills(text: str) -> list[str]:
-        """Extract technology/skill names from text."""
+        """Extract technology/skill names from text.
+
+        Two sources, combined: the fixed software-engineering keyword
+        list (fast, precise, but scoped to one domain) and the ESCO
+        taxonomy (broader domain coverage, multi-word phrases only —
+        confirmed directly against real postings that single-word ESCO
+        matches are too often generic/context-dependent to trust, e.g.
+        "design" resolving to an unrelated narrow concept).
+        """
         found = set()
         for match in _COMMON_TECH_KEYWORDS.finditer(text):
             found.add(match.group(0))
+        for skill_match in _esco_match_terms(text):
+            found.add(skill_match.canonical_label)
         return sorted(found)
 
     @staticmethod

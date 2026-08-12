@@ -33,7 +33,9 @@ from app.schemas.cover_letter import (
     CoverLetterDraftResponse,
 )
 from app.schemas.jobs import ProcessingJobRef
-from app.services.cover_letter import generate_questions, assemble_draft
+from app.services.cover_letter import generate_questions
+from app.services.orchestration import enforce_concurrent_job_limit, mark_job_publish_failed
+from app.workers.tasks import enqueue_cover_letter_generate
 
 router = APIRouter(tags=["cover-letters"])
 logger = get_logger(__name__)
@@ -274,6 +276,7 @@ async def submit_answers(
             detail=f"Workflow is in '{wf.status}' state, not awaiting answers.",
         )
 
+    answered_question_ids: set[str] = set()
     for answer_item in body.answers:
         # Verify the question belongs to this workflow at the current step
         q_result = await session.execute(
@@ -295,19 +298,38 @@ async def submit_answers(
             question_id=question.id,
             answer_text=answer_item.answerText,
         ))
+        answered_question_ids.add(question.id)
+
+    # Every required question at this step must have an answer in this
+    # request — 09-test-plan.md §7: "a required question left unanswered
+    # is handled explicitly... rather than silently proceeding as if it
+    # were answered." Previously unenforced anywhere in this codebase.
+    step_questions_result = await session.execute(
+        select(CoverLetterQuestion).where(
+            CoverLetterQuestion.workflow_id == wf.id,
+            CoverLetterQuestion.step_number == wf.current_step,
+            CoverLetterQuestion.required.is_(True),
+        )
+    )
+    missing_required = [
+        q.id for q in step_questions_result.scalars().all()
+        if q.id not in answered_question_ids
+    ]
+    if missing_required:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Required question(s) not answered: {missing_required}",
+        )
 
     # Advance step
     if wf.current_step < wf.total_steps:
         wf.current_step += 1
+        await session.commit()
     else:
-        # All steps complete — generate draft
+        # All steps complete — dispatch async draft generation
         wf.status = "generating"
-
-    await session.commit()
-
-    # If all steps done, enqueue draft generation
-    if wf.status == "generating":
-        await _enqueue_draft_generation(session, wf, current_user)
+        await session.commit()
+        await _create_draft_and_generation_job(session, wf, current_user)
 
     logger.info("workflow_answers_submitted", workflow_id=wf.id, step=wf.current_step)
 
@@ -335,7 +357,12 @@ async def get_draft(
         ).order_by(CoverLetterDraft.version_number.desc()).limit(1)
     )
     draft = result.scalar_one_or_none()
-    if draft is None:
+    # A draft row now exists immediately on submit/regenerate (status
+    # "pending"), before the worker has actually generated anything —
+    # under the old synchronous flow `draft is None` was sufficient;
+    # under async, an empty-but-existing pending draft must also 404,
+    # or this endpoint would return 200 with an empty body mid-generation.
+    if draft is None or draft.status == "pending":
         raise HTTPException(status_code=404, detail="No draft yet — answer all questions first.")
 
     return CoverLetterDraftResponse(
@@ -377,15 +404,18 @@ async def regenerate(
         )
 
     wf = await _verify_ownership(session, workflowId, current_user.id)
-    if wf.status not in ("draft_ready", "approved"):
+    # "generation_failed" is included so a genuinely failed generation
+    # doesn't permanently lock the workflow out of retrying — the same
+    # "dead end" class of bug as a queue with no consuming worker.
+    if wf.status not in ("draft_ready", "approved", "generation_failed"):
         raise HTTPException(
             status_code=409,
             detail=f"Cannot regenerate in '{wf.status}' state.",
         )
 
     wf.status = "generating"
-    proc_job = await _enqueue_draft_generation(session, wf, current_user)
     await session.commit()
+    draft, proc_job = await _create_draft_and_generation_job(session, wf, current_user)
 
     return ProcessingJobRef(job_id=proc_job.id, status="queued")
 
@@ -459,95 +489,21 @@ async def approve(
 # ──────────────────────────────────────────────────────────────────────
 
 
-async def _enqueue_draft_generation(
+async def _create_draft_and_generation_job(
     session: AsyncSession, wf: CoverLetterWorkflow, user: User,
-) -> ProcessingJob:
-    """Create a processing job and generate the draft synchronously.
+) -> tuple[CoverLetterDraft, ProcessingJob]:
+    """Shared create-entity-then-job sequence for both submit_answers'
+    final step and /regenerate — mirrors tailored_cvs.py's
+    _create_draft_and_job exactly. The draft row is created empty
+    (status="pending") in the same transaction as the ProcessingJob, so
+    the worker (process_cover_letter_generate) has something to update
+    rather than something to create from scratch — same reasoning as
+    Sprint 3's TailoredCvDraft.
 
-    For Phase 4 first pass, draft generation is synchronous (template-based,
-    no LLM). When an LLM-backed generator is added, this will enqueue to
-    a Celery worker instead.
+    Cover letters stay get_current_user-only (no trial_session_id) —
+    deliberate, per the product-vision account-paywall boundary; the one
+    place this sprint does NOT mirror Sprint 3's trial-accessible pattern.
     """
-    # Load answers grouped by step
-    answers_result = await session.execute(
-        select(CoverLetterAnswer).where(
-            CoverLetterAnswer.workflow_id == wf.id,
-        ).order_by(CoverLetterAnswer.submitted_at)
-    )
-    all_answers = answers_result.scalars().all()
-
-    # Load questions to determine step mapping
-    questions_result = await session.execute(
-        select(CoverLetterQuestion).where(
-            CoverLetterQuestion.workflow_id == wf.id,
-        ).order_by(CoverLetterQuestion.step_number, CoverLetterQuestion.created_at)
-    )
-    all_questions = questions_result.scalars().all()
-
-    # Map answers to their question's step number
-    question_step_map = {q.id: q.step_number for q in all_questions}
-    answers_by_step: dict[int, list[str]] = {}
-    for ans in all_answers:
-        step = question_step_map.get(ans.question_id, 1)
-        answers_by_step.setdefault(step, []).append(ans.answer_text)
-
-    # Load CV profile
-    cv_result = await session.execute(
-        select(CvProfileVersion).where(
-            CvProfileVersion.id == wf.cv_profile_version_id,
-        )
-    )
-    cv_version = cv_result.scalar_one()
-    basics = (cv_version.structured_payload or {}).get("basics", {}) or {}
-    cv_name = basics.get("name")
-    cv_summary = basics.get("summary")
-
-    # Load job post
-    jp_result = await session.execute(
-        select(JobPostProfile).where(
-            JobPostProfile.id == wf.job_post_profile_id,
-        )
-    )
-    jp = jp_result.scalar_one()
-
-    # Load supported evidence
-    match_supported = []
-    if wf.match_run_id:
-        evidence_result = await session.execute(
-            select(MatchEvidenceItem).where(
-                MatchEvidenceItem.match_run_id == wf.match_run_id,
-                MatchEvidenceItem.support_level == "supported",
-            )
-        )
-        match_supported = [
-            {"requirement_text": e.requirement_text}
-            for e in evidence_result.scalars().all()
-        ]
-
-    # Assemble draft
-    assembled = assemble_draft(
-        cv_name=cv_name,
-        cv_summary=cv_summary,
-        employer_name=jp.employer,
-        job_title=jp.job_title or "this role",
-        tone=next((a for a in answers_by_step.get(3, []) if "formal" in a.lower() or "enthusiastic" in a.lower()), None),
-        answers_by_step=answers_by_step,
-        match_supported=match_supported,
-    )
-
-    # Create processing job
-    proc_job = ProcessingJob(
-        job_type="cover_letter_generate",
-        source_entity_type="cover_letter_workflow",
-        source_entity_id=wf.id,
-        user_id=user.id,
-        status="completed",
-        completed_at=datetime.now(timezone.utc),
-    )
-    session.add(proc_job)
-    await session.flush()
-
-    # Create draft
     max_ver_result = await session.execute(
         select(CoverLetterDraft.version_number).where(
             CoverLetterDraft.workflow_id == wf.id,
@@ -558,16 +514,38 @@ async def _enqueue_draft_generation(
     draft = CoverLetterDraft(
         workflow_id=wf.id,
         version_number=max_ver + 1,
-        status="generated",
-        body_text=assembled.body_text,
-        evidence_references=assembled.evidence_references or None,
-        tone=jp.job_title,
-        prompt_version="cover_letter_template_v1",
-        model_id="rules-based",
+        status="pending",
+        body_text="",
     )
     session.add(draft)
+    await session.flush()
 
-    wf.status = "draft_ready"
-    wf.completed_at = datetime.now(timezone.utc)
+    await enforce_concurrent_job_limit(session, user_id=user.id)
 
-    return proc_job
+    proc_job = ProcessingJob(
+        job_type="cover_letter_generate",
+        source_entity_type="cover_letter_draft",
+        source_entity_id=draft.id,
+        user_id=user.id,
+        status="pending",
+    )
+    session.add(proc_job)
+
+    session.add(AuditEvent(
+        user_id=user.id,
+        entity_type="cover_letter_draft",
+        entity_id=draft.id,
+        event_type="generate",
+        actor_type="user",
+    ))
+
+    await session.commit()
+    try:
+        enqueue_cover_letter_generate(proc_job.id)
+    except Exception as e:
+        mark_job_publish_failed(proc_job, "Failed to publish task to message broker.")
+        await session.commit()
+        logger.error("cover_letter_generate_publish_failed", job_id=proc_job.id, error=str(e))
+        raise
+
+    return draft, proc_job

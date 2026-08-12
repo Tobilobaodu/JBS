@@ -37,6 +37,13 @@ services:
       timeout: 3s
       retries: 5
     restart: unless-stopped
+    # Also on no_internet so the deny-egress workers (worker_cv_parse,
+    # worker_docling, worker_ats_check — no_internet-ONLY, no `default`)
+    # can still reach it. no_internet is `internal: true`, so this does
+    # not grant postgres itself any outbound route.
+    networks:
+      - default
+      - no_internet
 
   # Redis for Celery broker and cache
   redis:
@@ -46,6 +53,9 @@ services:
     volumes:
       - redis_data:/data
     restart: unless-stopped
+    networks:
+      - default
+      - no_internet
 
   # MinIO for S3-compatible local object storage
   minio:
@@ -65,6 +75,10 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    # worker_docling (no_internet-only) reads uploaded files from here.
+    networks:
+      - default
+      - no_internet
 
   # ClamAV for malware scanning
   clamav:
@@ -101,9 +115,12 @@ services:
     volumes:
       - ./app:/app/app:ro
     restart: unless-stopped
-    # Docling worker: internal-only network — no outbound internet access
+    # Docling worker: no_internet ONLY, not also `default` — being
+    # multi-homed on both would let traffic still route out via
+    # `default`'s gateway regardless of no_internet's `internal: true`,
+    # silently defeating the whole point (confirmed live: this was
+    # exactly the bug before this network config was corrected).
     networks:
-      - default
       - no_internet
 
   # Celery worker - Textract enrichment
@@ -217,9 +234,9 @@ services:
       - ./app:/app/app:ro
     restart: unless-stopped
     # CV parse worker: reads from cv_raw_text, writes to profile tables.
-    # No outbound network needed — deny-all egress.
+    # no_internet ONLY — see worker_docling's comment for why not also
+    # `default`.
     networks:
-      - default
       - no_internet
 
   # Celery worker - tailored CV generation (Sprint 3)
@@ -244,6 +261,27 @@ services:
     networks:
       - default
 
+  # Celery worker - cover letter generation (Sprint 4)
+  worker_cover_letter_generate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q cover_letter_generate --concurrency=2 --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+    # Calls the OpenAI API — needs outbound internet, same reasoning as
+    # worker_cv_generate above.
+    networks:
+      - default
+
   # Celery worker - ATS structural-readiness check (Product Extension #1)
   worker_ats_check:
     build:
@@ -261,9 +299,9 @@ services:
       - ./app:/app/app:ro
     restart: unless-stopped
     # Rules-based check over already-extracted text/profile data already in
-    # the DB — no external input, no outbound network need. Deny-all egress.
+    # the DB — no external input, no outbound network need. no_internet
+    # ONLY — see worker_docling's comment for why not also `default`.
     networks:
-      - default
       - no_internet
 
   # Celery worker - maintenance tasks (trial-session expiry cleanup)
@@ -350,5 +388,6 @@ networks:
   default:
   no_internet:
     driver: bridge
+    internal: true
     driver_opts:
       com.docker.network.bridge.enable_icc: "true"
