@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.metrics import GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER
 from app.extraction import evidence_binder
 from app.services.llm_client import LlmCallError, LlmSchemaValidationError, generate_structured
 
@@ -202,4 +203,7 @@ def generate_and_verify_section(
         f"{section_type}: failed verification after {max_attempts} attempt(s) "
         f"({correction}), section omitted"
     )
+    # Schema/evidence validation failed — a possible injection attempt (§10
+    # alerts on a spike in these).
+    GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER.inc()
     return None

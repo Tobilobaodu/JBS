@@ -27,6 +27,7 @@ from app.api.v1.trial_sessions import router as trial_sessions_router
 from app.api.v1.tailored_cvs import router as tailored_cvs_router
 from app.api.v1.exports import router as exports_router
 from app.api.v1.coverage import router as coverage_router
+from app.api.v1.audit import router as audit_router
 
 logger = get_logger(__name__)
 
@@ -120,6 +121,7 @@ app.include_router(trial_sessions_router, prefix="/api/v1")
 app.include_router(tailored_cvs_router, prefix="/api/v1")
 app.include_router(exports_router, prefix="/api/v1")
 app.include_router(coverage_router, prefix="/api/v1")
+app.include_router(audit_router, prefix="/api/v1")
 
 # Prometheus metrics at /metrics
 metrics_app = make_asgi_app()

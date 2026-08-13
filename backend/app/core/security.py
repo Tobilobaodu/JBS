@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.db import get_session
 from app.db.models import TrialSession, User, UserSession
+from app.core.metrics import AUTH_FAILURE_COUNTER, AUTHZ_DENIED_COUNTER
 
 
 def hash_password(password: str) -> str:
@@ -91,6 +92,7 @@ async def get_current_user(
     try:
         payload = decode_access_token(token)
     except jwt.ExpiredSignatureError:
+        AUTH_FAILURE_COUNTER.labels(reason="expired_token").inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has expired",
@@ -131,12 +133,14 @@ async def get_current_user(
     user_session = session_result.scalar_one_or_none()
 
     if user_session is None:
+        AUTH_FAILURE_COUNTER.labels(reason="revoked_token").inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session has been revoked or is invalid",
         )
 
     if user_session.expires_at <= datetime.now(timezone.utc):
+        AUTH_FAILURE_COUNTER.labels(reason="revoked_token").inc()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Session has expired",
@@ -172,6 +176,20 @@ class RequestIdentity:
     @property
     def trial_session_id(self) -> str | None:
         return self.trial_session.id if self.trial_session else None
+
+
+def ownership_denied(detail: str) -> HTTPException:
+    """Central IDOR-denial chokepoint.
+
+    Every route that 404s because the requester doesn't own the resource
+    should ``raise ownership_denied(...)`` rather than raising HTTPException
+    404 directly — this counts the denial once, in one place, so the §10
+    IDOR-probing alert (prometheus/alert_rules.yml) is wired regardless of
+    which route raised it, instead of being scattered per-route where a new
+    route can forget to count it.
+    """
+    AUTHZ_DENIED_COUNTER.inc()
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 
 def identity_owner_filter(model, identity: RequestIdentity):

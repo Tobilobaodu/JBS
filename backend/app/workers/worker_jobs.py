@@ -68,6 +68,7 @@ from app.db.models import (
 from app.extraction.parser_interface import ExtractionResult
 from app.extraction.docling_parser import DoclingParser
 from app.extraction.merge import merge_extractions
+from app.core.circuit_breaker import TEXTRACT_CIRCUIT
 from app.workers.tasks import (
     enqueue_textract_extract,
     enqueue_merge_parse,
@@ -1242,16 +1243,26 @@ def process_textract_extract(self, job_id: str) -> None:
 
         start = time.monotonic()
 
+        # Circuit breaker (§6): fail fast if Textract is degraded rather than
+        # queuing a call that will only time out and hold worker capacity.
+        if not TEXTRACT_CIRCUIT.allow():
+            raise RuntimeError("Textract circuit open — failing fast.")
+
         try:
             # Start async text detection
-            start_response = textract.start_document_text_detection(
-                DocumentLocation={
-                    "S3Object": {
-                        "Bucket": settings.s3_bucket_name,
-                        "Name": textract_s3_key,
+            try:
+                start_response = textract.start_document_text_detection(
+                    DocumentLocation={
+                        "S3Object": {
+                            "Bucket": settings.s3_bucket_name,
+                            "Name": textract_s3_key,
+                        }
                     }
-                }
-            )
+                )
+            except Exception:
+                TEXTRACT_CIRCUIT.record_failure()
+                raise
+            TEXTRACT_CIRCUIT.record_success()
             textract_job_id = start_response["JobId"]
             logger.info("textract_async_started", textract_job_id=textract_job_id)
 

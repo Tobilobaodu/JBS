@@ -1,0 +1,62 @@
+# Alert rules — the 5 attack patterns security-plan §10 explicitly names.
+#
+# These are deliberately written against the counter metrics added in
+# app/core/metrics.py (Sprint 6, Workstream H), which increment at the real
+# chokepoints (not per-route). "An alert that's configured but never verified
+# to trigger is not a real control" — see Workstream H's live-fire step; the
+# thresholds below are provisional starting points to be tuned against real
+# traffic once a baseline exists (§10 "Checks and balances").
+
+groups:
+  - name: security
+    rules:
+      # 1. Repeated 401s from one IP/account in a window — credential stuffing.
+      - alert: CredentialStuffingSuspect
+        expr: sum by (reason) (rate(auth_failures_total[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Repeated authentication failures (possible credential stuffing)"
+          description: "auth_failures_total is rising at {{ $value }}/s for reason {{ $labels.reason }}."
+
+      # 2. Repeated 404s against owned-resource routes from one account — IDOR probing.
+      - alert: IdorProbingSuspect
+        expr: rate(authz_denied_total[5m]) > 0.2
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Repeated cross-user resource denials (possible IDOR probing)"
+          description: "authz_denied_total rising at {{ $value }}/s — an account is 404ing on resources it doesn't own."
+
+      # 3. Unusual SSRF-fetch rejection volume.
+      - alert: SsrfProbingSuspect
+        expr: rate(ssrf_rejected_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusual SSRF validation rejection volume"
+          description: "ssrf_rejected_total rising at {{ $value }}/s — possible SSRF probing of the job-URL fetch path."
+
+      # 4. Spike in generation schema-validation failures — possible injection.
+      - alert: GenerationValidationSpike
+        expr: rate(generation_schema_validation_failed_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Spike in generation schema-validation failures (possible prompt injection)"
+          description: "generation_schema_validation_failed_total rising at {{ $value }}/s."
+
+      # 5. Unusual queue depth — reuses the existing job-throughput counters
+      #    (processing_jobs_total, by job_type/status) rather than a new metric.
+      - alert: QueueDepthSpike
+        expr: sum by (job_type) (rate(processing_jobs_total{status="queued"}[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusual queue depth / job volume"
+          description: "processing_jobs_total{status=\"queued\"} rising at {{ $value }}/s for {{ $labels.job_type }} — possible abuse/DoS or a stuck consumer."

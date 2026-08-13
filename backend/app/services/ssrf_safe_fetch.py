@@ -19,6 +19,8 @@ from typing import Tuple
 
 import httpx
 
+from app.core.metrics import SSRF_REJECTED_COUNTER
+
 # ──────────────────────────────────────────────────────────────────────
 # Constants
 # ──────────────────────────────────────────────────────────────────────
@@ -52,7 +54,16 @@ _STREAM_CHUNK_SIZE = 64 * 1024
 
 
 class SSRFRejection(ValueError):
-    """Raised when a URL fails SSRF validation."""
+    """Raised when a URL fails SSRF validation.
+
+    Increments SSRF_REJECTED_COUNTER on construction — every rejection path
+    raises exactly one of these, so this is the single chokepoint that keeps
+    the §10 SSRF-probing alert wired regardless of which validation rule fired.
+    """
+
+    def __init__(self, message: str):
+        SSRF_REJECTED_COUNTER.inc()
+        super().__init__(message)
 
 
 class FetchError(ValueError):

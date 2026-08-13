@@ -31,6 +31,7 @@ from app.core.security import (
     get_current_user,
     get_current_user_or_trial_session,
     identity_owner_filter,
+    ownership_denied,
 )
 from app.workers.tasks import (
     enqueue_job_post_fetch,
@@ -347,7 +348,7 @@ async def get_job_post(
     )
     job_post = result.unique().scalar_one_or_none()
     if job_post is None:
-        raise HTTPException(status_code=404, detail="Job post not found")
+        raise ownership_denied("Job post not found")
 
     return _job_post_to_response(job_post)
 
@@ -384,7 +385,7 @@ async def reprocess_job_post(
     )
     job_post = result.scalar_one_or_none()
     if job_post is None:
-        raise HTTPException(status_code=404, detail="Job post not found")
+        raise ownership_denied("Job post not found")
 
     await enforce_concurrent_job_limit(session, current_user.id)
 

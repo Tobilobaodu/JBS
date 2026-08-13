@@ -42,6 +42,7 @@ from app.core.security import (
     get_current_user,
     get_current_user_or_trial_session,
     identity_owner_filter,
+    ownership_denied,
 )
 from app.core.storage import download_file
 from app.db import get_session
@@ -198,7 +199,7 @@ async def export_cv(
     )
     draft = result.scalar_one_or_none()
     if draft is None:
-        raise HTTPException(status_code=404, detail="Tailored CV draft not found")
+        raise ownership_denied("Tailored CV draft not found")
     if draft.status != "approved":
         raise HTTPException(
             status_code=409,
@@ -242,7 +243,7 @@ async def export_cover_letter(
     )
     wf = result.scalar_one_or_none()
     if wf is None:
-        raise HTTPException(status_code=404, detail="Workflow not found")
+        raise ownership_denied("Workflow not found")
     if wf.status != "approved":
         raise HTTPException(
             status_code=409,
@@ -303,7 +304,7 @@ async def export_application_pack(
     wf = wf_result.scalar_one_or_none()
 
     if cv_draft is None or wf is None:
-        raise HTTPException(status_code=404, detail="Tailored CV draft or cover letter workflow not found.")
+        raise ownership_denied("Tailored CV draft or cover letter workflow not found.")
     if cv_draft.status != "approved" or wf.status != "approved":
         raise HTTPException(
             status_code=409,
@@ -345,7 +346,7 @@ async def get_export(
     )
     export = result.scalar_one_or_none()
     if export is None:
-        raise HTTPException(status_code=404, detail="Export not found")
+        raise ownership_denied("Export not found")
     return _export_response(export)
 
 
@@ -368,7 +369,7 @@ async def download_export(
     )
     export = result.scalar_one_or_none()
     if export is None:
-        raise HTTPException(status_code=404, detail="Export not found")
+        raise ownership_denied("Export not found")
     if export.status != "completed" or not export.storage_key:
         raise HTTPException(
             status_code=409,
@@ -416,7 +417,7 @@ async def export_pdf(
     )
     source = result.scalar_one_or_none()
     if source is None:
-        raise HTTPException(status_code=404, detail="Export not found")
+        raise ownership_denied("Export not found")
     if source.format != "docx":
         raise HTTPException(
             status_code=409,

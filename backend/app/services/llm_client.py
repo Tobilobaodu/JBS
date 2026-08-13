@@ -28,6 +28,7 @@ from openai import (
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.circuit_breaker import OPENAI_CIRCUIT
 
 logger = get_logger(__name__)
 
@@ -89,6 +90,14 @@ def generate_structured(
     client = client or _get_client()
     model = model or settings.openai_model
 
+    # Circuit breaker (§6): fail fast rather than queuing a call that will
+    # only time out and hold worker capacity while the provider is degraded.
+    if not OPENAI_CIRCUIT.allow():
+        raise LlmCallError(
+            "LLM circuit open — failing fast rather than attempting a call "
+            "that will only time out."
+        )
+
     last_error: Exception | None = None
     response = None
     for attempt in range(max_api_retries + 1):
@@ -120,9 +129,14 @@ def generate_structured(
             raise LlmCallError(f"OpenAI API error: {e}") from e
 
     if response is None:
+        OPENAI_CIRCUIT.record_failure()
         raise LlmCallError(
             f"OpenAI API call failed after {max_api_retries + 1} attempts: {last_error}"
         )
+
+    # The dependency responded — that's a circuit success, regardless of what
+    # content-level validation below decides about the payload.
+    OPENAI_CIRCUIT.record_success()
 
     message = response.choices[0].message
 

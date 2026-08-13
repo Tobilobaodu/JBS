@@ -420,12 +420,29 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
       - prometheus_data:/prometheus
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
     depends_on:
       - api
+      - alertmanager
+    restart: unless-stopped
+
+  # Alertmanager — receives Prometheus alerts from alert_rules.yml and routes
+  # them. Receiver is a log-only stub for now (no Slack/email/PagerDuty channel
+  # exists yet — that's a separate on-call-tooling decision, not this sprint's;
+  # flagged as the one loose end in the Sprint 6 sign-off).
+  alertmanager:
+    image: prom/alertmanager:latest
+    ports:
+      - "9093:9093"
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
     restart: unless-stopped
 
   # Grafana — dashboards for Prometheus metrics
@@ -450,6 +467,7 @@ volumes:
   minio_data:
   clamav_data:
   prometheus_data:
+  alertmanager_data:
   grafana_data:
 
 networks:

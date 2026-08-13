@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.rate_limit import check_generation_rate_limit, get_client_key
-from app.core.security import get_current_user
+from app.core.security import get_current_user, ownership_denied
 from app.db import get_session
 from app.db.models import (
     AuditEvent,
@@ -87,10 +87,7 @@ async def create_collection(
     owned_ids = {row[0] for row in owned_result.all()}
     missing = [jp_id for jp_id in body.job_post_ids if jp_id not in owned_ids]
     if missing:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Job post(s) not found or not owned by you: {missing}",
-        )
+        raise ownership_denied(f"Job post(s) not found or not owned by you: {missing}")
 
     collection = JobPostCollection(
         user_id=current_user.id,
@@ -156,7 +153,7 @@ async def trigger_coverage_report(
     )
     collection = collection_result.scalar_one_or_none()
     if collection is None:
-        raise HTTPException(status_code=404, detail="Collection not found")
+        raise ownership_denied("Collection not found")
 
     # Resolve cvId -> current CvProfileVersion, same join pattern as
     # cover_letters.py::start_workflow — cvId is a CvFile id, not a
@@ -171,7 +168,7 @@ async def trigger_coverage_report(
     )
     profile = profile_result.scalar_one_or_none()
     if profile is None or profile.current_version_id is None:
-        raise HTTPException(status_code=404, detail="No parsed CV profile found. Process a CV first.")
+        raise ownership_denied("No parsed CV profile found. Process a CV first.")
 
     report = CoverageReport(
         user_id=current_user.id,
@@ -235,5 +232,5 @@ async def get_coverage_report(
     )
     report = result.scalar_one_or_none()
     if report is None:
-        raise HTTPException(status_code=404, detail="Coverage report not found")
+        raise ownership_denied("Coverage report not found")
     return _report_response(report)

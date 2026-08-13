@@ -20,6 +20,7 @@ from app.core.security import (
     RequestIdentity,
     get_current_user_or_trial_session,
     identity_owner_filter,
+    ownership_denied,
 )
 from app.db import get_session
 from app.db.models import AuditEvent, MatchRun, ProcessingJob, TailoredCvDraft, TailoredCvSection
@@ -160,7 +161,7 @@ async def create_tailored_cv(
     )
     match_run = match_result.scalar_one_or_none()
     if match_run is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Match not found")
+        raise ownership_denied("Match not found")
     if match_run.status != "completed":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -209,7 +210,7 @@ async def get_tailored_cv(
     )
     draft = result.scalar_one_or_none()
     if draft is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tailored CV draft not found")
+        raise ownership_denied("Tailored CV draft not found")
 
     sections_result = await session.execute(
         select(TailoredCvSection).where(TailoredCvSection.draft_id == draftId)
@@ -250,7 +251,7 @@ async def regenerate_tailored_cv(
     )
     base_draft = result.scalar_one_or_none()
     if base_draft is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tailored CV draft not found")
+        raise ownership_denied("Tailored CV draft not found")
     if base_draft.status in ("pending", "archived"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -294,7 +295,7 @@ async def approve_tailored_cv(
     )
     draft = result.scalar_one_or_none()
     if draft is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tailored CV draft not found")
+        raise ownership_denied("Tailored CV draft not found")
     if draft.status not in ("generated", "user_edited"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

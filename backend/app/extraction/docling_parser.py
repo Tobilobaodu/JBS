@@ -108,6 +108,14 @@ def _compute_confidence(conversion_result, extracted_text: str) -> float:
     avg_chars_per_item = char_count / max(item_count, 1)
     # 30 chars/item → 0.5; 60+ → 1.0; <10 → penalised
     text_density_score = min(1.0, avg_chars_per_item / 60.0)
+    # avg_chars_per_item is only a trustworthy signal when there are enough
+    # items to average over — a document with pathologically few items (the
+    # exact case density_score already penalises) can otherwise "launder" a
+    # high per-item average from a small denominator into a misleadingly
+    # high text-density score, canceling out the density penalty instead of
+    # reinforcing it. Scaling by density_score keeps text density from
+    # contradicting the item-count signal it's meant to complement.
+    text_density_score *= density_score
 
     # Composite: weighted signal blend.
     # Density and completeness are the strongest indicators; empty-page and
@@ -216,6 +224,12 @@ class DoclingParser(DocumentParser):
                 processing_duration_ms=duration_ms,
             )
 
+        except TimeoutError:
+            # Preserve the timeout signal — a hung parse timing out is a
+            # distinct, actionable outcome (fail fast per §6), not a generic
+            # "extraction failed" that the caller can't distinguish. The
+            # docling→textract fall-through depends on the caller seeing this.
+            raise
         except Exception as e:
             duration_ms = int((time.monotonic() - start) * 1000)
             logger.error("docling_parse_failed", error=str(e), duration_ms=duration_ms)

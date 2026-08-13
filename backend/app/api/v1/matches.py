@@ -32,6 +32,7 @@ from app.core.security import (
     get_current_user,
     get_current_user_or_trial_session,
     identity_owner_filter,
+    ownership_denied,
 )
 from app.workers.tasks import enqueue_match
 
@@ -143,7 +144,7 @@ async def create_match(
     )
     cv_profile = cv_result.scalar_one_or_none()
     if cv_profile is None:
-        raise HTTPException(status_code=404, detail="CV profile version not found")
+        raise ownership_denied("CV profile version not found")
 
     # Look up job post profile from jobPostId (1:1 relationship), scoped
     # to this identity — without this join, any identity could match
@@ -158,7 +159,7 @@ async def create_match(
     )
     jp_profile = jp_result.scalar_one_or_none()
     if jp_profile is None:
-        raise HTTPException(status_code=404, detail="Job post not found or not yet structured")
+        raise ownership_denied("Job post not found or not yet structured")
 
     # Create match_run row
     match_run = MatchRun(
@@ -290,7 +291,7 @@ async def get_match(
     )
     match_run = result.scalar_one_or_none()
     if match_run is None:
-        raise HTTPException(status_code=404, detail="Match not found")
+        raise ownership_denied("Match not found")
 
     # Load evidence items
     evidence_result = await session.execute(

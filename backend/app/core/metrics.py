@@ -54,3 +54,29 @@ LLM_GENERATION_COUNTER = Counter(
     "LLM generation calls, by generation task and outcome",
     ["generation_task", "outcome"],
 )
+
+# ── Security / attack-pattern counters (Sprint 6, Workstream H) ─────────────
+# These back the 5 alert patterns in prometheus/alert_rules.yml — §10 names
+# them explicitly. They are intentionally counters (monotonic) so PromQL
+# rate()/increase() can window them, not gauges.
+
+AUTH_FAILURE_COUNTER = Counter(
+    "auth_failures_total",
+    "Authentication failures, by reason",
+    ["reason"],  # wrong_password | unknown_email | expired_token | revoked_token
+)
+
+AUTHZ_DENIED_COUNTER = Counter(
+    "authz_denied_total",
+    "Cross-user resource access denials (IDOR probing / ownership 404s)",
+)
+
+SSRF_REJECTED_COUNTER = Counter(
+    "ssrf_rejected_total",
+    "SSRF-safe-fetch validation rejections",
+)
+
+GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER = Counter(
+    "generation_schema_validation_failed_total",
+    "Generation schema-validation failures (possible prompt-injection attempts)",
+)

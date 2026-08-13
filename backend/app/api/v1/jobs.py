@@ -11,7 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_session
 from app.db.models import ProcessingJob
 from app.schemas.jobs import ProcessingJobResponse
-from app.core.security import RequestIdentity, get_current_user_or_trial_session, identity_owner_filter
+from app.core.security import (
+    RequestIdentity,
+    get_current_user_or_trial_session,
+    identity_owner_filter,
+    ownership_denied,
+)
 from app.core.logging import get_logger
 
 router = APIRouter(tags=["jobs"])
@@ -39,9 +44,7 @@ async def get_job_status(
     job = result.scalar_one_or_none()
 
     if job is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="Job not found."
-        )
+        raise ownership_denied("Job not found.")
 
     return ProcessingJobResponse(
         id=job.id,

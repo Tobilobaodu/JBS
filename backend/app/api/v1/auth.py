@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.metrics import AUTH_FAILURE_COUNTER
 from app.core.rate_limit import check_rate_limit, get_client_key
 from app.core.security import (
     create_access_token,
@@ -169,11 +170,13 @@ async def login(
     )
 
     if user is None:
+        AUTH_FAILURE_COUNTER.labels(reason="unknown_email").inc()
         verify_password(body.password, _DUMMY_PASSWORD_HASH)  # equalize timing; result unused
         raise generic_error
 
     # Verify password — bcrypt does constant-time comparison internally
     if not verify_password(body.password, user.password_hash):
+        AUTH_FAILURE_COUNTER.labels(reason="wrong_password").inc()
         await _create_audit_event(
             session=session,
             event_type="login_failed",
