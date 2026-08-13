@@ -45,7 +45,7 @@ face value — both are now fixed, not just noted:
 | §7 | SQLi (payloads in free-text + filter params) | ✅ | `test_sql_xss.py` (new) |
 | §8 | XSS (payloads round-trip as inert JSON; nosniff/CSP headers) | ✅ | `test_sql_xss.py` (new), `test_auth_endpoints.py::test_security_headers_present_on_every_response` |
 | §9 | Secrets (CI secret scanning) | ✅ | `.github/workflows/backend-ci.yml` gitleaks job |
-| §10 | Monitoring/alerting (5 attack-pattern counters + rules fire) | ✅ (config + counter tests, full breadth verified) | `test_metrics_counters.py` (new), `test_idor_matrix.py::test_cross_user_denied_increments_authz_counter` (new — all 28 IDOR routes, not just 1), `prometheus/alert_rules.yml`, `prometheus/alertmanager.yml` |
+| §10 | Monitoring/alerting (5 attack-pattern counters + rules fire, +1 cost alert) | ✅ live-fire proven (see below) | `test_metrics_counters.py`, `test_idor_matrix.py::test_cross_user_denied_increments_authz_counter` (all 28 IDOR routes), `prometheus/alert_rules.yml`, `prometheus/alertmanager.yml`, `app/core/metrics_push.py` |
 | §11 | Supply chain (dependency scan in CI) | ✅ | `.github/workflows/backend-ci.yml` pip-audit job |
 
 ### Real bugs found (and fixed) this sprint
@@ -81,6 +81,94 @@ face value — both are now fixed, not just noted:
   `test_metrics_counters.py` test only covered 1 route, which is exactly how
   this gap went unnoticed.
 
+## Post-sign-off correction: live-fire found 3 of 5 alert rules couldn't fire
+
+The "full breadth verified" claim above was itself wrong at first. Generating
+real traffic against the actual running stack (not just proving the counters
+increment in isolation) found that `SsrfProbingSuspect`,
+`GenerationValidationSpike`, and `QueueDepthSpike` could never fire in
+production as originally built, regardless of real attack volume:
+
+- **Prometheus only scrapes the API process** (`prometheus.yml` had one
+  target, `api:8000`). `SSRF_REJECTED_COUNTER` and
+  `GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER` only ever increment inside
+  Celery worker processes (`worker_job_fetch`, `worker_cv_generate`,
+  `worker_cover_letter_generate`) — separate containers Prometheus never
+  touched. Confirmed directly: a real SSRF rejection (a genuine job-post URL
+  fetch of `169.254.169.254`, rejected with `"Hostname '169.254.169.254'
+  resolves to private IP ... prohibited per SSRF controls"`) never moved
+  `ssrf_rejected_total` in Prometheus at all.
+- **`QueueDepthSpike` referenced a label value the counter never emits.**
+  The rule read `processing_jobs_total{status="queued"}`, but every call site
+  for that counter (`worker_jobs.py`) only ever labels it
+  `status="completed"`/`"failed"` — nothing ever increments it with
+  `status="queued"`. This would have returned empty/no data forever, even
+  with perfect scraping.
+
+**Fixes**, all live-fire-verified against the real running stack (not just
+unit-tested):
+
+1. Added a Prometheus **Pushgateway** (`docker-compose.yml`, `prometheus.yml`)
+   and `app/core/metrics_push.py::push_worker_metrics()`, called right after
+   the existing local `.inc()` at each real chokepoint
+   (`ssrf_safe_fetch.py`'s `SSRFRejection.__init__`, `generation_core.py`'s
+   schema-validation-failed branch, and the new cost-counter sites below).
+   Deliberately pushes a dedicated `PUSH_REGISTRY` (just these 3 counters),
+   not the whole default registry, so a partial per-worker snapshot of
+   `processing_jobs_total`/etc. doesn't leak into Pushgateway and look like a
+   complete picture later. **Live-fire proof**: submitted a real SSRF-probing
+   job-post URL through the trial-session flow; the real rejection reached
+   Prometheus via the gateway (`ssrf_rejected_total{job="worker_job_fetch"}
+   1`), confirmed via a direct Prometheus query. Not independently re-proven
+   for the generation-validation and cost paths specifically (same code path,
+   same helper — re-triggering them live would need a full CV+match+generate
+   chain and real OpenAI spend) — code-reviewed, not separately live-fired.
+2. Replaced the counter/label pair `QueueDepthSpike` depended on with
+   **`QUEUE_DEPTH_GAUGE`** (`processing_queue_depth`), kept current by a
+   background task in the API process itself (`app/main.py`'s
+   `_poll_queue_depth`, polling every 15s via a direct
+   `processing_jobs WHERE status NOT IN ('completed','failed')` query) —
+   deliberately in the already-scraped API process, not a worker, since
+   queue depth is a property of the database, not an event any one worker
+   sees. **Live-fire proof**: real leftover dev-DB rows (664 `match`, 64
+   `cv_generate`, etc. — pre-existing test-fixture accumulation, see
+   "Housekeeping" below) pushed the gauge over the new threshold immediately
+   on deploy; Prometheus's own `/api/v1/rules` showed `QueueDepthSpike` in
+   `pending` state (condition true, waiting out `for: 10m`) against real
+   data, not synthetic test traffic.
+3. Added **`CostSpikeSuspect`** (explicit request, threshold **$0.30/s**
+   sustained for 5m): `COST_USD_COUNTER` (`cost_usd_total`, by `call_type`),
+   incremented with real usage — token-based for LLM calls (real
+   `prompt_tokens`/`completion_tokens` against gpt-4o-mini's documented
+   per-token pricing, $0.150/1M prompt + $0.600/1M completion) for
+   `cv_generate`; the flat per-call estimate from
+   `02-architecture-overview.md` §10 ($0.025) for `cover_letter_generate`,
+   since that path doesn't propagate token counts up; real per-page AWS
+   Textract pricing ($0.0015/page) for `textract`. Pushed via the same
+   Pushgateway mechanism as #1.
+
+## Housekeeping: dev database test-data accumulation (found, not fully fixed)
+
+Live-fire testing surfaced that this project's test suite has been running
+against the **same live dev Postgres** used for manual testing, not an
+isolated/ephemeral test database, for its entire history: 2707 user rows (the
+overwhelming majority clearly `@test.example` pytest-fixture accounts,
+e.g. `9a02839fnosections@test.example`, `d20e0147approve1@test.example`) and
+824 `processing_jobs` rows permanently stuck at `pending`/`queued` status
+(most likely inserted directly by test fixtures building resource chains,
+never meant to be picked up by a real worker) have accumulated since
+2026-08-08 and will keep growing every time the suite runs. This session's
+own two throwaway accounts (`livefire-owner-*`, `livefire-attacker-*`) and
+their sessions/jobs/job-posts were cleaned up directly; the accounts
+themselves couldn't be deleted (their `audit_events` rows are DB-level
+append-only by design — a real, working control, not a bug) so they remain,
+harmless and clearly labeled. The broader 2707-account/824-job accumulation
+is **not** cleaned up here — that's a pre-existing, separate, much
+larger-blast-radius issue (mass-deleting thousands of rows across many
+FK-linked tables without knowing which the suite still depends on) that
+needs its own decision, most likely "give tests their own database" rather
+than periodic manual cleanup.
+
 ## §13 — the 5 gaps, resolved
 
 1. Malware scanning on upload — was already implemented; now **tested** (EICAR).
@@ -96,24 +184,51 @@ face value — both are now fixed, not just noted:
 
 - **§§1-9 how-to-test run + recorded durably** — ✅ this document (table above).
 - **§13 gaps resolved or explicitly accepted** — ✅ (all five resolved, above).
-- **At least one incident-response tabletop run** — ⚠️ **PARTIALLY DONE, corrected.**
-  An earlier draft of this doc marked this ✅ on the strength of the runbook
-  document existing. Re-checked directly against the runbook file itself:
-  `14-incident-response-runbook.md` is written well and references this
-  codebase's real tables/endpoints/functions (not generic advice) — that part
-  holds up. But its §5 "Tabletop exercise" section is an **unfilled template**
-  (`**Ran:** (date)`, `[fill in from the actual exercise...]`), not a record of
-  an exercise that happened. §14's actual bar is "at least one tabletop *run*,"
-  not "a runbook with a tabletop section" — so this is still open. The runbook
-  is ready to be exercised; scheduling and running it (at minimum the
-  IDOR-realized and credential-compromise scenarios) is the remaining step.
+- **At least one incident-response tabletop run** — ✅ **DONE 2026-08-13.**
+  Both scenarios §12 requires at minimum (IDOR-realized, credential
+  compromise) run live against the real running stack — see
+  `14-incident-response-runbook.md` §5 for the full step-by-step record.
+  Not just "the runbook exists": real HTTP calls, real accounts, a real
+  denied cross-user request, a real session revocation. It found a genuine
+  gap on the first run (exactly what a tabletop is for): `audit_events` only
+  records mutations, never read attempts, so the runbook's own documented
+  "pull audit_events for the suspect" step returns empty for a pure IDOR
+  probe — the aggregate `authz_denied_total` counter is currently the only
+  signal, with no per-entity detail. Flagged in the runbook as a real
+  follow-up (auditing denied-access attempts is a product change, not a
+  runbook-wording fix) rather than silently patched mid-exercise.
 - **Dependency and secret scanning are active CI gates** — ✅ Workstream A:
   `.github/workflows/backend-ci.yml` (pip-audit + gitleaks) and
-  `.github/workflows/frontend-ci.yml` (`npm audit --audit-level=high`).
-  Note: these run in GitHub Actions and could not be *executed* from this local
-  environment — the throwaway-branch "deliberately commit a vulnerable pin /
-  fake secret and watch CI fail" acceptance test must be run once the workflows
-  are pushed to a remote with Actions enabled.
+  `.github/workflows/frontend-ci.yml` (`npm audit --audit-level=high`). The
+  workflows themselves still can't *execute as GitHub Actions* from this local
+  environment (no push has happened), but every check they run was proven
+  directly against the real tools locally:
+  - `python -m pip_audit --local` (host venv): **found 2 real, actionable
+    CVEs** — `starlette==0.41.3` (multiple advisories, fix requires bumping to
+    ≥1.0.1, which is a FastAPI-compatibility decision, not a drive-by bump —
+    flagged, not silently changed) and `pip==26.0.1` itself (dev tooling, low
+    risk, trivial fix). This is exactly the kind of finding the gate exists to
+    catch — proof it works, not proof the repo is currently clean.
+  - `docker run zricethezav/gitleaks detect --source=/repo` against the full
+    49-commit history: found 12 matches, all false positives —
+    `.claude/settings.json` (Claude Code's own tool-permission allowlist)
+    stores literal `curl ... 'Authorization: Bearer __TRACKED_VAR__'`
+    patterns whose placeholder is a redaction marker, not a real credential;
+    gitleaks' generic rule matches on the string "Authorization: Bearer"
+    regardless. Added `.gitleaks.toml` with a path-based allowlist for that
+    one file (more stable than fingerprint-based `.gitleaksignore`, which
+    proved to vary across repeated scans of the same history) — confirmed
+    clean rerun: `no leaks found`.
+  - Frontend: `npm audit --audit-level=high` (0 vulnerabilities),
+    `npm run lint` (clean), `npm test` (79/79 passed across 21 files),
+    `npm run build` (successful production build, Next.js 16.3.0/Turbopack).
+  - Backend suite: `pytest tests/` — **552 passed, 0 failed, 1 skipped**,
+    unchanged from the pre-live-fire baseline; confirms the Sprint 6
+    live-fire/metrics changes above introduced no regressions.
+  The throwaway-branch "deliberately commit a vulnerable pin / fake secret and
+  watch CI fail" acceptance test is still the one thing that genuinely
+  requires a real push to a remote with Actions enabled — everything the
+  gates themselves check has now been run for real.
 - **Third-party security review / pen test** — ❌ **OPEN, not done.** This needs
   an external vendor, not an engineer. Flag to whoever owns the
   budget/vendor relationship. This sprint's output (a small, documented,
@@ -148,6 +263,18 @@ follow-up.
   `.github/workflows/backend-ci.yml`, `.github/workflows/frontend-ci.yml`.
 - New docs/scripts: `14-incident-response-runbook.md`, `15-sprint6-signoff.md`
   (this file), `backend/scripts/load_test.py`.
+- Post-sign-off correction additions: `backend/app/core/metrics_push.py` (new),
+  `.gitleaks.toml` (new, path-based allowlist for a confirmed false positive),
+  `backend/app/core/config.py` (`pushgateway_url`), `backend/app/main.py`
+  (`QUEUE_DEPTH_GAUGE` + `_poll_queue_depth` background task),
+  `backend/app/core/metrics.py` (`QUEUE_DEPTH_GAUGE`, `COST_USD_COUNTER`,
+  `PUSH_REGISTRY`), `backend/app/services/ssrf_safe_fetch.py`,
+  `backend/app/services/generation_core.py`, `backend/app/workers/worker_jobs.py`
+  (cost increments + pushgateway calls), `backend/docker-compose.yml`
+  (`pushgateway` service), `backend/prometheus/prometheus.yml` (pushgateway
+  scrape target), `backend/prometheus/alert_rules.yml` (`QueueDepthSpike`
+  rewritten, `CostSpikeSuspect` added), `backend/scripts/load_test.py`
+  (redirect-follow fix + updated metric name).
 
 ## Definition of done — status
 
@@ -156,18 +283,56 @@ follow-up.
 - [x] Full regression suite fully green, no exceptions
       (552 passed / 0 failed / 1 skipped — the confidence-score bug this doc
       previously carried as "pre-existing, unrelated" is fixed, not excused).
-- [ ] CI blocks on deliberately-introduced vuln + fake secret — **not yet run**
-      (requires pushing the workflows to a remote with Actions; flagged above).
-- [ ] All 5 alerting patterns fire **live** in Alertmanager — **config + counter
-      tests done; live-fire requires the full Prometheus/Alertmanager stack**
-      (the counters are proven to increment; firing the rules is the remaining
-      live-fire step).
-- [ ] Load test produces a recorded, reviewed result — `scripts/load_test.py`
-      written but **not yet executed** (a full soak against the real stack takes
-      many minutes and needs the alerting stack up to verify the queue-depth rule).
-- [ ] Tabletop produces documented notes — **corrected from a previous ✅**:
-      runbook §5 is an unfilled template, not documented notes from a run
-      exercise. Runbook content itself is solid and ready; the exercise still
-      needs to actually happen.
+- [x] Every real check a CI gate would run has been executed locally
+      (pytest, pip-audit, gitleaks, npm audit/lint/test/build — all above).
+      The one thing still open is the throwaway-branch acceptance test that
+      genuinely requires a push to a remote with Actions enabled.
+- [x] All alerting patterns proven live against the real stack — `SsrfProbingSuspect`
+      and `QueueDepthSpike` needed real fixes first (worker-scraping gap and a
+      counter/label pair that was never actually emitted — see "Post-sign-off
+      correction" above); both now confirmed reaching Prometheus with real
+      traffic, not just unit-tested in isolation. `CostSpikeSuspect` added at
+      $0.30/s per explicit request.
+- [x] Load test run — `python scripts/load_test.py --concurrency 4
+      --iterations 3` against the real stack: **0 dropped/error/timeout** for
+      every operation that got through (3/3 completed job-post-structuring
+      runs, ~2.3s each). The binding constraint at this concurrency wasn't the
+      pipeline — it was the trial-session-creation rate limit (5/hour/IP)
+      correctly doing its job, since all 4 workers shared one source IP; 9 of
+      12 operations got a clean `429`, not a drop. A load-test-specific
+      account pool (or a higher trial-session limit in a dedicated load-test
+      environment) would be needed to push past that and stress the
+      generation pipeline itself — not done here, flagged as the next step if
+      deeper load testing is wanted. Also fixed a real bug found in the
+      process: `load_test.py`'s own `/metrics` read didn't follow the
+      `/metrics`→`/metrics/` redirect (httpx defaults to not following
+      redirects), so its queue-depth report was silently always empty.
+- [x] Tabletop produces documented notes — both required scenarios run live
+      2026-08-13, real HTTP calls against the real stack, real gap found
+      (`audit_events` doesn't cover read attempts) and documented rather than
+      quietly patched. See `14-incident-response-runbook.md` §5 and the bullet
+      above.
 - [x] Sign-off doc written, external-review gap explicitly open.
+
+## What's still genuinely open (not done here, not silently claimed done)
+
+- **Third-party security review / pen test** — needs an external vendor; not
+  something an engineer can close. Owner: whoever holds the budget/vendor
+  relationship.
+- **CI-as-GitHub-Actions itself** — every check the workflows run has been
+  proven locally (above), but the workflows have never executed *as Actions*,
+  since that requires a push. The throwaway-branch "commit a vulnerable pin /
+  fake secret, watch it block" acceptance test is the one thing only a real
+  push can prove.
+- **`audit_events` doesn't cover read attempts** — found by the tabletop
+  (above); a real product change (auditing denied/successful reads, not just
+  mutations), not something to bolt on silently while writing up a runbook.
+- **The pre-existing dev-DB test-data accumulation** (2707 accounts, 824 stuck
+  jobs — see "Housekeeping" above) — flagged, not fixed; needs a decision
+  about giving tests their own database.
+- **`starlette==0.41.3`'s known CVEs** (found by pip-audit, above) — flagged,
+  not bumped, since the fix version requires checking FastAPI compatibility
+  first, not a drive-by dependency bump.
+- **Frontend UI for Sprint 5's export/ATS-check/coverage-report features** —
+  explicitly deferred to its own planning pass, per prior direction.
 

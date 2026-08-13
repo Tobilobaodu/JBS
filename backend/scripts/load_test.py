@@ -11,9 +11,13 @@ What it watches for:
   - dropped jobs: a submitted job that never reaches a terminal status
     (completed/failed) within its window is a silent drop, not a graceful 429.
   - the queue-depth alert: after the run, read the API /metrics endpoint and
-    report processing_jobs_total by status so Workstream H's queue-depth rule
-    can be checked against real load (the script can't assert Alertmanager
-    state itself — the alert firing is verified in Workstream H's live-fire).
+    report processing_queue_depth by job_type so QueueDepthSpike can be
+    checked against real load (the script can't assert Alertmanager state
+    itself). Post-sign-off correction: this used to read
+    processing_jobs_total{status="queued"}, but that label value is never
+    actually emitted (JOB_THROUGHPUT only increments on completed/failed) —
+    processing_queue_depth is a gauge kept current from the database by the
+    API process itself (app/main.py's _poll_queue_depth), not a counter.
 
 Usage:
     cd backend
@@ -117,23 +121,25 @@ async def main(concurrency: int, iterations: int) -> int:
     print(f"  dropped/error/timeout: {dropped}")
     print(f"  breakdown: {by_status}")
 
-    # Read the API /metrics for the job-throughput counters so the queue-depth
-    # alert can be checked against real load (Workstream H's rule reads
-    # processing_jobs_total{status=\"queued\"}).
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    # Read the API /metrics for processing_queue_depth so the queue-depth
+    # alert can be checked against real load.
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
         try:
+            # /metrics (no trailing slash) 307-redirects to /metrics/ (the
+            # mounted ASGI app) — httpx doesn't follow redirects by default,
+            # which silently produced an empty body here before.
             r = await client.get("http://localhost:8000/metrics")
-            lines = [ln for ln in r.text.splitlines() if ln.startswith("processing_jobs_total")]
-            print("\n  processing_jobs_total (from /metrics):")
+            lines = [ln for ln in r.text.splitlines() if ln.startswith("processing_queue_depth")]
+            print("\n  processing_queue_depth (from /metrics):")
             for ln in lines:
                 print(f"    {ln}")
         except httpx.HTTPError as e:
             print(f"\n  (could not read /metrics: {e})")
 
     print("\nNOTE: the queue-depth alert (prometheus/alert_rules.yml) fires on")
-    print("rate(processing_jobs_total{status=\"queued\"}[5m]) > 0.5 — compare the")
-    print("counters above during/after this run to confirm whether it fired, or")
-    print("check Alertmanager /api/v2/alerts.")
+    print("sum by (job_type) (processing_queue_depth) > 5 for 10m — compare the")
+    print("gauge values above during/after this run to confirm whether it fired,")
+    print("or check Alertmanager /api/v2/alerts.")
     return 1 if dropped else 0
 
 

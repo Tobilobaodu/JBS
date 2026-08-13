@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.metrics import GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER
+from app.core.metrics_push import push_worker_metrics
 from app.extraction import evidence_binder
 from app.services.llm_client import LlmCallError, LlmSchemaValidationError, generate_structured
 
@@ -206,4 +207,5 @@ def generate_and_verify_section(
     # Schema/evidence validation failed — a possible injection attempt (§10
     # alerts on a spike in these).
     GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER.inc()
+    push_worker_metrics("worker_generation")
     return None

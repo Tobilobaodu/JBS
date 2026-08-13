@@ -109,6 +109,13 @@ class Settings(BaseSettings):
     gotenberg_url: str = "http://gotenberg:3000"
     gotenberg_request_timeout_seconds: int = 30
 
+    # Pushgateway (Sprint 6 live-fire finding) — counters that only ever
+    # increment inside Celery worker processes (SSRF rejections, generation
+    # schema-validation failures, real API spend) are invisible to Prometheus
+    # otherwise, since it only scrapes the api service. See
+    # app/core/metrics_push.py.
+    pushgateway_url: str = "http://pushgateway:9091"
+
     # CORS
     cors_origin: str = "http://localhost:3000"
 

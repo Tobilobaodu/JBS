@@ -20,6 +20,7 @@ from typing import Tuple
 import httpx
 
 from app.core.metrics import SSRF_REJECTED_COUNTER
+from app.core.metrics_push import push_worker_metrics
 
 # ──────────────────────────────────────────────────────────────────────
 # Constants
@@ -63,6 +64,7 @@ class SSRFRejection(ValueError):
 
     def __init__(self, message: str):
         SSRF_REJECTED_COUNTER.inc()
+        push_worker_metrics("worker_job_fetch")
         super().__init__(message)
 
 

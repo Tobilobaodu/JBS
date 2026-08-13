@@ -413,7 +413,20 @@ services:
       - ./app:/app/app:ro
     restart: unless-stopped
 
-  # Prometheus — scrapes /metrics from the API
+  # Pushgateway — Sprint 6 live-fire finding: Prometheus only scrapes the
+  # api service, so counters that only ever increment inside Celery worker
+  # processes (SSRF rejections, generation schema-validation failures, real
+  # API spend) were provably never reaching it. Workers push those specific
+  # counters here (app/core/metrics_push.py); Prometheus scrapes this
+  # gateway as a second target. Deliberately not used for JOB_THROUGHPUT or
+  # other per-worker counters that aren't part of the §10 alert set.
+  pushgateway:
+    image: prom/pushgateway:latest
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+
+  # Prometheus — scrapes /metrics from the API and the Pushgateway
   prometheus:
     image: prom/prometheus:latest
     ports:
@@ -428,6 +441,7 @@ services:
     depends_on:
       - api
       - alertmanager
+      - pushgateway
     restart: unless-stopped
 
   # Alertmanager — receives Prometheus alerts from alert_rules.yml and routes

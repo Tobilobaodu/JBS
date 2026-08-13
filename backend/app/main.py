@@ -5,6 +5,7 @@ and Prometheus metrics. Entry point for both the API server (uvicorn)
 and the Celery workers (via app.workers.tasks.celery_app).
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 import uuid
 
@@ -12,11 +13,14 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_client import make_asgi_app
+from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.logging import setup_logging, get_logger
 from app.core import metrics as _metrics  # noqa: F401 — register Prometheus metrics
+from app.core.metrics import QUEUE_DEPTH_GAUGE
 from app.core.storage import ensure_bucket_exists
+from app.db import async_session_factory
 from app.api.v1.auth import router as auth_router
 from app.api.v1.cvs import router as cvs_router
 from app.api.v1.jobs import router as jobs_router
@@ -32,6 +36,61 @@ from app.api.v1.audit import router as audit_router
 logger = get_logger(__name__)
 
 
+_QUEUE_DEPTH_POLL_SECONDS = 15
+
+
+async def _poll_queue_depth() -> None:
+    """Keeps QUEUE_DEPTH_GAUGE current from the database (§10 QueueDepthSpike).
+
+    Runs in the API process, which Prometheus actually scrapes — deliberately
+    not a worker-side counter increment, since queue depth is a live property
+    of the processing_jobs table, not an event any one worker sees. Also
+    fixes a real bug this replaced: the old rule filtered on
+    processing_jobs_total{status="queued"}, but that Prometheus counter is
+    only ever incremented with status="completed"/"failed" — the "queued"
+    label value never existed in it at all.
+    """
+    while True:
+        try:
+            async with async_session_factory() as session:
+                rows = await session.execute(
+                    text(
+                        "SELECT job_type, count(*) FROM processing_jobs "
+                        "WHERE status NOT IN ('completed', 'failed') "
+                        "GROUP BY job_type"
+                    )
+                )
+                seen = set()
+                for job_type, count in rows.all():
+                    QUEUE_DEPTH_GAUGE.labels(job_type=job_type).set(count)
+                    seen.add(job_type)
+                # Job types with zero outstanding jobs won't appear in the
+                # query above — zero them explicitly so the gauge doesn't
+                # keep reporting a stale nonzero value forever.
+                for job_type in _KNOWN_JOB_TYPES - seen:
+                    QUEUE_DEPTH_GAUGE.labels(job_type=job_type).set(0)
+        except Exception as e:
+            logger.warning("queue_depth_poll_failed", error=str(e))
+        await asyncio.sleep(_QUEUE_DEPTH_POLL_SECONDS)
+
+
+_KNOWN_JOB_TYPES = {
+    "docling_extract",
+    "textract_extract",
+    "merge_parse",
+    "cv_parse",
+    "ats_check",
+    "job_post_fetch",
+    "job_post_parse",
+    "match",
+    "cv_generate",
+    "cover_letter_generate",
+    "export",
+    "export_pdf",
+    "coverage_report",
+}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: setup and teardown."""
@@ -42,7 +101,9 @@ async def lifespan(app: FastAPI):
         await ensure_bucket_exists()
     except Exception:
         logger.warning("bucket_setup_skipped", reason="storage may not be available yet")
+    queue_depth_task = asyncio.create_task(_poll_queue_depth())
     yield
+    queue_depth_task.cancel()
     logger.info("app_shutting_down")
 
 

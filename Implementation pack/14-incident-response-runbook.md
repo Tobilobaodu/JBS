@@ -130,22 +130,65 @@ Only the **incident lead** and **on-call engineer** execute revocations; the
 
 ## 5. Tabletop exercise (run and documented)
 
-**Ran:** (date) — two scenarios walked live: IDOR-realized (§4.2) and
-credential compromise (§4.3). On-call engineer was handed the scenarios cold
-("a user reports seeing another user's CV data") and worked through §2→§4
-using this runbook against the real running stack.
+**Ran:** 2026-08-13 — two scenarios walked live against the real running
+Docker stack (not a mock/staging copy): IDOR-realized (§4.2) and credential
+compromise (§4.3). Two throwaway accounts were created
+(`tabletop-owner-*`/`tabletop-attacker-*@test.example`), the owner created a
+real job post, and every step below is a real HTTP call against the live API,
+not a walkthrough on paper.
 
-**What worked:** the audit endpoint + `audit_events` direct query answered
-"which users, since when" for the IDOR scenario; session revocation (§3)
-worked as documented for credential compromise.
+**IDOR-realized (§4.2), step by step:**
+1. Attacker requested the owner's job post directly:
+   `GET /job-posts/{jobPostId}` with the attacker's own valid token →
+   correctly denied, `404 {"detail":"Job post not found"}` — no 403/500, no
+   information leak about the resource existing.
+2. Checked the alerting counter (§2 step 2): `authz_denied_total` on
+   `/metrics` incremented to `1` immediately — the signal that "an IDOR
+   probe/denial just happened somewhere" reached Prometheus correctly.
+3. Pulled the audit trail for the attacker's `user_id` (§2 step 4) —
+   **came back empty of the denied attempt itself.** Only `login`/`register`
+   events existed; the actual `GET /job-posts/{jobPostId}` denial left no
+   `audit_events` row at all.
+4. Tested `GET /api/v1/audit/job_post/{jobPostId}` (the real endpoint,
+   Workstream F) as the owner: correctly returned the post's `upload` event.
+   As the attacker: correctly returned `[]` (200, not 404 — doesn't leak
+   existence), matching `test_audit_cross_user_returns_empty`.
 
-**What was unclear / changed as a result:**
-- *[fill in from the actual exercise — what the on-call engineer had to ask,
-  what this runbook didn't cover, and the edits made afterward.]*
-- The runbook's §2 step 4 originally pointed at a documented-but-missing audit
-  endpoint; that's why Workstream F built it *before* this runbook.
+**What worked:** the ownership-denial mechanism itself (consistent 404s,
+§10's `authz_denied_total` firing on every real denial — this is also what
+the Sprint 6 wiring-gap fix and its 28-route breadth test exist to guarantee),
+session revocation (below), and the audit endpoint's own IDOR protection.
 
-Per §12: an untested runbook reliably has gaps exactly where it's needed most.
-Run this tabletop again at least annually, and after any real incident however
-small — each is a free test.
+**What was unclear / changed as a result — the real gap this tabletop found:**
+`audit_events` only records mutations (creation/register/login/etc.), never
+read attempts — successful or denied. §2 step 4 and §4.2 step 2 both imply
+`audit_events` is where you go to answer "which specific entity_ids did the
+suspect account access" for an IDOR investigation, but for a pure-probing
+(read-only) attempt — which is what IDOR probing usually *is* — that query
+comes back **empty**. The only signal that a probe happened at all is the
+aggregate `authz_denied_total` counter, which has no per-entity detail: it
+tells you *an* attempt happened, not *which* resource, *when* (beyond the
+metric's own timestamp), or by *which* account beyond whichever token made
+the request. Correlating "which entity_id" currently requires falling back to
+raw uvicorn access logs / SQL echo output (confirmed both contain the
+`jobPostId` and the requester's `user_id` in this test) — which is incidental,
+not designed for this, and SQL echo logging in particular is commonly
+disabled in production. **Runbook §2/§4.2 have been left as-is for now**
+(the correct fix — auditing denied-access attempts, not just mutations — is
+a real product change, not a runbook wording fix, and is flagged here rather
+than done silently mid-tabletop-writeup); treat this as the concrete
+follow-up item the next engineering pass on this runbook should close.
+
+**Credential compromise (§4.3) / session revocation (§3), step by step:**
+1. Owner's valid token: `GET /job-posts/{jobPostId}` → `200`.
+2. `POST /auth/logout` with that token → `204`.
+3. Same token, same request, immediately after → `401
+   {"detail":"Session has been revoked or is invalid"}` — confirmed the
+   session-backing check rejects it even though the JWT's own `exp` hadn't
+   passed, exactly as §1/§3 document. This worked with zero surprises.
+
+Per §12: an untested runbook reliably has gaps exactly where it's needed most
+— this one found a real gap on the first real run. Re-run this tabletop again
+at least annually, and after any real incident however small, and after the
+`audit_events`-for-reads gap above is addressed.
 

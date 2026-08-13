@@ -7,9 +7,21 @@
 In production, expose these via a sidecar metrics HTTP server on each
 worker or a shared Pushgateway. For local dev, the API /metrics endpoint
 serves API-side metrics plus these custom metrics in the same process.
+
+Sprint 6 live-fire verification found this docstring's own caveat was real:
+Prometheus only scrapes the API process (prometheus.yml has one target,
+api:8000) — counters incremented inside Celery worker processes were
+provably never reaching Prometheus (confirmed via a genuine SSRF rejection
+that never showed up as a nonzero rate()). SSRF_REJECTED_COUNTER,
+GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER, and COST_USD_COUNTER only
+increment in worker code, so those three are also pushed to a Pushgateway
+(app/core/metrics_push.py) right after the local .inc() — see PUSH_REGISTRY
+below. QUEUE_DEPTH_GAUGE avoids the problem entirely by living in and being
+updated from the API process itself (app/main.py's lifespan), since queue
+depth is a property of the database, not of any one worker.
 """
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 JOB_THROUGHPUT = Counter(
     "processing_jobs_total",
@@ -80,3 +92,37 @@ GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER = Counter(
     "generation_schema_validation_failed_total",
     "Generation schema-validation failures (possible prompt-injection attempts)",
 )
+
+# ── Queue depth (fixes QueueDepthSpike, which referenced a label value —
+# status="queued" — that processing_jobs_total never actually emits; the
+# counter is only ever incremented with status="completed"/"failed", and
+# only from within worker processes). This gauge is updated periodically
+# from the database by app/main.py's lifespan, in the API process, so it
+# needs no Pushgateway.
+QUEUE_DEPTH_GAUGE = Gauge(
+    "processing_queue_depth",
+    "Current count of not-yet-completed processing jobs, by job_type",
+    ["job_type"],
+)
+
+# ── Real spend on paid external APIs (Textract, OpenAI), by call type.
+# Token-based for LLM calls (real prompt_tokens/completion_tokens against
+# documented gpt-4o-mini per-token pricing), per-page for Textract (real
+# AWS DetectDocumentText per-page pricing) — see the increment sites in
+# worker_jobs.py for the actual rates used.
+COST_USD_COUNTER = Counter(
+    "cost_usd_total",
+    "Estimated real USD spend on paid external APIs, by call_type",
+    ["call_type"],  # textract | cv_generate | cover_letter_generate
+)
+
+# ── Pushgateway registry: only the worker-side counters that Prometheus
+# can't otherwise see. Deliberately NOT the whole default REGISTRY —
+# JOB_THROUGHPUT etc. stay local-only-and-unscraped for now (a known,
+# separate, lower-priority gap; not one of the 5 §10 alert patterns) so a
+# partial per-worker snapshot of it doesn't leak into Pushgateway and look
+# like a complete picture on a future dashboard.
+PUSH_REGISTRY = CollectorRegistry()
+PUSH_REGISTRY.register(SSRF_REJECTED_COUNTER)
+PUSH_REGISTRY.register(GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER)
+PUSH_REGISTRY.register(COST_USD_COUNTER)

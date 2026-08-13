@@ -1,5 +1,7 @@
-# Prometheus configuration — scrapes the API /metrics endpoint
-# and worker metrics (future: sidecar or pushgateway per-worker).
+# Prometheus configuration — scrapes the API /metrics endpoint directly,
+# plus the Pushgateway (worker-only counters: SSRF rejections, generation
+# schema-validation failures, real API spend — see
+# app/core/metrics_push.py for why these can't just be scraped directly).
 
 global:
   scrape_interval: 15s
@@ -20,3 +22,10 @@ scrape_configs:
       - targets: ["api:8000"]
         labels:
           service: "cv-tailoring-api"
+
+  - job_name: "pushgateway"
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]
+        labels:
+          service: "cv-tailoring-workers"

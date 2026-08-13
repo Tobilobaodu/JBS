@@ -35,7 +35,9 @@ from app.core.metrics import (
     STRUCTURAL_ANOMALY_COUNTER,
     LLM_TOKENS_COUNTER,
     LLM_GENERATION_COUNTER,
+    COST_USD_COUNTER,
 )
+from app.core.metrics_push import push_worker_metrics
 from app.core.storage import download_file
 from app.db.models import (
     AtsReadinessCheck,
@@ -1324,6 +1326,13 @@ def process_textract_extract(self, job_id: str) -> None:
             extracted_text = "\n".join(lines)
             duration_ms = int((time.monotonic() - start) * 1000)
 
+            # Real spend (§10 CostSpikeSuspect): AWS Textract DetectDocumentText
+            # is billed at $1.50/1,000 pages = $0.0015/page.
+            COST_USD_COUNTER.labels(call_type="textract").inc(
+                max(len(pages), 1) * 0.0015
+            )
+            push_worker_metrics("worker_textract")
+
             pass_record = CvExtractionPass(
                 cv_file_id=cv_file.id,
                 pass_type="textract",
@@ -2269,6 +2278,14 @@ def process_cv_generate(self, job_id: str) -> None:
             outcome="success" if outcome.sections else "verification_failed",
         ).inc()
 
+        # Real spend (§10 CostSpikeSuspect): gpt-4o-mini is $0.150/1M prompt
+        # tokens, $0.600/1M completion tokens — actual usage, not a flat guess.
+        COST_USD_COUNTER.labels(call_type="cv_generate").inc(
+            outcome.total_prompt_tokens * 0.150 / 1_000_000
+            + outcome.total_completion_tokens * 0.600 / 1_000_000
+        )
+        push_worker_metrics("worker_cv_generate")
+
         JOB_THROUGHPUT.labels(job_type="cv_generate", status="completed").inc()
         duration_s = time.monotonic() - t_start
         JOB_DURATION_SECONDS.labels(job_type="cv_generate").observe(duration_s)
@@ -2464,6 +2481,17 @@ def process_cover_letter_generate(self, job_id: str) -> None:
             generation_task="cover_letter_body",
             outcome="success" if result.source == "llm" else "fallback",
         ).inc()
+
+        if result.source == "llm":
+            # Real spend (§10 CostSpikeSuspect): cover_letter_generation.py
+            # doesn't propagate token counts up (unlike tailored-CV
+            # generation), so this uses the documented flat per-call estimate
+            # (02-architecture-overview.md §10, ~$0.025/call for gpt-4o-mini
+            # on a letter-length completion) rather than a real token count.
+            # Only charged on the real LLM path — the template fallback made
+            # no paid call.
+            COST_USD_COUNTER.labels(call_type="cover_letter_generate").inc(0.025)
+            push_worker_metrics("worker_cover_letter_generate")
 
         JOB_THROUGHPUT.labels(job_type="cover_letter_generate", status="completed").inc()
         duration_s = time.monotonic() - t_start
