@@ -12,6 +12,7 @@ import {
   TableCell,
 } from "@/components/ui/table"
 import { DataTableShell } from "@/components/data-table-shell"
+import { AtsCheckDialog } from "@/components/ats-check-dialog"
 import { listCvs } from "@/lib/dashboard-api"
 
 export default function CvsPage() {
@@ -41,6 +42,7 @@ export default function CvsPage() {
               <TableHead>Filename</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Uploaded</TableHead>
+              <TableHead>ATS</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -54,6 +56,9 @@ export default function CvsPage() {
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {new Date(cv.createdAt).toLocaleDateString()}
+                </TableCell>
+                <TableCell>
+                  <AtsCheckDialog cvId={cv.id} cvName={cv.originalFilename} />
                 </TableCell>
               </TableRow>
             ))}

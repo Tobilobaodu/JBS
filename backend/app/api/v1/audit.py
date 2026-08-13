@@ -13,7 +13,7 @@ of the values this codebase actually writes to audit_events, never passed raw
 into a query (per security-plan §7).
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +34,9 @@ _ALLOWED_ENTITY_TYPES = frozenset(
     {
         "cv_file",
         "job_post",
+        "job_post_collection",
         "match_run",
+        "processing_job",
         "tailored_cv_draft",
         "cover_letter_workflow",
         "cover_letter_draft",
@@ -45,11 +47,19 @@ _ALLOWED_ENTITY_TYPES = frozenset(
     }
 )
 
+# Denials are now audited too (event_type="access_denied", see
+# app/core/security.py::ownership_denied) — bounded by real denial volume,
+# not proportional to normal read traffic, but LIMIT/pagination is cheap
+# insurance against a hot entity_id ever returning an unbounded result set.
+_MAX_PAGE_SIZE = 200
+
 
 @router.get("/audit/{entityType}/{entityId}", response_model=list[AuditEventResponse])
 async def get_audit_events(
     entityType: str,
     entityId: str,
+    limit: int = Query(default=_MAX_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
+    offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
@@ -68,6 +78,8 @@ async def get_audit_events(
             AuditEvent.user_id == current_user.id,
         )
         .order_by(AuditEvent.created_at)
+        .limit(limit)
+        .offset(offset)
     )
     events = result.scalars().all()
 

@@ -66,7 +66,10 @@ async def _verify_ownership(
     )
     wf = result.scalar_one_or_none()
     if wf is None:
-        raise ownership_denied("Workflow not found")
+        raise await ownership_denied(
+            session, user_id=user_id, entity_type="cover_letter_workflow",
+            entity_id=workflow_id, detail="Workflow not found",
+        )
     return wf
 
 
@@ -106,7 +109,10 @@ async def start_workflow(
     )
     profile = profile_result.scalar_one_or_none()
     if profile is None or profile.current_version_id is None:
-        raise ownership_denied("No parsed CV profile found. Process a CV first.")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="cv_file",
+            entity_id=body.cvId, detail="No parsed CV profile found. Process a CV first.",
+        )
 
     # Verify job post profile exists (1:1 with job_posts), scoped to the
     # caller for the same reason.
@@ -120,7 +126,10 @@ async def start_workflow(
     )
     jp_profile = jp_result.scalar_one_or_none()
     if jp_profile is None:
-        raise ownership_denied("Job post not found or not yet structured.")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="job_post",
+            entity_id=body.jobPostId, detail="Job post not found or not yet structured.",
+        )
 
     # Verify match if provided
     if body.matchId:
@@ -131,7 +140,10 @@ async def start_workflow(
             )
         )
         if match_result.scalar_one_or_none() is None:
-            raise ownership_denied("Match not found")
+            raise await ownership_denied(
+                session, user_id=current_user.id, entity_type="match_run",
+                entity_id=body.matchId, detail="Match not found",
+            )
 
     # Load CV profile version for name extraction
     cv_version_result = await session.execute(

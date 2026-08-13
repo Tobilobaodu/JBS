@@ -54,7 +54,8 @@ async def test_own_entity_returns_events():
 
     async with _test_session_factory() as s:
         events = await get_audit_events(
-            entityType="cv_file", entityId=entity_id, current_user=user, session=s,
+            entityType="cv_file", entityId=entity_id, limit=200, offset=0,
+            current_user=user, session=s,
         )
 
     assert len(events) == 1
@@ -73,7 +74,8 @@ async def test_serialization_is_camel_case():
 
     async with _test_session_factory() as s:
         events = await get_audit_events(
-            entityType="cv_file", entityId=e.entity_id, current_user=user, session=s,
+            entityType="cv_file", entityId=e.entity_id, limit=200, offset=0,
+            current_user=user, session=s,
         )
 
     dumped = events[0].model_dump(by_alias=True)
@@ -97,6 +99,7 @@ async def test_invalid_entity_type_rejected_422():
         with pytest.raises(HTTPException) as exc:
             await get_audit_events(
                 entityType="; DROP TABLE audit_events; --", entityId=str(uuid.uuid4()),
+                limit=200, offset=0,
                 current_user=user, session=s,
             )
         assert exc.value.status_code == 422
@@ -114,7 +117,8 @@ async def test_cross_user_returns_empty_not_data():
 
     async with _test_session_factory() as s:
         events = await get_audit_events(
-            entityType="cv_file", entityId=e.entity_id, current_user=attacker, session=s,
+            entityType="cv_file", entityId=e.entity_id, limit=200, offset=0,
+            current_user=attacker, session=s,
         )
 
     assert events == []

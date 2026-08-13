@@ -21,6 +21,7 @@ import uuid
 import pytest
 from fastapi import HTTPException
 from prometheus_client import REGISTRY
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
@@ -424,6 +425,40 @@ async def test_cross_user_denied_increments_authz_counter(route_name, call):
     )
 
 
+@pytest.mark.parametrize("route_name,call", ROUTES)
+@pytest.mark.asyncio(loop_scope="function")
+async def test_cross_user_denied_writes_audit_event(route_name, call):
+    """Tabletop finding (2026-08-13, see 14-incident-response-runbook.md §5):
+    audit_events only ever recorded mutations, never denied-read attempts —
+    the runbook's own documented "pull audit_events for the suspect" step
+    came back empty for a real IDOR probe, leaving authz_denied_total's bare
+    count as the only signal (no per-entity detail). ownership_denied() now
+    writes an access_denied AuditEvent; this proves it fires from all 28
+    routes, not just the one it was first wired against.
+    """
+    attacker, ids = await _build_scenario()
+    async with _test_session_factory() as s:
+        before = (await s.execute(
+            select(AuditEvent).where(
+                AuditEvent.user_id == attacker.id,
+                AuditEvent.event_type == "access_denied",
+            )
+        )).scalars().all()
+        with pytest.raises(HTTPException):
+            await call(attacker, ids, s)
+
+    async with _test_session_factory() as s:
+        after = (await s.execute(
+            select(AuditEvent).where(
+                AuditEvent.user_id == attacker.id,
+                AuditEvent.event_type == "access_denied",
+            )
+        )).scalars().all()
+    assert len(after) - len(before) >= 1, (
+        f"{route_name}: denied with 404 but wrote no access_denied AuditEvent"
+    )
+
+
 # GET /audit/{entityType}/{entityId} is a list endpoint, not a single-resource
 # route — its denial semantics are "empty list, no data leaked" rather than
 # 404. Folded into this matrix separately so the ownership guarantee is still
@@ -447,7 +482,8 @@ async def test_audit_cross_user_returns_empty():
 
     async with _test_session_factory() as s:
         events = await get_audit_events(
-            entityType="cv_file", entityId=entity_id, current_user=attacker, session=s,
+            entityType="cv_file", entityId=entity_id, limit=200, offset=0,
+            current_user=attacker, session=s,
         )
 
     assert events == []

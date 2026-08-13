@@ -199,7 +199,10 @@ async def export_cv(
     )
     draft = result.scalar_one_or_none()
     if draft is None:
-        raise ownership_denied("Tailored CV draft not found")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="tailored_cv_draft",
+            entity_id=draftId, detail="Tailored CV draft not found",
+        )
     if draft.status != "approved":
         raise HTTPException(
             status_code=409,
@@ -243,7 +246,10 @@ async def export_cover_letter(
     )
     wf = result.scalar_one_or_none()
     if wf is None:
-        raise ownership_denied("Workflow not found")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="cover_letter_workflow",
+            entity_id=workflowId, detail="Workflow not found",
+        )
     if wf.status != "approved":
         raise HTTPException(
             status_code=409,
@@ -304,7 +310,10 @@ async def export_application_pack(
     wf = wf_result.scalar_one_or_none()
 
     if cv_draft is None or wf is None:
-        raise ownership_denied("Tailored CV draft or cover letter workflow not found.")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="tailored_cv_draft",
+            entity_id=body.tailored_cv_draft_id, detail="Tailored CV draft or cover letter workflow not found.",
+        )
     if cv_draft.status != "approved" or wf.status != "approved":
         raise HTTPException(
             status_code=409,
@@ -346,7 +355,10 @@ async def get_export(
     )
     export = result.scalar_one_or_none()
     if export is None:
-        raise ownership_denied("Export not found")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="export",
+            entity_id=exportId, detail="Export not found",
+        )
     return _export_response(export)
 
 
@@ -369,7 +381,10 @@ async def download_export(
     )
     export = result.scalar_one_or_none()
     if export is None:
-        raise ownership_denied("Export not found")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="export",
+            entity_id=exportId, detail="Export not found",
+        )
     if export.status != "completed" or not export.storage_key:
         raise HTTPException(
             status_code=409,
@@ -417,7 +432,10 @@ async def export_pdf(
     )
     source = result.scalar_one_or_none()
     if source is None:
-        raise ownership_denied("Export not found")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="export",
+            entity_id=exportId, detail="Export not found",
+        )
     if source.format != "docx":
         raise HTTPException(
             status_code=409,

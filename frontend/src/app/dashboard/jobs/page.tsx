@@ -1,5 +1,6 @@
 "use client"
 
+import { useState } from "react"
 import Link from "next/link"
 import { useQuery } from "@tanstack/react-query"
 import { Button } from "@/components/ui/button"
@@ -12,6 +13,7 @@ import {
   TableCell,
 } from "@/components/ui/table"
 import { DataTableShell } from "@/components/data-table-shell"
+import { CoverageReportPanel } from "@/components/coverage-report-panel"
 import { listJobPosts } from "@/lib/dashboard-api"
 
 export default function JobsPage() {
@@ -19,6 +21,11 @@ export default function JobsPage() {
     queryKey: ["dashboard-job-posts"],
     queryFn: () => listJobPosts(),
   })
+  const [selected, setSelected] = useState<string[]>([])
+
+  function toggle(id: string) {
+    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  }
 
   return (
     <div>
@@ -38,6 +45,7 @@ export default function JobsPage() {
         >
           <TableHeader>
             <TableRow>
+              <TableHead className="w-8"></TableHead>
               <TableHead>Title</TableHead>
               <TableHead>Employer</TableHead>
               <TableHead>Status</TableHead>
@@ -47,6 +55,14 @@ export default function JobsPage() {
           <TableBody>
             {query.data?.items.map((job) => (
               <TableRow key={job.id}>
+                <TableCell>
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(job.id)}
+                    onChange={() => toggle(job.id)}
+                    aria-label={`Select ${job.profile?.jobTitle ?? "job"}`}
+                  />
+                </TableCell>
                 <TableCell className="font-medium">
                   {job.profile?.jobTitle ?? "—"}
                 </TableCell>
@@ -63,6 +79,11 @@ export default function JobsPage() {
             ))}
           </TableBody>
         </DataTableShell>
+
+        <CoverageReportPanel
+          selectedJobPostIds={selected}
+          onClearSelection={() => setSelected([])}
+        />
       </div>
     </div>
   )

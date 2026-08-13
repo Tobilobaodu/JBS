@@ -44,7 +44,10 @@ async def get_job_status(
     job = result.scalar_one_or_none()
 
     if job is None:
-        raise ownership_denied("Job not found.")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="processing_job",
+            entity_id=job_id, detail="Job not found.",
+        )
 
     return ProcessingJobResponse(
         id=job.id,

@@ -348,7 +348,10 @@ async def get_job_post(
     )
     job_post = result.unique().scalar_one_or_none()
     if job_post is None:
-        raise ownership_denied("Job post not found")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="job_post",
+            entity_id=jobPostId, detail="Job post not found",
+        )
 
     return _job_post_to_response(job_post)
 
@@ -385,7 +388,10 @@ async def reprocess_job_post(
     )
     job_post = result.scalar_one_or_none()
     if job_post is None:
-        raise ownership_denied("Job post not found")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="job_post",
+            entity_id=jobPostId, detail="Job post not found",
+        )
 
     await enforce_concurrent_job_limit(session, current_user.id)
 

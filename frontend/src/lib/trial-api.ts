@@ -214,3 +214,120 @@ export async function downloadExport(exportId: string, filename: string) {
   link.remove()
   URL.revokeObjectURL(url)
 }
+
+export type ExportTemplate = {
+  id: string
+  name: string
+  description: string
+}
+
+export function listExportTemplates() {
+  return apiFetch<ExportTemplate[]>("/exports/templates")
+}
+
+export function exportCoverLetter(workflowId: string, templateId?: string) {
+  return apiFetch<ExportRequestOut>(`/exports/cover-letter/${workflowId}`, {
+    method: "POST",
+    body: templateId ? { templateId } : {},
+  })
+}
+
+export function exportApplicationPack(
+  tailoredCvDraftId: string,
+  coverLetterWorkflowId: string,
+  templateId?: string
+) {
+  return apiFetch<ExportRequestOut>("/exports/application-pack", {
+    method: "POST",
+    body: {
+      tailoredCvDraftId,
+      coverLetterWorkflowId,
+      ...(templateId ? { templateId } : {}),
+    },
+  })
+}
+
+/** Derives a PDF version of an already-downloaded docx export — must call
+ * downloadExport() on the source export first (see exports.py::export_pdf's
+ * precondition). Returns a new Export, polled/downloaded the same way. */
+export function exportPdf(exportId: string) {
+  return apiFetch<ExportRequestOut>(`/exports/${exportId}/pdf`, { method: "POST" })
+}
+
+export type AtsCheckItem = {
+  checkType: string
+  passed: boolean
+  severity: string
+  detail: string
+}
+
+export type AtsReadinessCheckResponse = {
+  id: string
+  cvId: string
+  cvProfileVersionId: string | null
+  overallScore: number
+  contactInfoParseable: boolean | null
+  checks: AtsCheckItem[]
+  createdAt: string
+}
+
+export function triggerAtsCheck(cvId: string) {
+  return apiFetch<ProcessingJobRef>(`/cvs/${cvId}/ats-check`, {
+    method: "POST",
+  })
+}
+
+/** 404s until a check has run — callers should treat that as "no result yet", not an error. */
+export function getAtsCheck(cvId: string) {
+  return apiFetch<AtsReadinessCheckResponse>(`/cvs/${cvId}/ats-check`)
+}
+
+export type JobPostCollection = {
+  id: string
+  name: string
+  jobPostIds: string[]
+  createdAt: string
+  updatedAt: string
+}
+
+export function createJobPostCollection(name: string, jobPostIds: string[]) {
+  return apiFetch<JobPostCollection>("/job-post-collections", {
+    method: "POST",
+    body: { name, jobPostIds },
+  })
+}
+
+export function listJobPostCollections() {
+  return apiFetch<JobPostCollection[]>("/job-post-collections")
+}
+
+export function triggerCoverageReport(collectionId: string, cvId: string) {
+  return apiFetch<ProcessingJobRef>(
+    `/job-post-collections/${collectionId}/coverage-report`,
+    { method: "POST", body: { cvId } }
+  )
+}
+
+export type AggregateGap = {
+  requirementTextCluster: string
+  recurrenceCount: number
+  recurrenceRatio: number
+  affectedJobPostIds: string[]
+  currentSupportLevelDistribution: Record<string, number>
+}
+
+export type CoverageReport = {
+  id: string
+  cvProfileVersionId: string
+  collectionId: string
+  matchRunIds: string[]
+  status: string
+  aggregateGaps: AggregateGap[]
+  skippedJobPostIds: string[] | null
+  createdAt: string
+  completedAt: string | null
+}
+
+export function getCoverageReport(reportId: string) {
+  return apiFetch<CoverageReport>(`/coverage-reports/${reportId}`)
+}

@@ -31,6 +31,12 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # Only runs on a fresh volume — creates cv_tailoring_test alongside the
+      # main dev DB, so host-venv pytest runs never pollute the shared dev
+      # database. Already-running dev environments need this created once
+      # manually (`CREATE DATABASE cv_tailoring_test OWNER cvapp;`) since
+      # init scripts don't re-run against an existing volume.
+      - ./postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cvapp} -d ${POSTGRES_DB:-cv_tailoring}"]
       interval: 5s

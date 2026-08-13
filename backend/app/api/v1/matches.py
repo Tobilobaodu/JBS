@@ -144,7 +144,10 @@ async def create_match(
     )
     cv_profile = cv_result.scalar_one_or_none()
     if cv_profile is None:
-        raise ownership_denied("CV profile version not found")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="cv_profile_version",
+            entity_id=body.cvProfileVersionId, detail="CV profile version not found",
+        )
 
     # Look up job post profile from jobPostId (1:1 relationship), scoped
     # to this identity — without this join, any identity could match
@@ -159,7 +162,10 @@ async def create_match(
     )
     jp_profile = jp_result.scalar_one_or_none()
     if jp_profile is None:
-        raise ownership_denied("Job post not found or not yet structured")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="job_post",
+            entity_id=body.jobPostId, detail="Job post not found or not yet structured",
+        )
 
     # Create match_run row
     match_run = MatchRun(
@@ -291,7 +297,10 @@ async def get_match(
     )
     match_run = result.scalar_one_or_none()
     if match_run is None:
-        raise ownership_denied("Match not found")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="match_run",
+            entity_id=matchId, detail="Match not found",
+        )
 
     # Load evidence items
     evidence_result = await session.execute(

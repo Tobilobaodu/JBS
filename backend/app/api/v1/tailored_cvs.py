@@ -161,7 +161,10 @@ async def create_tailored_cv(
     )
     match_run = match_result.scalar_one_or_none()
     if match_run is None:
-        raise ownership_denied("Match not found")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="match_run",
+            entity_id=matchId, detail="Match not found",
+        )
     if match_run.status != "completed":
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -210,7 +213,10 @@ async def get_tailored_cv(
     )
     draft = result.scalar_one_or_none()
     if draft is None:
-        raise ownership_denied("Tailored CV draft not found")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="tailored_cv_draft",
+            entity_id=draftId, detail="Tailored CV draft not found",
+        )
 
     sections_result = await session.execute(
         select(TailoredCvSection).where(TailoredCvSection.draft_id == draftId)
@@ -251,7 +257,10 @@ async def regenerate_tailored_cv(
     )
     base_draft = result.scalar_one_or_none()
     if base_draft is None:
-        raise ownership_denied("Tailored CV draft not found")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="tailored_cv_draft",
+            entity_id=draftId, detail="Tailored CV draft not found",
+        )
     if base_draft.status in ("pending", "archived"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -295,7 +304,10 @@ async def approve_tailored_cv(
     )
     draft = result.scalar_one_or_none()
     if draft is None:
-        raise ownership_denied("Tailored CV draft not found")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="tailored_cv_draft",
+            entity_id=draftId, detail="Tailored CV draft not found",
+        )
     if draft.status not in ("generated", "user_edited"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

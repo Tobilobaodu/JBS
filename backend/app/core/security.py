@@ -23,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db import get_session
-from app.db.models import TrialSession, User, UserSession
+from app.db.models import AuditEvent, TrialSession, User, UserSession
 from app.core.metrics import AUTH_FAILURE_COUNTER, AUTHZ_DENIED_COUNTER
 
 
@@ -178,17 +178,45 @@ class RequestIdentity:
         return self.trial_session.id if self.trial_session else None
 
 
-def ownership_denied(detail: str) -> HTTPException:
+async def ownership_denied(
+    session: AsyncSession,
+    *,
+    user_id: str | None,
+    entity_type: str,
+    entity_id: str,
+    detail: str,
+) -> HTTPException:
     """Central IDOR-denial chokepoint.
 
     Every route that 404s because the requester doesn't own the resource
-    should ``raise ownership_denied(...)`` rather than raising HTTPException
-    404 directly — this counts the denial once, in one place, so the §10
-    IDOR-probing alert (prometheus/alert_rules.yml) is wired regardless of
-    which route raised it, instead of being scattered per-route where a new
-    route can forget to count it.
+    should ``raise await ownership_denied(...)`` rather than raising
+    HTTPException 404 directly — this counts the denial and audits it once,
+    in one place, so the §10 IDOR-probing alert (prometheus/alert_rules.yml)
+    and the audit trail are both wired regardless of which route raised it,
+    instead of being scattered per-route where a new route can forget one.
+
+    Writes an AuditEvent(event_type="access_denied") and commits it
+    immediately — a tabletop exercise found audit_events previously only
+    covered mutations, never denied-read attempts, so investigating "which
+    resources did this account try to access" came back empty for a pure
+    IDOR probe (only the aggregate counter had any signal). Must commit here
+    rather than leaving it for the caller's own commit: the caller raises
+    the returned exception immediately after, and get_session() closes
+    (rolling back) without committing on an unhandled exception.
+
+    ``user_id=None`` covers trial-session-only requests — AuditEvent.user_id
+    is nullable for exactly this case (see existing mutation-event call
+    sites, e.g. app/api/v1/job_posts.py's upload event).
     """
     AUTHZ_DENIED_COUNTER.inc()
+    session.add(AuditEvent(
+        user_id=user_id,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        event_type="access_denied",
+        actor_type="user" if user_id else "trial_session",
+    ))
+    await session.commit()
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
 
 

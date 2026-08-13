@@ -87,7 +87,10 @@ async def create_collection(
     owned_ids = {row[0] for row in owned_result.all()}
     missing = [jp_id for jp_id in body.job_post_ids if jp_id not in owned_ids]
     if missing:
-        raise ownership_denied(f"Job post(s) not found or not owned by you: {missing}")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="job_post",
+            entity_id=",".join(missing), detail=f"Job post(s) not found or not owned by you: {missing}",
+        )
 
     collection = JobPostCollection(
         user_id=current_user.id,
@@ -153,7 +156,10 @@ async def trigger_coverage_report(
     )
     collection = collection_result.scalar_one_or_none()
     if collection is None:
-        raise ownership_denied("Collection not found")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="job_post_collection",
+            entity_id=collectionId, detail="Collection not found",
+        )
 
     # Resolve cvId -> current CvProfileVersion, same join pattern as
     # cover_letters.py::start_workflow — cvId is a CvFile id, not a
@@ -168,7 +174,10 @@ async def trigger_coverage_report(
     )
     profile = profile_result.scalar_one_or_none()
     if profile is None or profile.current_version_id is None:
-        raise ownership_denied("No parsed CV profile found. Process a CV first.")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="cv_file",
+            entity_id=body.cv_id, detail="No parsed CV profile found. Process a CV first.",
+        )
 
     report = CoverageReport(
         user_id=current_user.id,
@@ -232,5 +241,8 @@ async def get_coverage_report(
     )
     report = result.scalar_one_or_none()
     if report is None:
-        raise ownership_denied("Coverage report not found")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="coverage_report",
+            entity_id=reportId, detail="Coverage report not found",
+        )
     return _report_response(report)

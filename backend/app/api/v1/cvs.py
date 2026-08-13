@@ -283,7 +283,10 @@ async def get_cv(
     cv_file = result.scalar_one_or_none()
 
     if cv_file is None:
-        raise ownership_denied("CV not found.")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="cv_file",
+            entity_id=cv_id, detail="CV not found.",
+        )
 
     # Look up most recent processing job status for this CV
     job_result = await session.execute(
@@ -333,7 +336,10 @@ async def delete_cv(
     cv_file = result.scalar_one_or_none()
 
     if cv_file is None:
-        raise ownership_denied("CV not found.")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="cv_file",
+            entity_id=cv_id, detail="CV not found.",
+        )
 
     cv_file.deleted_at = func.now()
     cv_file.status = "deleted"
@@ -386,7 +392,10 @@ async def reprocess_cv(
     cv_file = result.scalar_one_or_none()
 
     if cv_file is None:
-        raise ownership_denied("CV not found.")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="cv_file",
+            entity_id=cv_id, detail="CV not found.",
+        )
 
     cv_file.status = "pending"
     processing_job = await start_extraction_pipeline(
@@ -421,7 +430,10 @@ async def get_cv_raw_text(
         )
     )
     if result.scalar_one_or_none() is None:
-        raise ownership_denied("CV not found.")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="cv_file",
+            entity_id=cv_id, detail="CV not found.",
+        )
 
     raw = await session.execute(
         select(CvRawText).where(CvRawText.cv_file_id == cv_id)
@@ -458,7 +470,10 @@ async def get_cv_extraction_detail(
         )
     )
     if result.scalar_one_or_none() is None:
-        raise ownership_denied("CV not found.")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="cv_file",
+            entity_id=cv_id, detail="CV not found.",
+        )
 
     passes_result = await session.execute(
         select(CvExtractionPass)
@@ -518,7 +533,10 @@ async def get_cv_parsed_profile(
     )
     cv_file = cv_result.scalar_one_or_none()
     if cv_file is None:
-        raise ownership_denied("CV not found")
+        raise await ownership_denied(
+            session, user_id=identity.user_id, entity_type="cv_file",
+            entity_id=cv_id, detail="CV not found",
+        )
 
     # Get current profile pointer
     profile_result = await session.execute(
@@ -592,7 +610,10 @@ async def run_ats_check_for_cv(
     )
     cv_file = result.scalar_one_or_none()
     if cv_file is None:
-        raise ownership_denied("CV not found.")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="cv_file",
+            entity_id=cv_id, detail="CV not found.",
+        )
 
     # create_processing_job commits internally (before dispatching to
     # Celery) — nothing left to commit here.
@@ -632,7 +653,10 @@ async def get_ats_check(
         )
     )
     if result.scalar_one_or_none() is None:
-        raise ownership_denied("CV not found.")
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="cv_file",
+            entity_id=cv_id, detail="CV not found.",
+        )
 
     check_result = await session.execute(
         select(AtsReadinessCheck)

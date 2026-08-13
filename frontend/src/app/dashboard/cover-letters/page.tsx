@@ -10,7 +10,9 @@ import {
   TableCell,
 } from "@/components/ui/table"
 import { DataTableShell } from "@/components/data-table-shell"
+import { ExportButton } from "@/components/export-button"
 import { listCoverLetterWorkflows } from "@/lib/dashboard-api"
+import { exportCoverLetter } from "@/lib/trial-api"
 
 export default function CoverLettersPage() {
   const query = useQuery({
@@ -36,6 +38,7 @@ export default function CoverLettersPage() {
               <TableHead>Status</TableHead>
               <TableHead>Step</TableHead>
               <TableHead>Created</TableHead>
+              <TableHead>Export</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -51,6 +54,14 @@ export default function CoverLettersPage() {
                 <TableCell>{wf.currentStep}</TableCell>
                 <TableCell className="text-muted-foreground">
                   {new Date(wf.createdAt).toLocaleDateString()}
+                </TableCell>
+                <TableCell>
+                  <ExportButton
+                    label="Export .docx"
+                    disabled={wf.status !== "approved"}
+                    startExport={() => exportCoverLetter(wf.id)}
+                    filename={`cover-letter-${wf.id}.docx`}
+                  />
                 </TableCell>
               </TableRow>
             ))}

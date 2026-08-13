@@ -220,7 +220,8 @@
       "Bash(MSYS_NO_PATHCONV=1 docker exec backend-api-1 ps aux)",
       "Bash(MSYS_NO_PATHCONV=1 docker exec backend-api-1 sh -c \"cat /proc/1/stat | awk '{print \\\\$22}'\")",
       "Bash(curl -sL http://localhost:8000/metrics)",
-      "Bash(curl -s http://localhost:9090/-/ready -o /dev/null -w \"%{http_code}\")"
+      "Bash(curl -s http://localhost:9090/-/ready -o /dev/null -w \"%{http_code}\")",
+      "WebFetch(domain:github.com)"
     ]
   }
 }
