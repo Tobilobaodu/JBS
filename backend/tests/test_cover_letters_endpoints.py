@@ -24,7 +24,7 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 from app.api.v1.cover_letters import (
-    submit_answers, get_draft, regenerate, approve,
+    submit_answers, get_draft, regenerate, approve, list_cover_letter_workflows,
 )
 from app.schemas.cover_letter import SubmitAnswersRequest, AnswerItem
 from app.db.models import (
@@ -121,6 +121,74 @@ async def _draft(session, wf, *, status="generated", version_number=1):
     session.add(d)
     await session.flush()
     return d
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# GET /cover-letters — list
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_list_workflows_returns_job_title_and_employer_from_the_joined_profile():
+    async with _test_session_factory() as s:
+        user = await _user(s, "listcl1")
+        await _workflow(s, user)
+        await s.commit()
+
+    async with _test_session_factory() as s:
+        result = await list_cover_letter_workflows(limit=20, offset=0, current_user=user, session=s)
+
+    assert result.total == 1
+    item = result.items[0]
+    assert item.job_title == "Engineer"
+    assert item.employer == "Acme"
+    assert item.status == "awaiting_answers"
+    assert item.current_step == 1
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_list_workflows_only_returns_the_current_users_own_workflows():
+    async with _test_session_factory() as s:
+        user_a = await _user(s, "listclA")
+        user_b = await _user(s, "listclB")
+        await _workflow(s, user_a)
+        await _workflow(s, user_b)
+        await s.commit()
+
+    async with _test_session_factory() as s:
+        result = await list_cover_letter_workflows(limit=20, offset=0, current_user=user_a, session=s)
+
+    assert result.total == 1
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_list_workflows_empty_for_a_user_with_no_workflows():
+    async with _test_session_factory() as s:
+        user = await _user(s, "listclempty")
+        await s.commit()
+
+    async with _test_session_factory() as s:
+        result = await list_cover_letter_workflows(limit=20, offset=0, current_user=user, session=s)
+
+    assert result.total == 0
+    assert result.items == []
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_list_workflows_orders_most_recent_first_and_respects_pagination():
+    async with _test_session_factory() as s:
+        user = await _user(s, "listclpage")
+        first = await _workflow(s, user)
+        second = await _workflow(s, user)
+        await s.commit()
+
+    async with _test_session_factory() as s:
+        page1 = await list_cover_letter_workflows(limit=1, offset=0, current_user=user, session=s)
+        page2 = await list_cover_letter_workflows(limit=1, offset=1, current_user=user, session=s)
+
+    assert page1.total == 2
+    assert page1.items[0].id == second.id
+    assert page2.items[0].id == first.id
 
 
 # ═══════════════════════════════════════════════════════════════════════

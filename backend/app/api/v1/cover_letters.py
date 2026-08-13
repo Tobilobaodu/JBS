@@ -14,8 +14,8 @@ references.
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
@@ -29,6 +29,7 @@ from app.db.models import (
 )
 from app.schemas.cover_letter import (
     StartWorkflowRequest, CoverLetterWorkflowResponse,
+    CoverLetterWorkflowListItem, CoverLetterWorkflowListResponse,
     CoverLetterQuestionResponse, SubmitAnswersRequest,
     CoverLetterDraftResponse,
 )
@@ -218,6 +219,58 @@ async def start_workflow(
     logger.info("cover_letter_workflow_started", workflow_id=wf.id, user_id=current_user.id)
 
     return _map_workflow(wf)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GET /cover-letters — list
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.get("/cover-letters", response_model=CoverLetterWorkflowListResponse)
+async def list_cover_letter_workflows(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """List cover-letter workflows for the current user, with pagination.
+
+    Account-only — cover letters have always been get_current_user-only
+    throughout this router, matching GET /cvs and GET /job-posts'
+    precedent for their own list endpoints.
+    """
+    total = (
+        await session.execute(
+            select(func.count())
+            .select_from(CoverLetterWorkflow)
+            .where(CoverLetterWorkflow.user_id == current_user.id)
+        )
+    ).scalar_one()
+
+    result = await session.execute(
+        select(CoverLetterWorkflow, JobPostProfile)
+        .join(JobPostProfile, JobPostProfile.id == CoverLetterWorkflow.job_post_profile_id)
+        .where(CoverLetterWorkflow.user_id == current_user.id)
+        .order_by(CoverLetterWorkflow.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    rows = result.all()
+
+    items = [
+        CoverLetterWorkflowListItem(
+            id=wf.id,
+            job_post_id=profile.job_post_id,
+            job_title=profile.job_title,
+            employer=profile.employer,
+            status=wf.status,
+            current_step=wf.current_step,
+            created_at=wf.created_at,
+        )
+        for wf, profile in rows
+    ]
+
+    return CoverLetterWorkflowListResponse(items=items, total=total, limit=limit, offset=offset)
 
 
 # ──────────────────────────────────────────────────────────────────────

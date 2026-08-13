@@ -11,7 +11,7 @@ import requests
 
 API = "http://localhost:8000/api/v1"
 EMAIL = f"e2e-{int(time.time())}@test.com"
-PASSWORD = "E2ETest123!"
+PASSWORD = "E2ETest1234!"
 
 
 def main():

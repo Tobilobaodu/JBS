@@ -444,21 +444,31 @@ Indexes: `idx_audit_user` on `user_id`; `idx_audit_entity` on `(entity_type, ent
 **Append-only.** No application-level update or delete path — protect against tampering per the compliance requirements in `06-non-functional-requirements.md`.
 
 ### `exports`
+
+**Format decision resolved (Sprint 5, 2026-08-12).** DOCX is the primary export format, with multiple ATS-ready template layouts to choose from (`app/services/export_templates.py`). PDF is secondary — available only after the DOCX for that export has actually been *downloaded*, and is always a conversion of that exact file (via Gotenberg, a self-hosted LibreOffice-backed HTTP service — not an independently-rendered PDF) rather than a parallel format. An application-pack export is a ZIP of two independent, already-ATS-safe DOCX files, not a merged document — merging risks breaking each file's own ATS structure.
+
 | Column | Type | Notes |
 |---|---|---|
 | `id` | UUID (PK) | |
-| `user_id` | UUID NOT NULL (FK → `users`) | |
+| `user_id` | UUID NULLABLE (FK → `users`) | **Deviation from this table's originally documented `NOT NULL`** — see below |
+| `trial_session_id` | UUID NULLABLE (FK → `trial_sessions`) | **New.** Exactly one of `user_id`/`trial_session_id` set, enforced by a `CHECK` (`ck_exports_exactly_one_owner`), same pattern as `tailored_cv_drafts`/`cv_files`/`job_posts`/`match_runs`. Required because `export_type='cv'` must be trial-accessible — tailored CV generation itself already is, end to end, so a trial user finishing that flow shouldn't hit an account wall exporting it. A second `CHECK` (`ck_exports_trial_only_for_cv`) enforces `trial_session_id IS NULL OR export_type = 'cv'` at the DB layer, since `cover_letter`/`application_pack` exports always require a `CoverLetterWorkflow`, which is account-only. |
 | `export_type` | VARCHAR(20) NOT NULL | `cv`, `cover_letter`, `application_pack` |
-| `source_id` | UUID NOT NULL | the approved draft/workflow ID being exported |
-| `format` | VARCHAR(20) | **open decision — see `01-implementation-plan.md` §7** |
+| `source_id` | UUID NOT NULL | the approved draft ID being exported (for `cover_letter`, the specific `CoverLetterDraft.id`, not the workflow id) |
+| `secondary_source_id` | UUID NULLABLE | **New.** Holds the `CoverLetterDraft.id` for `application_pack` rows — `source_id` alone can't represent an export with two source rows. |
+| `format` | VARCHAR(20) NOT NULL DEFAULT 'docx' | **Resolved** — `docx`, `pdf`, `zip`, `CHECK`-constrained (`ck_exports_format`) |
+| `template_id` | VARCHAR(50) NULLABLE | **New.** Which CV layout was used; `NULL` for cover-letter/pdf/zip rows |
 | `status` | VARCHAR(20) DEFAULT 'pending' | `pending`, `processing`, `completed`, `failed` |
 | `storage_key` | VARCHAR(500) | nullable until complete |
 | `file_size` | INTEGER | nullable |
+| `downloaded_at` | TIMESTAMPTZ NULLABLE | **New.** Set the first time `GET /exports/{exportId}/download` succeeds — this is the field that gates PDF conversion. |
+| `derived_from_export_id` | UUID NULLABLE (FK → `exports.id`, self) | **New.** Set on `format='pdf'` rows, pointing at the source `docx` row; `CHECK`-enforced (`ck_exports_pdf_requires_source`) that every `pdf` row has one. |
 | `error_message` | TEXT | |
 | `created_at` | TIMESTAMPTZ NOT NULL | |
 | `completed_at` | TIMESTAMPTZ | |
 
-Indexes: `idx_exports_user` on `user_id`; `idx_exports_status` on `status`.
+Indexes: `idx_exports_user`, `idx_exports_trial_session`, `idx_exports_status`, `idx_exports_source_id`, `idx_exports_derived_from`.
+
+**Same migration (010) also adds `tailored_cv_sections.source_item_id`** (nullable UUID, no FK — polymorphic, same convention as `processing_jobs.source_entity_id`): points at the `cv_experience_items.id`/`cv_project_items.id` a generated section came from. Needed so the DOCX export renderer can attach a real company/title/date header to each experience/project block — `content_json` has one section per role/project but nothing previously recorded which row it came from. `NULL` for `summary`/`education`/`skills` sections, which have no single source row.
 
 ## 3a. Product extension tables
 
@@ -491,7 +501,7 @@ Supports product extension #2 (multi-job-post comparison and coverage-gap report
 | `id` | UUID (PK) | |
 | `user_id` | UUID NOT NULL (FK → `users`) | |
 | `name` | VARCHAR(255) | user-supplied label |
-| `job_post_ids` | UUID[] | references into `job_posts` |
+| `job_post_ids` | UUID[] | references into `job_posts`; capped at 50 entries at the validation layer (Sprint 5) — uncapped would let one report trigger an unbounded number of match_engine runs |
 | `created_at` | TIMESTAMPTZ NOT NULL | |
 | `updated_at` | TIMESTAMPTZ NOT NULL | |
 
@@ -505,13 +515,16 @@ Supports product extension #2 (multi-job-post comparison and coverage-gap report
 | `collection_id` | UUID NOT NULL (FK → `job_post_collections`) | |
 | `match_run_ids` | UUID[] | the individual `match_runs` this report aggregates — the report never recomputes matching itself, it summarises existing runs |
 | `aggregate_gaps` | JSONB NOT NULL | requirements that recur across multiple job posts in the collection with `unsupported`/`contradictory`/`unclear` support, ranked by recurrence — see `11-product-extensions.md` §2 for the exact shape |
+| `skipped_job_post_ids` | UUID[] NULLABLE | **New (Sprint 5), beyond the originally documented schema.** Job posts in the collection skipped because their `JobPostProfile` wasn't ready yet — the report still completes for the rest, never blocks on one unstructured posting. `recurrence_ratio`'s denominator is the full collection size regardless, so a skip genuinely lowers the ratio rather than being silently excluded from it — this field is what makes that shortfall visible instead of unexplained. |
 | `status` | VARCHAR(20) DEFAULT 'pending' | `pending`, `processing`, `completed`, `failed` |
 | `created_at` | TIMESTAMPTZ NOT NULL | |
 | `completed_at` | TIMESTAMPTZ | |
 
-Indexes: `idx_coverage_user` on `user_id`; `idx_coverage_collection` on `collection_id`.
+Indexes: `idx_coverage_user` on `user_id`; `idx_coverage_collection` on `collection_id`; `idx_coverage_status` on `status`.
 
 A `coverage_report` is a read/aggregation model over existing `match_runs` — it doesn't introduce a new matching algorithm, just a new query and ranking step over data the matching engine (already built in Phase 3) already produces. This is why it's a comparatively low-risk addition despite being new tables: no new AI generation surface, no new evidence-binding logic to get right.
+
+**Built Sprint 5 (2026-08-12).** `_get_or_run_match()`/`_run_and_persist_match()` in `worker_jobs.py` reuse an existing completed `MatchRun` for a given `(cv_profile_version_id, job_post_profile_id)` pair when one exists (no such lookup existed before — `POST /matches` always created a fresh row unconditionally), and run+persist a fresh one via the exact same matching code `process_match` itself uses otherwise — coverage reporting deliberately shares this code path rather than risking a second, differently-tuned matching engine. Clustering for `aggregate_gaps` reuses the ESCO/O*NET taxonomy lookup built for M2 (`app/extraction/skills_index.py`) rather than a bespoke normalizer, per the spec's own "light normalization... full semantic clustering deferred" scoping.
 
 ### `tailored_cv_drafts` extension: fix-it checklist
 

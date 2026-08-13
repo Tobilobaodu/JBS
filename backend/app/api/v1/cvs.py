@@ -165,15 +165,16 @@ async def upload_cv(
         )
     )
 
-    # Kick off the extraction pipeline
+    # Kick off the extraction pipeline. create_processing_job commits
+    # internally before dispatching to Celery — that same commit also
+    # covers the cv_file and AuditEvent rows added above (same session,
+    # same transaction), so nothing is left to commit here.
     processing_job = await start_extraction_pipeline(
         session=session,
         cv_file_id=cv_file.id,
         user_id=identity.user_id,
         trial_session_id=identity.trial_session_id,
     )
-
-    await session.commit()
 
     logger.info(
         "cv_uploaded",
@@ -593,6 +594,8 @@ async def run_ats_check_for_cv(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
                             detail="CV not found.")
 
+    # create_processing_job commits internally (before dispatching to
+    # Celery) — nothing left to commit here.
     processing_job = await create_processing_job(
         session=session,
         job_type="ats_check",
@@ -600,8 +603,6 @@ async def run_ats_check_for_cv(
         source_entity_id=cv_file.id,
         user_id=current_user.id,
     )
-
-    await session.commit()
 
     from app.schemas.jobs import ProcessingJobRef
     return ProcessingJobRef(job_id=processing_job.id, status="queued")

@@ -84,6 +84,16 @@ async def create_processing_job(
     so a caller bug surfaces here, not as an opaque constraint violation
     mid-transaction.
 
+    Commits before dispatching to Celery, matching the commit-then-enqueue
+    pattern every other job-creating route in this codebase already uses
+    (job_posts.py, matches.py, tailored_cvs.py). Previously this flushed
+    but did not commit before enqueuing: a worker could receive the task
+    and query for the job row before this transaction had actually
+    committed, find nothing, log job_not_found, and return — silently
+    stranding the job at status='queued' forever with no retry. Confirmed
+    live via worker_docling logs (job_not_found firing ~2-4ms after the
+    row was flushed) while building Sprint 3's e2e tests.
+
     Returns the job row so the API can return the job_id immediately.
     """
     if (user_id is None) == (trial_session_id is None):
@@ -102,21 +112,29 @@ async def create_processing_job(
         status="queued",
     )
     session.add(job)
-    await session.flush()  # get the generated id without committing yet
+    await session.commit()
 
-    # Dispatch to the correct Celery queue based on job_type
-    if job_type == "docling_extract":
-        enqueue_docling_extract(str(job.id))
-    elif job_type == "textract_extract":
-        enqueue_textract_extract(str(job.id))
-    elif job_type == "merge_parse":
-        enqueue_merge_parse(str(job.id))
-    elif job_type == "ats_check":
-        enqueue_ats_check(str(job.id))
-    else:
-        logger.warning("unknown_job_type_not_enqueued", job_type=job_type)
-        job.status = "failed"
-        job.last_error = f"Unknown job type: {job_type}"
+    try:
+        # Dispatch to the correct Celery queue based on job_type
+        if job_type == "docling_extract":
+            enqueue_docling_extract(str(job.id))
+        elif job_type == "textract_extract":
+            enqueue_textract_extract(str(job.id))
+        elif job_type == "merge_parse":
+            enqueue_merge_parse(str(job.id))
+        elif job_type == "ats_check":
+            enqueue_ats_check(str(job.id))
+        else:
+            logger.warning("unknown_job_type_not_enqueued", job_type=job_type)
+            job.status = "failed"
+            job.last_error = f"Unknown job type: {job_type}"
+            await session.commit()
+            return job
+    except Exception as e:
+        mark_job_publish_failed(job, "Failed to publish task to message broker.")
+        await session.commit()
+        logger.error("job_publish_failed", job_id=str(job.id), job_type=job_type, error=str(e))
+        raise
 
     logger.info(
         "job_created",

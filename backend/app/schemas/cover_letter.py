@@ -25,6 +25,25 @@ class CoverLetterWorkflowResponse(BaseModel):
     model_config = {"from_attributes": True, "populate_by_name": True}
 
 
+class CoverLetterWorkflowListItem(BaseModel):
+    id: str
+    job_post_id: str = Field(alias="jobPostId")
+    job_title: str | None = Field(None, alias="jobTitle")
+    employer: str | None = None
+    status: str
+    current_step: int = Field(alias="currentStep")
+    created_at: datetime = Field(alias="createdAt")
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+
+class CoverLetterWorkflowListResponse(BaseModel):
+    items: list[CoverLetterWorkflowListItem]
+    total: int
+    limit: int
+    offset: int
+
+
 class CoverLetterQuestionResponse(BaseModel):
     id: str
     step_number: int = Field(alias="stepNumber")

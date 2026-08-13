@@ -304,6 +304,74 @@ services:
     networks:
       - no_internet
 
+  # Gotenberg — self-hosted, open-source LibreOffice-backed HTTP
+  # document-conversion service (Sprint 5). Used only for docx→pdf
+  # conversion, called by worker_export over the internal Docker network.
+  # No ports exposed to the host, no outbound internet need — local
+  # document processing only, same isolation posture as the CV-parsing
+  # workers.
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    restart: unless-stopped
+    networks:
+      - no_internet
+
+  # Celery worker - document exports (Sprint 5). Handles both the
+  # `export` queue (docx/zip rendering, docxtpl — pure local processing)
+  # and the `export_pdf` queue (docx→pdf conversion via the gotenberg
+  # container above) — two closely-coupled stages of one feature sharing
+  # one worker, rather than a fourth service; see the Sprint 5 plan for
+  # the reasoning and the revisit condition (real queue contention).
+  worker_export:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q export,export_pdf --concurrency=2 --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      gotenberg:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+    # docx rendering is local (docxtpl); pdf conversion calls gotenberg
+    # over this same internal network, not the public internet — no
+    # outbound need at all, so this stays no_internet-only.
+    networks:
+      - no_internet
+
+  # Celery worker - multi-job-post coverage reporting (Sprint 5 /
+  # Product Extension #2). Kept as its own service rather than folded
+  # into worker_export: a structurally different workload (potentially
+  # many sequential match_engine.run_match() calls, not a single render)
+  # with no shared data path — the queue-per-worker convention keeps the
+  # queue-to-worker mapping obvious, avoiding the "queue with no
+  # consuming worker" class of bug this project has already paid for
+  # more than once (see worker_ats_check's own review history).
+  worker_coverage_report:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q coverage_report --concurrency=2 --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+    # match_engine.run_match() is pure/rules-based — zero internet need.
+    networks:
+      - no_internet
+
   # Celery worker - maintenance tasks (trial-session expiry cleanup)
   worker_maintenance:
     build:

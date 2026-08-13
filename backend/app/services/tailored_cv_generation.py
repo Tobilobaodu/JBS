@@ -234,6 +234,7 @@ def generate_draft_sections(
             ),
             order_index=order_index,
             outcome=outcome,
+            source_item_id=exp_id,
             llm_client_override=llm_client_override,
         )
         if section:
@@ -279,6 +280,7 @@ def generate_draft_sections(
             ),
             order_index=order_index,
             outcome=outcome,
+            source_item_id=proj_id,
             llm_client_override=llm_client_override,
         )
         if section:

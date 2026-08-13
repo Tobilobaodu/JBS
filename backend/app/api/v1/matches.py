@@ -5,9 +5,9 @@ All matching runs through the queue — the API returns 202 immediately.
 """
 
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -25,9 +25,11 @@ from app.db.models import (
     MatchRun,
     MatchEvidenceItem,
     ProcessingJob,
+    User,
 )
 from app.core.security import (
     RequestIdentity,
+    get_current_user,
     get_current_user_or_trial_session,
     identity_owner_filter,
 )
@@ -85,6 +87,27 @@ class MatchResponse(BaseModel):
     class Config:
         from_attributes = True
         populate_by_name = True
+
+
+class MatchListItem(BaseModel):
+    id: str
+    job_post_id: str = Field(alias="jobPostId")
+    job_title: str | None = Field(None, alias="jobTitle")
+    employer: str | None = None
+    status: str
+    score: float | None = None
+    created_at: str = Field(alias="createdAt")
+    completed_at: str | None = Field(None, alias="completedAt")
+
+    class Config:
+        populate_by_name = True
+
+
+class MatchListResponse(BaseModel):
+    items: list[MatchListItem]
+    total: int
+    limit: int
+    offset: int
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -190,6 +213,57 @@ async def create_match(
         matchId=match_run.id,
         processingJobId=proc_job.id,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GET /matches — list
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.get("/matches", response_model=MatchListResponse)
+async def list_matches(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """List match runs for the current user, with pagination.
+
+    Account-only, matching GET /cvs and GET /job-posts' precedent — a
+    trial session can already see its own single match via GET
+    /matches/{matchId}, but a browsable list is an account-only feature.
+    """
+    total = (
+        await session.execute(
+            select(func.count()).select_from(MatchRun).where(MatchRun.user_id == current_user.id)
+        )
+    ).scalar_one()
+
+    result = await session.execute(
+        select(MatchRun, JobPostProfile)
+        .join(JobPostProfile, JobPostProfile.id == MatchRun.job_post_profile_id)
+        .where(MatchRun.user_id == current_user.id)
+        .order_by(MatchRun.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    )
+    rows = result.all()
+
+    items = [
+        MatchListItem(
+            id=match.id,
+            job_post_id=profile.job_post_id,
+            job_title=profile.job_title,
+            employer=profile.employer,
+            status=match.status,
+            score=match.score,
+            created_at=match.created_at.isoformat(),
+            completed_at=match.completed_at.isoformat() if match.completed_at else None,
+        )
+        for match, profile in rows
+    ]
+
+    return MatchListResponse(items=items, total=total, limit=limit, offset=offset)
 
 
 # ──────────────────────────────────────────────────────────────────────

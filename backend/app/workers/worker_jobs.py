@@ -14,6 +14,7 @@ Textract worker needs outbound to AWS Textract endpoint only.
 import json
 import re
 import time
+import uuid
 import structlog
 from datetime import datetime, timezone
 
@@ -38,6 +39,7 @@ from app.core.metrics import (
 from app.core.storage import download_file
 from app.db.models import (
     AtsReadinessCheck,
+    AuditEvent,
     CoverLetterAnswer,
     CoverLetterDraft,
     CoverLetterQuestion,
@@ -52,6 +54,7 @@ from app.db.models import (
     CvProjectItem,
     CvRawText,
     CvSkillItem,
+    Export,
     JobPost,
     JobPostProfile,
     MatchEvidenceItem,
@@ -60,6 +63,7 @@ from app.db.models import (
     TailoredCvDraft,
     TailoredCvSection,
     TrialSession,
+    User,
 )
 from app.extraction.parser_interface import ExtractionResult
 from app.extraction.docling_parser import DoclingParser
@@ -202,6 +206,105 @@ def process_docling_extract(self, job_id: str) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _run_and_persist_match(session: Session, match_run: MatchRun):
+    """Runs match_engine.run_match() for an existing MatchRun row
+    (already pointing at a real cv_profile_version_id/job_post_profile_id)
+    and persists the result onto it plus its MatchEvidenceItem rows.
+
+    Extracted from process_match (Sprint 5) so the coverage-report
+    reuse-or-run helper below can share the exact same matching+
+    persistence path — same "don't duplicate the mechanism that has to
+    stay identical" reasoning as generation_core.py's extraction in
+    Sprint 4. Coverage reporting must never behave like a second,
+    subtly-different matching engine (09-test-plan.md: a coverage_report
+    must never differ from what a standalone POST /matches call would
+    produce for the same CV/job-post pair).
+    """
+    from app.extraction.match_engine import run_match
+    from app.db.models import CvProfileVersion, CvSkillItem, JobPostProfile
+
+    cv_version = session.get(CvProfileVersion, match_run.cv_profile_version_id)
+    if cv_version is None:
+        raise ValueError(f"CvProfileVersion {match_run.cv_profile_version_id} not found")
+
+    skill_items = session.execute(
+        select(CvSkillItem).where(
+            CvSkillItem.cv_profile_version_id == cv_version.id
+        )
+    ).scalars().all()
+    cv_skills = [s.skill_name for s in skill_items]
+
+    jp_profile = session.get(JobPostProfile, match_run.job_post_profile_id)
+    if jp_profile is None:
+        raise ValueError(f"JobPostProfile {match_run.job_post_profile_id} not found")
+
+    jp_dict = {
+        "required_skills": jp_profile.required_skills or [],
+        "preferred_skills": jp_profile.preferred_skills or [],
+        "qualifications": jp_profile.qualifications or [],
+        "keywords": jp_profile.keywords or [],
+    }
+
+    result = run_match(cv_version.structured_payload, cv_skills, jp_dict)
+
+    for item in result.evidence_items:
+        session.add(MatchEvidenceItem(
+            match_run_id=match_run.id,
+            requirement_text=item.requirement_text,
+            requirement_type=item.requirement_type,
+            support_level=item.support_level,
+            confidence=item.confidence,
+            source_references=item.source_references or None,
+            suggestion=item.suggestion,
+            warning=item.warning,
+        ))
+
+    match_run.score = result.score
+    match_run.supported_count = result.supported_count
+    match_run.partial_count = result.partial_count
+    match_run.unsupported_count = result.unsupported_count
+    match_run.contradictory_count = result.contradictory_count
+    match_run.unclear_count = result.unclear_count
+    match_run.total_requirements = result.total_requirements
+    match_run.summary_analysis = result.summary_analysis
+    match_run.status = "completed"
+    match_run.completed_at = datetime.now(timezone.utc)
+
+    return result
+
+
+def _get_or_run_match(
+    session: Session, *, user_id: str, cv_profile_version_id: str, job_post_profile_id: str,
+) -> MatchRun:
+    """Reuses an existing completed MatchRun for this exact
+    (cv_profile_version_id, job_post_profile_id) pair if one exists —
+    no such lookup existed before Sprint 5; POST /matches always created
+    a fresh row unconditionally (confirmed via reading matches.py::
+    create_match). Runs and persists a fresh one via
+    _run_and_persist_match otherwise, same code path process_match
+    itself uses."""
+    existing = session.execute(
+        select(MatchRun).where(
+            MatchRun.cv_profile_version_id == cv_profile_version_id,
+            MatchRun.job_post_profile_id == job_post_profile_id,
+            MatchRun.status == "completed",
+        ).order_by(MatchRun.created_at.desc()).limit(1)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+
+    match_run = MatchRun(
+        user_id=user_id,
+        cv_profile_version_id=cv_profile_version_id,
+        job_post_profile_id=job_post_profile_id,
+        status="pending",
+    )
+    session.add(match_run)
+    session.flush()
+    _run_and_persist_match(session, match_run)
+    return match_run
+
+
 @shared_task(
     bind=True,
     max_retries=3,
@@ -219,11 +322,6 @@ def process_match(self, job_id: str) -> None:
     t_start = time.monotonic()
     session = _get_sync_session()
     try:
-        from app.extraction.match_engine import run_match
-        from app.db.models import (
-            CvProfileVersion, CvSkillItem, JobPostProfile,
-        )
-
         job = session.get(ProcessingJob, job_id)
         if job is None:
             logger.error("job_not_found", job_id=job_id)
@@ -236,59 +334,7 @@ def process_match(self, job_id: str) -> None:
         if match_run is None:
             raise ValueError(f"MatchRun {job.source_entity_id} not found")
 
-        # Load CV profile
-        cv_version = session.get(CvProfileVersion, match_run.cv_profile_version_id)
-        if cv_version is None:
-            raise ValueError(f"CvProfileVersion {match_run.cv_profile_version_id} not found")
-
-        # Load CV skills
-        skill_items = session.execute(
-            select(CvSkillItem).where(
-                CvSkillItem.cv_profile_version_id == cv_version.id
-            )
-        ).scalars().all()
-        cv_skills = [s.skill_name for s in skill_items]
-
-        # Load job post profile
-        jp_profile = session.get(JobPostProfile, match_run.job_post_profile_id)
-        if jp_profile is None:
-            raise ValueError(f"JobPostProfile {match_run.job_post_profile_id} not found")
-
-        # Build dict for matching
-        jp_dict = {
-            "required_skills": jp_profile.required_skills or [],
-            "preferred_skills": jp_profile.preferred_skills or [],
-            "qualifications": jp_profile.qualifications or [],
-            "keywords": jp_profile.keywords or [],
-        }
-
-        # Run matching
-        result = run_match(cv_version.structured_payload, cv_skills, jp_dict)
-
-        # Store evidence items
-        for item in result.evidence_items:
-            session.add(MatchEvidenceItem(
-                match_run_id=match_run.id,
-                requirement_text=item.requirement_text,
-                requirement_type=item.requirement_type,
-                support_level=item.support_level,
-                confidence=item.confidence,
-                source_references=item.source_references or None,
-                suggestion=item.suggestion,
-                warning=item.warning,
-            ))
-
-        # Update match_run
-        match_run.score = result.score
-        match_run.supported_count = result.supported_count
-        match_run.partial_count = result.partial_count
-        match_run.unsupported_count = result.unsupported_count
-        match_run.contradictory_count = result.contradictory_count
-        match_run.unclear_count = result.unclear_count
-        match_run.total_requirements = result.total_requirements
-        match_run.summary_analysis = result.summary_analysis
-        match_run.status = "completed"
-        match_run.completed_at = datetime.now(timezone.utc)
+        result = _run_and_persist_match(session, match_run)
 
         job.status = "completed"
         job.completed_at = datetime.now(timezone.utc)
@@ -1531,6 +1577,34 @@ def download_file_sync(storage_key: str) -> bytes:
     return response["Body"].read()
 
 
+def upload_file_sync(file_content: bytes, storage_key: str, content_type: str) -> None:
+    """Synchronous wrapper for storage upload (Celery tasks are sync) —
+    symmetric to download_file_sync above. Needed by process_export_docx/
+    process_export_pdf since Celery tasks can't call the async
+    app.core.storage.upload_file directly."""
+    import boto3
+    from botocore.config import Config as BotoConfig
+
+    if settings.minio_endpoint and "minio" in settings.minio_endpoint:
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=settings.minio_endpoint,
+            aws_access_key_id=settings.minio_root_user,
+            aws_secret_access_key=settings.minio_root_password,
+            region_name=settings.aws_region,
+            config=BotoConfig(signature_version="s3v4"),
+        )
+    else:
+        s3 = boto3.client(
+            "s3",
+            region_name=settings.aws_region,
+            aws_access_key_id=settings.aws_access_key_id,
+            aws_secret_access_key=settings.aws_secret_access_key,
+        )
+
+    s3.put_object(Bucket=settings.s3_bucket_name, Key=storage_key, Body=file_content, ContentType=content_type)
+
+
 def _get_next_attempt(session: Session, cv_file_id: str, pass_type: str) -> int:
     """Get the next attempt_number for a given pass_type on a cv_file."""
     from sqlalchemy import text
@@ -2159,6 +2233,7 @@ def process_cv_generate(self, job_id: str) -> None:
                 model_id=section.model_id,
                 validation_status=section.validation_status,
                 order_index=section.order_index,
+                source_item_id=section.source_item_id,
             ))
 
         draft.content_json = assemble_content_json(outcome.sections)
@@ -2411,6 +2486,405 @@ def process_cover_letter_generate(self, job_id: str) -> None:
                 "cover_letter_generate_finalize_failed",
                 job_id=job_id, error=str(finalize_err),
             )
+        raise
+    finally:
+        session.close()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sprint 5: Exports
+# ──────────────────────────────────────────────────────────────────────
+
+_EXPORT_CONTENT_TYPE_BY_EXT = {
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "zip": "application/zip",
+    "pdf": "application/pdf",
+}
+
+
+def _resolve_owner_email(session: Session, export: Export) -> str | None:
+    if export.user_id:
+        user = session.get(User, export.user_id)
+        return user.email if user else None
+    return None
+
+
+def _render_tailored_cv_docx(
+    session: Session, draft: TailoredCvDraft, template_id: str | None, owner_email: str | None,
+) -> bytes:
+    from app.services import export_rendering, export_templates
+
+    match_run = session.get(MatchRun, draft.match_run_id)
+    cv_version = session.get(CvProfileVersion, match_run.cv_profile_version_id) if match_run else None
+    basics = (cv_version.structured_payload or {}).get("basics", {}) if cv_version else {}
+
+    sections = session.execute(
+        select(TailoredCvSection).where(TailoredCvSection.draft_id == draft.id)
+    ).scalars().all()
+
+    experience_items = []
+    project_items = []
+    if match_run is not None:
+        experience_items = session.execute(
+            select(CvExperienceItem).where(
+                CvExperienceItem.cv_profile_version_id == match_run.cv_profile_version_id
+            )
+        ).scalars().all()
+        project_items = session.execute(
+            select(CvProjectItem).where(
+                CvProjectItem.cv_profile_version_id == match_run.cv_profile_version_id
+            )
+        ).scalars().all()
+
+    context = export_rendering.build_cv_docx_context(
+        candidate_name=export_rendering.resolve_candidate_name(basics),
+        contact_line=export_rendering.resolve_contact_line(basics, fallback_email=owner_email),
+        sections=sections,
+        experience_by_id={e.id: e for e in experience_items},
+        project_by_id={p.id: p for p in project_items},
+    )
+    resolved_template_id = export_templates.resolve_cv_template_id(template_id)
+    return export_rendering.render_docx(export_templates.cv_template_path(resolved_template_id), context)
+
+
+def _render_cover_letter_docx(session: Session, cl_draft: CoverLetterDraft, owner_email: str | None) -> bytes:
+    from app.services import export_rendering, export_templates
+
+    wf = session.get(CoverLetterWorkflow, cl_draft.workflow_id)
+    cv_version = session.get(CvProfileVersion, wf.cv_profile_version_id) if wf else None
+    basics = (cv_version.structured_payload or {}).get("basics", {}) if cv_version else {}
+    jp_profile = session.get(JobPostProfile, wf.job_post_profile_id) if wf else None
+
+    context = export_rendering.build_cover_letter_docx_context(
+        candidate_name=export_rendering.resolve_candidate_name(basics),
+        contact_line=export_rendering.resolve_contact_line(basics, fallback_email=owner_email),
+        sent_date=datetime.now(timezone.utc).strftime("%B %d, %Y"),
+        employer_name=jp_profile.employer if jp_profile else None,
+        body_text=cl_draft.body_text,
+    )
+    return export_rendering.render_docx(export_templates.COVER_LETTER_TEMPLATE_FILE, context)
+
+
+@shared_task(
+    bind=True,
+    max_retries=1,
+    default_retry_delay=30,
+    name="app.workers.worker_jobs.process_export_docx",
+    queue="export",
+)
+def process_export_docx(self, job_id: str) -> None:
+    """Render an approved draft into a downloadable docx (or a zip of two
+    docx files, for an application pack) — one-shot terminal job, mirrors
+    process_cv_generate. Deliberately low max_retries (1): a render/
+    upload failure here is a real template or infra bug, not something a
+    blind retry is likely to fix."""
+    structlog.contextvars.bind_contextvars(job_id=job_id)
+    t_start = time.monotonic()
+    session = _get_sync_session()
+    try:
+        job = session.get(ProcessingJob, job_id)
+        if job is None:
+            logger.error("job_not_found", job_id=job_id)
+            return
+
+        job.status = "processing"
+        job.started_at = datetime.now(timezone.utc)
+        session.commit()
+
+        export = session.get(Export, job.source_entity_id)
+        if export is None:
+            raise ValueError(f"Export {job.source_entity_id} not found")
+
+        owner_email = _resolve_owner_email(session, export)
+
+        if export.export_type == "cv":
+            draft = session.get(TailoredCvDraft, export.source_id)
+            if draft is None:
+                raise ValueError(f"TailoredCvDraft {export.source_id} not found")
+            file_bytes = _render_tailored_cv_docx(session, draft, export.template_id, owner_email)
+            ext = "docx"
+        elif export.export_type == "cover_letter":
+            cl_draft = session.get(CoverLetterDraft, export.source_id)
+            if cl_draft is None:
+                raise ValueError(f"CoverLetterDraft {export.source_id} not found")
+            file_bytes = _render_cover_letter_docx(session, cl_draft, owner_email)
+            ext = "docx"
+        elif export.export_type == "application_pack":
+            from app.services import export_rendering
+
+            cv_draft = session.get(TailoredCvDraft, export.source_id)
+            cl_draft = session.get(CoverLetterDraft, export.secondary_source_id)
+            if cv_draft is None or cl_draft is None:
+                raise ValueError(f"Source draft(s) not found for application-pack export {export.id}")
+            cv_bytes = _render_tailored_cv_docx(session, cv_draft, export.template_id, owner_email)
+            cl_bytes = _render_cover_letter_docx(session, cl_draft, owner_email)
+            file_bytes = export_rendering.build_application_pack_zip(
+                cv_docx=cv_bytes, cover_letter_docx=cl_bytes,
+            )
+            ext = "zip"
+        else:
+            raise ValueError(f"Unknown export_type: {export.export_type}")
+
+        storage_key = f"exports/{uuid.uuid4().hex}.{ext}"
+        upload_file_sync(file_bytes, storage_key, _EXPORT_CONTENT_TYPE_BY_EXT[ext])
+
+        export.storage_key = storage_key
+        export.file_size = len(file_bytes)
+        export.status = "completed"
+        export.completed_at = datetime.now(timezone.utc)
+
+        job.status = "completed"
+        job.completed_at = datetime.now(timezone.utc)
+
+        session.add(AuditEvent(
+            user_id=export.user_id,
+            entity_type="export",
+            entity_id=export.id,
+            event_type="export_generated",
+            actor_type="system_worker",
+            metadata_={"format": export.format, "template_id": export.template_id},
+        ))
+        session.commit()
+
+        JOB_THROUGHPUT.labels(job_type="export", status="completed").inc()
+        duration_s = time.monotonic() - t_start
+        JOB_DURATION_SECONDS.labels(job_type="export").observe(duration_s)
+        logger.info(
+            "export_docx_complete",
+            job_id=job_id, export_id=export.id, export_type=export.export_type, file_size=export.file_size,
+        )
+
+    except Exception as e:
+        session.rollback()
+        duration_s = time.monotonic() - t_start
+        logger.error("export_docx_failed", job_id=job_id, error=str(e))
+        JOB_THROUGHPUT.labels(job_type="export", status="failed").inc()
+        JOB_DURATION_SECONDS.labels(job_type="export").observe(duration_s)
+        try:
+            job = session.get(ProcessingJob, job_id)
+            if job is not None:
+                job.status = "failed"
+                job.last_error = str(e)
+                job.failed_at = datetime.now(timezone.utc)
+            export = session.get(Export, job.source_entity_id) if job is not None else None
+            if export is not None:
+                export.status = "failed"
+                export.error_message = str(e)
+            session.commit()
+        except Exception as finalize_err:
+            logger.error("export_docx_finalize_failed", job_id=job_id, error=str(finalize_err))
+        raise
+    finally:
+        session.close()
+
+
+@shared_task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=15,
+    name="app.workers.worker_jobs.process_export_pdf",
+    queue="export_pdf",
+)
+def process_export_pdf(self, job_id: str) -> None:
+    """Converts an already-generated, already-downloaded docx export into
+    a PDF via Gotenberg (LibreOffice-backed HTTP microservice, internal
+    Docker network only — no internet egress). Heavier retry posture than
+    process_export_docx (2 retries, not 1, shorter delay): this is an
+    infra/network failure class (Gotenberg unreachable/slow), not a
+    content-quality gate."""
+    from app.services.gotenberg_client import convert_docx_to_pdf
+
+    structlog.contextvars.bind_contextvars(job_id=job_id)
+    t_start = time.monotonic()
+    session = _get_sync_session()
+    try:
+        job = session.get(ProcessingJob, job_id)
+        if job is None:
+            logger.error("job_not_found", job_id=job_id)
+            return
+
+        job.status = "processing"
+        job.started_at = datetime.now(timezone.utc)
+        session.commit()
+
+        export = session.get(Export, job.source_entity_id)
+        if export is None:
+            raise ValueError(f"Export {job.source_entity_id} not found")
+
+        source = session.get(Export, export.derived_from_export_id) if export.derived_from_export_id else None
+        if source is None or not source.storage_key:
+            raise ValueError(f"Source docx export not found or has no storage_key for pdf export {export.id}")
+
+        docx_bytes = download_file_sync(source.storage_key)
+        pdf_bytes = convert_docx_to_pdf(docx_bytes)
+
+        storage_key = f"exports/{uuid.uuid4().hex}.pdf"
+        upload_file_sync(pdf_bytes, storage_key, _EXPORT_CONTENT_TYPE_BY_EXT["pdf"])
+
+        export.storage_key = storage_key
+        export.file_size = len(pdf_bytes)
+        export.status = "completed"
+        export.completed_at = datetime.now(timezone.utc)
+
+        job.status = "completed"
+        job.completed_at = datetime.now(timezone.utc)
+
+        session.add(AuditEvent(
+            user_id=export.user_id,
+            entity_type="export",
+            entity_id=export.id,
+            event_type="export_generated",
+            actor_type="system_worker",
+            metadata_={"format": "pdf", "derived_from_export_id": source.id},
+        ))
+        session.commit()
+
+        JOB_THROUGHPUT.labels(job_type="export_pdf", status="completed").inc()
+        duration_s = time.monotonic() - t_start
+        JOB_DURATION_SECONDS.labels(job_type="export_pdf").observe(duration_s)
+        logger.info("export_pdf_complete", job_id=job_id, export_id=export.id, file_size=export.file_size)
+
+    except Exception as e:
+        session.rollback()
+        duration_s = time.monotonic() - t_start
+        logger.error("export_pdf_task_failed", job_id=job_id, error=str(e))
+        JOB_THROUGHPUT.labels(job_type="export_pdf", status="failed").inc()
+        JOB_DURATION_SECONDS.labels(job_type="export_pdf").observe(duration_s)
+        try:
+            job = session.get(ProcessingJob, job_id)
+            if job is not None:
+                job.status = "failed"
+                job.last_error = str(e)
+                job.failed_at = datetime.now(timezone.utc)
+            export = session.get(Export, job.source_entity_id) if job is not None else None
+            if export is not None:
+                export.status = "failed"
+                export.error_message = str(e)
+            session.commit()
+        except Exception as finalize_err:
+            logger.error("export_pdf_finalize_failed", job_id=job_id, error=str(finalize_err))
+        raise
+    finally:
+        session.close()
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sprint 5 / Product Extension #2: Multi-job-post coverage reporting
+# ──────────────────────────────────────────────────────────────────────
+
+
+@shared_task(
+    bind=True,
+    max_retries=1,
+    default_retry_delay=30,
+    name="app.workers.worker_jobs.process_coverage_report",
+    queue="coverage_report",
+)
+def process_coverage_report(self, job_id: str) -> None:
+    """Aggregates match-gap data across every job post in a collection —
+    one-shot terminal job, mirrors process_cv_generate/process_match.
+
+    A pure read/aggregation layer: reuses an existing completed MatchRun
+    per job post where one exists, runs match_engine.run_match() fresh
+    (via _get_or_run_match/_run_and_persist_match — the exact same code
+    path process_match itself uses) where one doesn't. Never introduces
+    a second, differently-behaved matching engine. A job post with no
+    JobPostProfile yet (not finished structuring) is skipped for that
+    posting only, recorded in skipped_job_post_ids — never blocks the
+    whole report, this codebase's established "never guess, degrade
+    gracefully" precedent.
+    """
+    structlog.contextvars.bind_contextvars(job_id=job_id)
+    t_start = time.monotonic()
+    session = _get_sync_session()
+    try:
+        from app.db.models import CoverageReport, JobPostCollection
+        from app.services.coverage_aggregation import aggregate_gaps
+
+        job = session.get(ProcessingJob, job_id)
+        if job is None:
+            logger.error("job_not_found", job_id=job_id)
+            return
+
+        job.status = "processing"
+        job.started_at = datetime.now(timezone.utc)
+        session.commit()
+
+        report = session.get(CoverageReport, job.source_entity_id)
+        if report is None:
+            raise ValueError(f"CoverageReport {job.source_entity_id} not found")
+
+        collection = session.get(JobPostCollection, report.collection_id)
+        if collection is None:
+            raise ValueError(f"JobPostCollection {report.collection_id} not found")
+
+        match_run_ids: list[str] = []
+        skipped_job_post_ids: list[str] = []
+        evidence_by_job_post: dict[str, list] = {}
+
+        for job_post_id in collection.job_post_ids or []:
+            jp_profile = session.execute(
+                select(JobPostProfile).where(JobPostProfile.job_post_id == job_post_id)
+            ).scalar_one_or_none()
+            if jp_profile is None:
+                skipped_job_post_ids.append(job_post_id)
+                continue
+
+            match_run = _get_or_run_match(
+                session,
+                user_id=report.user_id,
+                cv_profile_version_id=report.cv_profile_version_id,
+                job_post_profile_id=jp_profile.id,
+            )
+            match_run_ids.append(match_run.id)
+
+            evidence_items = session.execute(
+                select(MatchEvidenceItem).where(MatchEvidenceItem.match_run_id == match_run.id)
+            ).scalars().all()
+            evidence_by_job_post[job_post_id] = evidence_items
+
+        aggregate = aggregate_gaps(
+            evidence_by_job_post, total_posts=len(collection.job_post_ids or [])
+        )
+
+        report.match_run_ids = match_run_ids or None
+        report.aggregate_gaps = aggregate
+        report.skipped_job_post_ids = skipped_job_post_ids or None
+        report.status = "completed"
+        report.completed_at = datetime.now(timezone.utc)
+
+        job.status = "completed"
+        job.completed_at = datetime.now(timezone.utc)
+        session.commit()
+
+        JOB_THROUGHPUT.labels(job_type="coverage_report", status="completed").inc()
+        duration_s = time.monotonic() - t_start
+        JOB_DURATION_SECONDS.labels(job_type="coverage_report").observe(duration_s)
+        logger.info(
+            "coverage_report_complete",
+            job_id=job_id, report_id=report.id,
+            gaps=len(aggregate), skipped=len(skipped_job_post_ids),
+        )
+
+    except Exception as e:
+        session.rollback()
+        duration_s = time.monotonic() - t_start
+        logger.error("coverage_report_failed", job_id=job_id, error=str(e))
+        JOB_THROUGHPUT.labels(job_type="coverage_report", status="failed").inc()
+        JOB_DURATION_SECONDS.labels(job_type="coverage_report").observe(duration_s)
+        try:
+            job = session.get(ProcessingJob, job_id)
+            if job is not None:
+                job.status = "failed"
+                job.last_error = str(e)
+                job.failed_at = datetime.now(timezone.utc)
+            from app.db.models import CoverageReport
+            report = session.get(CoverageReport, job.source_entity_id) if job is not None else None
+            if report is not None:
+                report.status = "failed"
+            session.commit()
+        except Exception as finalize_err:
+            logger.error("coverage_report_finalize_failed", job_id=job_id, error=str(finalize_err))
         raise
     finally:
         session.close()

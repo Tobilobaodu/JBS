@@ -38,6 +38,14 @@ from app.schemas.auth import (
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = get_logger(__name__)
 
+# Precomputed once at import time (bcrypt cost 12, matching hash_password's
+# default). Checked against on the "user not found" login path so it pays
+# the same bcrypt cost as the real "wrong password" path — otherwise the
+# two failure branches are distinguishable by response latency even though
+# they return the same error message, letting an attacker enumerate valid
+# emails via timing.
+_DUMMY_PASSWORD_HASH = hash_password("dummy-value-never-compared-to-a-real-account")
+
 
 def _map_user(user: User) -> UserResponse:
     return UserResponse(
@@ -135,7 +143,11 @@ async def login(
     Rate-limited per client IP (5 attempts per 60s window).
     Returns the SAME generic error for "email not found" and "wrong password"
     to prevent user enumeration (per security plan §1). Response timing is
-    identical via bcrypt's timing-safe comparison.
+    equalized too: the "email not found" branch runs a dummy bcrypt check
+    (_DUMMY_PASSWORD_HASH) before returning, so it costs the same as the
+    real verify_password() call on the "wrong password" branch — without
+    this, the two branches were distinguishable by latency alone even
+    though their error bodies were already identical.
     """
     # Rate limit
     client_key = get_client_key(request)
@@ -157,6 +169,7 @@ async def login(
     )
 
     if user is None:
+        verify_password(body.password, _DUMMY_PASSWORD_HASH)  # equalize timing; result unused
         raise generic_error
 
     # Verify password — bcrypt does constant-time comparison internally
@@ -187,7 +200,7 @@ async def login(
     session_row = UserSession(
         user_id=user.id,
         refresh_token_hash=hash_token(refresh_token),
-        access_token=access_token,
+        access_token_hash=hash_token(access_token),
         expires_at=datetime.now(timezone.utc) + timedelta(days=30),
         ip_address=request.client.host if request.client else None,
         user_agent=request.headers.get("user-agent"),

@@ -28,9 +28,10 @@ from app.core.security import (
     create_access_token,
     get_current_user_or_trial_session,
     hash_password,
+    hash_token,
     identity_owner_filter,
 )
-from app.db.models import CvFile, MatchRun, TrialSession, User
+from app.db.models import CvFile, MatchRun, TrialSession, User, UserSession
 
 _test_engine = create_async_engine(settings.database_url_async, poolclass=NullPool)
 _test_session_factory = async_sessionmaker(_test_engine, expire_on_commit=False)
@@ -55,6 +56,23 @@ async def _user(session, tag=""):
     session.add(u)
     await session.flush()
     return u
+
+
+async def _live_session_for(session, user, token):
+    """Insert the user_sessions row get_current_user() now requires to
+    accept `token` — mirrors what POST /auth/login does. Tests that mint a
+    token via create_access_token() directly (bypassing the real login
+    endpoint) need this or every call resolves to 401 'Session has been
+    revoked or is invalid', since a bare JWT is no longer sufficient on
+    its own."""
+    us = UserSession(
+        id=str(uuid.uuid4()), user_id=user.id,
+        refresh_token_hash=uuid.uuid4().hex, access_token_hash=hash_token(token),
+        expires_at=datetime.now(timezone.utc) + timedelta(days=30),
+    )
+    session.add(us)
+    await session.flush()
+    return us
 
 
 class TestTrialHeaderResolution:
@@ -129,8 +147,9 @@ class TestBearerPrecedence:
         async with _test_session_factory() as s:
             u = await _user(s, "bearer")
             ts = await _trial_session(s)
-            await s.commit()
             token = create_access_token(u.id)
+            await _live_session_for(s, u, token)
+            await s.commit()
             creds = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
             identity = await get_current_user_or_trial_session(
                 request=_request({"X-Trial-Session-Id": ts.id}),

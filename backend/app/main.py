@@ -25,6 +25,8 @@ from app.api.v1.matches import router as matches_router
 from app.api.v1.cover_letters import router as cover_letters_router
 from app.api.v1.trial_sessions import router as trial_sessions_router
 from app.api.v1.tailored_cvs import router as tailored_cvs_router
+from app.api.v1.exports import router as exports_router
+from app.api.v1.coverage import router as coverage_router
 
 logger = get_logger(__name__)
 
@@ -76,6 +78,19 @@ async def correlation_id_middleware(request: Request, call_next):
     return response
 
 
+# Security response headers — this API only ever serves JSON, never HTML/
+# scripts/styles, so the strictest values are also the correct ones (no
+# page here should ever be framed, sniffed into a different content type,
+# or allowed to load any sub-resource).
+@app.middleware("http")
+async def security_headers_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = "default-src 'none'"
+    return response
+
+
 # Standard error handler — returns the ErrorResponse envelope
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -103,6 +118,8 @@ app.include_router(matches_router, prefix="/api/v1")
 app.include_router(cover_letters_router, prefix="/api/v1")
 app.include_router(trial_sessions_router, prefix="/api/v1")
 app.include_router(tailored_cvs_router, prefix="/api/v1")
+app.include_router(exports_router, prefix="/api/v1")
+app.include_router(coverage_router, prefix="/api/v1")
 
 # Prometheus metrics at /metrics
 metrics_app = make_asgi_app()

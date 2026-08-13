@@ -81,7 +81,9 @@ class UserSession(Base):
     refresh_token_hash: Mapped[str] = mapped_column(
         String(255), unique=True, nullable=False, index=True
     )
-    access_token: Mapped[str] = mapped_column(String(255), nullable=False)
+    access_token_hash: Mapped[str] = mapped_column(
+        String(255), unique=True, nullable=False, index=True
+    )
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
@@ -978,4 +980,177 @@ class TailoredCvSection(Base):
         String(20), nullable=True
     )  # passed, warning, failed
     order_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_item_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), nullable=True
+    )  # cv_experience_items.id / cv_project_items.id — polymorphic, no FK,
+       # same convention as processing_jobs.source_entity_id. Null for
+       # summary/education/skills sections, which have no single source row.
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sprint 5: Exports
+# ──────────────────────────────────────────────────────────────────────
+
+
+class Export(Base):
+    """A generated, downloadable rendering of an approved draft.
+
+    user_id/trial_session_id nullable with an exactly-one-owner CHECK,
+    same treatment as tailored_cv_drafts — export_type='cv' must be
+    trial-session-accessible since tailored CV generation itself already
+    is end-to-end. cover_letter/application_pack rows always have
+    trial_session_id NULL since they require a CoverLetterWorkflow,
+    which is account-only (ck_exports_trial_only_for_cv enforces this
+    at the DB layer too, not just in application code).
+
+    format ('docx'/'pdf'/'zip') resolves 03-data-model.md's previously
+    open format decision. secondary_source_id holds the CoverLetterDraft
+    id for application_pack rows — source_id alone can't represent an
+    export with two source rows.
+
+    downloaded_at/derived_from_export_id implement "PDF is only
+    available after the DOCX has actually been downloaded": PDF rows
+    are always derived from a specific, already-downloaded docx Export
+    row, never generated independently.
+    """
+
+    __tablename__ = "exports"
+    __table_args__ = (
+        CheckConstraint(
+            "(user_id IS NOT NULL AND trial_session_id IS NULL) OR "
+            "(user_id IS NULL AND trial_session_id IS NOT NULL)",
+            name="ck_exports_exactly_one_owner",
+        ),
+        CheckConstraint(
+            "(trial_session_id IS NULL) OR (export_type = 'cv')",
+            name="ck_exports_trial_only_for_cv",
+        ),
+        CheckConstraint(
+            "format IN ('docx', 'pdf', 'zip')",
+            name="ck_exports_format",
+        ),
+        CheckConstraint(
+            "(format != 'pdf') OR (derived_from_export_id IS NOT NULL)",
+            name="ck_exports_pdf_requires_source",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=True, index=True
+    )
+    trial_session_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("trial_sessions.id"), nullable=True, index=True
+    )
+    export_type: Mapped[str] = mapped_column(
+        String(20), nullable=False
+    )  # cv, cover_letter, application_pack
+    source_id: Mapped[str] = mapped_column(UUID(as_uuid=False), nullable=False, index=True)
+    secondary_source_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), nullable=True
+    )  # CoverLetterDraft.id, application_pack only
+    format: Mapped[str] = mapped_column(
+        String(20), default="docx", nullable=False
+    )  # docx, pdf, zip
+    template_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending", nullable=False, index=True
+    )  # pending, processing, completed, failed
+    storage_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    file_size: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    downloaded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    derived_from_export_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("exports.id"), nullable=True, index=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sprint 5 / Product Extension #2: Multi-job-post coverage reporting
+# ──────────────────────────────────────────────────────────────────────
+
+
+class JobPostCollection(Base):
+    """A user-defined group of job posts for aggregate gap comparison.
+
+    Account-only (no trial support) — a reasonably-scoped power-user
+    feature behind the account wall, matching 03-data-model.md's own
+    schema exactly (no ownership deviation needed here, unlike Export).
+    """
+
+    __tablename__ = "job_post_collections"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    job_post_ids: Mapped[list[str]] = mapped_column(
+        ARRAY(UUID(as_uuid=False)), nullable=False, default=list
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+
+
+class CoverageReport(Base):
+    """Aggregated match-gap report across a job post collection.
+
+    A pure read/aggregation over existing match_runs/match_evidence_items
+    — no new matching logic, no new evidence-binding surface. Never
+    recomputes matching itself; match_run_ids just points at the
+    (reused-or-freshly-run) MatchRun rows it summarises.
+
+    skipped_job_post_ids is new beyond 03-data-model.md's literal
+    schema — records postings skipped for missing/unstructured
+    JobPostProfile data (never blocks the whole report), so a lower
+    recurrence_ratio is visibly explained rather than silently
+    unexplained.
+    """
+
+    __tablename__ = "coverage_reports"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=False, index=True
+    )
+    cv_profile_version_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("cv_profile_versions.id"), nullable=False
+    )
+    collection_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("job_post_collections.id"), nullable=False, index=True
+    )
+    match_run_ids: Mapped[list[str] | None] = mapped_column(
+        ARRAY(UUID(as_uuid=False)), nullable=True
+    )
+    aggregate_gaps: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    skipped_job_post_ids: Mapped[list[str] | None] = mapped_column(
+        ARRAY(UUID(as_uuid=False)), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), default="pending", nullable=False, index=True
+    )  # pending, processing, completed, failed
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 

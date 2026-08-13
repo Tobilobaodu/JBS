@@ -30,6 +30,10 @@ openai==2.53.0
 # File validation
 python-magic==0.4.27
 
+# Document export (Sprint 5 — docx generation; PDF conversion is via the
+# separate Gotenberg service, called over HTTP, no Python library needed)
+docxtpl==0.19.0
+
 # Malware scanning (clamd client)
 clamd==1.0.2
 
@@ -40,8 +44,11 @@ prometheus-client==0.21.1
 # Testing
 pytest==8.3.4
 pytest-asyncio==0.25.0
-httpx==0.28.1
 factory-boy==3.3.1
+
+# HTTP client (used by tests' TestClient, and at runtime by worker_export
+# to call the Gotenberg PDF-conversion service)
+httpx==0.28.1
 
 # Email validation (required by Pydantic EmailStr)
 email-validator==2.2.0

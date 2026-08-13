@@ -49,6 +49,7 @@ class SectionResult:
     model_id: str | None
     validation_status: str
     order_index: int
+    source_item_id: str | None = None
 
 
 @dataclass
@@ -74,6 +75,7 @@ def generate_and_verify_section(
     overlap_threshold: float | None = None,
     max_attempts: int | None = None,
     extra_verification_context: str = "",
+    source_item_id: str | None = None,
     llm_client_override=None,
 ) -> SectionResult | None:
     """One generation task end to end: call the model with an
@@ -103,6 +105,13 @@ def generate_and_verify_section(
     reject every one of those as an "unsupported" proper noun even
     though nothing was fabricated. Appended to the reference text both
     checks run against; never citable via evidenceIndexes.
+
+    source_item_id: the single CvExperienceItem/CvProjectItem row this
+    section was generated for, if any — carried through unchanged onto
+    the returned SectionResult so a downstream renderer (e.g. the DOCX
+    export template) can attach a real company/title/date header to the
+    section instead of a bare bullet block. None for sections with no
+    single source row (summary, education, skills, cover letters).
     """
     if not candidates:
         outcome.issues.append(f"{section_type}: no evidence available, section omitted")
@@ -186,6 +195,7 @@ def generate_and_verify_section(
             model_id=result.model,
             validation_status="passed",
             order_index=order_index,
+            source_item_id=source_item_id,
         )
 
     outcome.issues.append(

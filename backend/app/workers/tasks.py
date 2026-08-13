@@ -155,3 +155,36 @@ def enqueue_cover_letter_generate(job_id: str) -> None:
     _send_task_with_retry(
         "app.workers.worker_jobs.process_cover_letter_generate", job_id, "cover_letter_generate",
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sprint 5: Exports
+# ──────────────────────────────────────────────────────────────────────
+
+
+def enqueue_export(job_id: str) -> None:
+    """Dispatch a docx (or application-pack zip) export render job."""
+    _send_task_with_retry(
+        "app.workers.worker_jobs.process_export_docx", job_id, "export",
+    )
+
+
+def enqueue_export_pdf(job_id: str) -> None:
+    """Dispatch a docx-to-pdf conversion job — a separate queue from
+    enqueue_export since it's a different infra dependency (Gotenberg,
+    not just DB/storage) and a different Celery worker consumes it."""
+    _send_task_with_retry(
+        "app.workers.worker_jobs.process_export_pdf", job_id, "export_pdf",
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Sprint 5 / Product Extension #2: Multi-job-post coverage reporting
+# ──────────────────────────────────────────────────────────────────────
+
+
+def enqueue_coverage_report(job_id: str) -> None:
+    """Dispatch a coverage-gap aggregation job to the coverage_report queue."""
+    _send_task_with_retry(
+        "app.workers.worker_jobs.process_coverage_report", job_id, "coverage_report",
+    )

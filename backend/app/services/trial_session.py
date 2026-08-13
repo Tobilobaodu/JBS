@@ -38,10 +38,11 @@ async def claim_trial_session(
 ) -> ClaimTrialResult:
     """Reassign every row a trial session owns to a real user.
 
-    Does NOT commit — the caller controls the transaction boundary,
-    mirroring create_processing_job()'s flush-not-commit pattern. Nothing
-    here is durable until the caller's own session.commit() runs, so a
-    failure anywhere after this returns (e.g. while adding an audit
+    Does NOT commit — the caller controls the transaction boundary. Unlike
+    orchestration.py's create_processing_job(), nothing here is dispatched
+    to a Celery worker, so there's no race to guard against by committing
+    early: nothing is durable until the caller's own session.commit() runs,
+    so a failure anywhere after this returns (e.g. while adding an audit
     event) leaves nothing reassigned once the caller's transaction rolls
     back.
 

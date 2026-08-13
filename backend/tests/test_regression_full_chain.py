@@ -45,7 +45,22 @@ def test_01_rate_limiting():
             assert r.status_code == 429, \
                 f"Attempt {i+1}: expected 429 (rate limited), got {r.status_code}"
     print("  Rate limiting: blocks 6th attempt ✓")
-    # Wait for blocklist to clear (not practical in a fast test, just verify it triggered)
+    # register and login share one "auth" rate-limit bucket per client IP
+    # (not separate per-endpoint buckets) — confirmed live: test_02's very
+    # next /auth/register call inherited this test's deliberately-triggered
+    # block and got a 429 itself, every single run, not occasionally.
+    #
+    # The wait needed is NOT settings.rate_limit_auth_window (60s) — that's
+    # only the sliding-window size used to detect a violation. Tripping the
+    # limit (as this test deliberately does) escalates to a separate
+    # 300-second (5-minute) violation block in app/core/rate_limit.py::
+    # check_rate_limit() (`_blocked[key] = now + 300`, a literal, not a
+    # settings field — confirmed by reading the source, not guessed; a
+    # first attempt at this fix used the 60s window and still failed
+    # every time). Slow, but this is already a Docker-only integration
+    # test, never part of the fast host suite, and correctness here
+    # matters more than shaving four minutes off a test nobody runs often.
+    time.sleep(301)
 
 
 def test_02_full_chain():
@@ -180,8 +195,16 @@ def test_02_full_chain():
         assert r.status_code in (201, 202), f"Step 3 answers failed: {r.status_code}"
 
     # ── Get draft ──────────────────────────────────────────────────
-    time.sleep(1)
-    r = requests.get(f"{API}/cover-letters/{workflow_id}/draft", headers=headers)
+    # Draft generation is async (Sprint 4: real LLM generation via
+    # Celery, not synchronous template assembly) — a fixed 1s sleep is a
+    # guaranteed flake once this can involve a real multi-second OpenAI
+    # call (or its fallback), so poll with a realistic timeout instead.
+    r = None
+    for _ in range(30):
+        r = requests.get(f"{API}/cover-letters/{workflow_id}/draft", headers=headers)
+        if r.status_code == 200:
+            break
+        time.sleep(1)
     assert r.status_code == 200, f"Draft failed: {r.status_code} {r.text}"
     draft = r.json()
     assert draft.get("bodyText")

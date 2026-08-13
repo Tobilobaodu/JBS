@@ -371,6 +371,15 @@ paths:
                 jobPostIds:
                   type: array
                   items: { type: string, format: uuid }
+                  minItems: 1
+                  maxItems: 50
+                  description: >
+                    Sprint 5: capped at 50 — nothing in the original spec
+                    bounded this, but an uncapped array feeds a worker
+                    that runs up to N match_engine calls per report, a
+                    real scalability risk. 50 comfortably covers the
+                    "10 to 30 applications over weeks" framing in
+                    11-product-extensions.md §2.
       responses:
         '201':
           description: Collection created
@@ -455,6 +464,22 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ProcessingJobRef' }
+    get:
+      tags: [matching]
+      summary: List match runs for the current user, most recent first
+      description: >-
+        Account-only (matches GET /cvs and GET /job-posts' precedent) — a
+        trial session can already see its own single match via GET
+        /matches/{matchId}, but a browsable list is an account feature.
+      parameters:
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/offset'
+      responses:
+        '200':
+          description: Paginated list of matches
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MatchListResponse' }
 
   /matches/{matchId}:
     parameters:
@@ -550,6 +575,24 @@ paths:
   # ---------------------------------------------------------------------
   # COVER LETTER WORKFLOW
   # ---------------------------------------------------------------------
+  /cover-letters:
+    get:
+      tags: [cover-letters]
+      summary: List cover-letter workflows for the current user, most recent first
+      description: >-
+        Account-only — cover letters have always been account-only
+        throughout this router, matching GET /cvs and GET /job-posts'
+        precedent for their own list endpoints.
+      parameters:
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/offset'
+      responses:
+        '200':
+          description: Paginated list of cover-letter workflows
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CoverLetterWorkflowListResponse' }
+
   /cover-letters/start:
     post:
       tags: [cover-letters]
@@ -716,12 +759,28 @@ paths:
                 type: array
                 items: { $ref: '#/components/schemas/AuditEvent' }
 
+  # Sprint 5: DOCX is the primary export format, with multiple ATS-ready
+  # template layouts to pick from (see GET /exports/templates below).
+  # PDF is secondary and only ever a conversion of an already-downloaded
+  # docx export — see POST /exports/{exportId}/pdf. The three
+  # POST-to-create endpoints below were the only ones originally
+  # documented here; GET /exports/{exportId}, its .../download, and
+  # POST .../pdf were added this sprint because the async 202 contract
+  # has no way to poll/retrieve a result without them.
   /exports/cv/{draftId}:
     parameters:
       - $ref: '#/components/parameters/draftId'
     post:
       tags: [exports]
-      summary: Request export package for approved CV draft
+      summary: Request a docx export package for an approved CV draft
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                templateId: { type: string, description: "CV template layout id — see GET /exports/templates. Defaults to 'standard' if omitted or unrecognized." }
       responses:
         '202':
           description: Export queued
@@ -739,7 +798,7 @@ paths:
       - $ref: '#/components/parameters/workflowId'
     post:
       tags: [exports]
-      summary: Request export package for approved cover letter
+      summary: Request a docx export package for an approved cover letter
       responses:
         '202':
           description: Export queued
@@ -755,7 +814,7 @@ paths:
   /exports/application-pack:
     post:
       tags: [exports]
-      summary: Export approved CV plus approved cover letter together
+      summary: Export approved CV plus approved cover letter together, as a zip of two independent docx files
       requestBody:
         required: true
         content:
@@ -766,6 +825,7 @@ paths:
               properties:
                 tailoredCvDraftId: { type: string, format: uuid }
                 coverLetterWorkflowId: { type: string, format: uuid }
+                templateId: { type: string, description: "CV template layout id, applied to the CV half of the pack." }
       responses:
         '202':
           description: Export queued
@@ -774,6 +834,81 @@ paths:
               schema: { $ref: '#/components/schemas/ExportRequest' }
         '409':
           description: One or both drafts are not approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /exports/templates:
+    get:
+      tags: [exports]
+      summary: List available ATS-ready CV export template layouts
+      responses:
+        '200':
+          description: Available templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/ExportTemplate' }
+
+  /exports/{exportId}:
+    parameters:
+      - name: exportId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [exports]
+      summary: Poll an export's status; fileReference becomes a download URL once completed
+      responses:
+        '200':
+          description: Export status
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /exports/{exportId}/download:
+    parameters:
+      - name: exportId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    get:
+      tags: [exports]
+      summary: Download a completed export's file (proxied, ownership-checked every request — no presigned URL)
+      responses:
+        '200':
+          description: The exported file (docx, pdf, or zip, per the export's format field)
+          content:
+            application/vnd.openxmlformats-officedocument.wordprocessingml.document: {}
+            application/pdf: {}
+            application/zip: {}
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Export exists but isn't completed yet
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /exports/{exportId}/pdf:
+    parameters:
+      - name: exportId
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [exports]
+      summary: Convert an already-downloaded docx export to PDF (secondary format, gated on download having happened first)
+      responses:
+        '202':
+          description: PDF conversion queued — the response is a new Export row (format=pdf, derivedFromExportId set to the source docx export)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: "Source export isn't docx, isn't completed yet, or hasn't been downloaded yet"
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1117,6 +1252,28 @@ components:
             sourceReferences: []
         createdAt: "2026-08-03T10:30:00Z"
 
+    MatchListItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        jobPostId: { type: string, format: uuid }
+        jobTitle: { type: string, nullable: true }
+        employer: { type: string, nullable: true }
+        status: { type: string, enum: [queued, processing, completed, failed] }
+        score: { type: number, nullable: true }
+        createdAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time, nullable: true }
+
+    MatchListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/MatchListItem' }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+
     MatchEvidenceItem:
       type: object
       description: >
@@ -1240,6 +1397,18 @@ components:
               currentSupportLevelDistribution:
                 type: object
                 additionalProperties: { type: integer }
+        skippedJobPostIds:
+          type: array
+          items: { type: string, format: uuid }
+          nullable: true
+          description: >
+            Sprint 5, new beyond the originally documented schema. Job
+            posts in the collection skipped because their JobPostProfile
+            wasn't ready (still structuring) — the report still
+            completes for the rest, but recurrenceRatio's denominator is
+            the full collection size, not just the analyzed postings, so
+            a skip genuinely (and honestly) lowers the ratio rather than
+            being silently excluded from it.
         createdAt: { type: string, format: date-time }
         completedAt: { type: string, format: date-time, nullable: true }
       example:
@@ -1295,6 +1464,27 @@ components:
         questionSetVersion: { type: integer }
         createdAt: { type: string, format: date-time }
 
+    CoverLetterWorkflowListItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        jobPostId: { type: string, format: uuid }
+        jobTitle: { type: string, nullable: true }
+        employer: { type: string, nullable: true }
+        status: { type: string, enum: [awaiting_answers, generating, draft_ready, approved, archived, generation_failed] }
+        currentStep: { type: integer }
+        createdAt: { type: string, format: date-time }
+
+    CoverLetterWorkflowListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/CoverLetterWorkflowListItem' }
+        total: { type: integer }
+        limit: { type: integer }
+        offset: { type: integer }
+
     CoverLetterQuestion:
       type: object
       properties:
@@ -1339,7 +1529,10 @@ components:
         id: { type: string, format: uuid }
         jobType:
           type: string
-          enum: [docling_extract, textract_extract, merge_parse, job_post_parse, match, cv_generate, cover_letter_generate]
+          # ats_check was already a real job_type (Extension #1) but missing
+          # from this enum, a pre-existing gap fixed while touching this
+          # list for Sprint 5, not introduced by it.
+          enum: [docling_extract, textract_extract, merge_parse, job_post_parse, match, cv_generate, cover_letter_generate, ats_check, export, export_pdf, coverage_report]
         sourceEntityType: { type: string }
         sourceEntityId: { type: string, format: uuid }
         status: { type: string, enum: [queued, processing, completed, failed, retrying] }
@@ -1367,9 +1560,27 @@ components:
 
     ExportRequest:
       type: object
+      description: >
+        Sprint 5. format resolves the format decision this schema originally
+        left as a placeholder (see 01-implementation-plan.md open decisions):
+        docx (primary), pdf (secondary, only after downloadedAt is set), zip
+        (application packs — two independent docx files, not a merged doc).
       properties:
         id: { type: string, format: uuid }
         status: { type: string, enum: [queued, processing, completed, failed] }
         sourceDraftType: { type: string, enum: [tailored_cv, cover_letter, application_pack] }
-        fileReference: { type: string, nullable: true }
+        fileReference: { type: string, nullable: true, description: "Relative download URL (GET /exports/{id}/download) once status is completed; null otherwise." }
+        format: { type: string, enum: [docx, pdf, zip] }
+        templateId: { type: string, nullable: true, description: "CV template layout used; null for cover-letter/pdf/zip exports." }
+        downloadedAt: { type: string, format: date-time, nullable: true, description: "Set the first time the docx has been downloaded — gates PDF conversion." }
+        derivedFromExportId: { type: string, format: uuid, nullable: true, description: "Set on format=pdf rows, pointing at the source docx export." }
+        errorMessage: { type: string, nullable: true }
         createdAt: { type: string, format: date-time }
+
+    ExportTemplate:
+      type: object
+      description: "Sprint 5. Static registry, not user data — backs GET /exports/templates for a frontend picker."
+      properties:
+        id: { type: string, example: "standard" }
+        name: { type: string, example: "Standard" }
+        description: { type: string }

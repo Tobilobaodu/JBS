@@ -103,6 +103,12 @@ class Settings(BaseSettings):
     clamd_host: str = "localhost"
     clamd_port: int = 3310
 
+    # Exports (Sprint 5) — Gotenberg does DOCX→PDF conversion, called
+    # over the internal Docker network only (no internet egress needed,
+    # same isolation posture as the CV-parsing workers).
+    gotenberg_url: str = "http://gotenberg:3000"
+    gotenberg_request_timeout_seconds: int = 30
+
     # CORS
     cors_origin: str = "http://localhost:3000"
 

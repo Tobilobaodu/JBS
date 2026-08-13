@@ -3,6 +3,10 @@
 - bcrypt password hashing (cost factor >= 12)
 - JWT access token issuance and verification (short-lived, per spec)
 - Refresh token generation (revocable, stored in user_sessions)
+- get_current_user() checks both the JWT itself AND that a live,
+  non-revoked user_sessions row backs it — a token surviving logout
+  (revoked_at set) or an expired session is rejected immediately rather
+  than remaining bearer-valid until its own JWT exp.
 """
 
 import hashlib
@@ -113,6 +117,31 @@ async def get_current_user(
             detail="User not found",
         )
 
+    # A valid signature/expiry alone isn't enough — the session backing this
+    # exact token must still be live. Without this check, logout's
+    # revoked_at write (auth.py) is pure bookkeeping: the bearer token
+    # itself stays usable until its own JWT exp, up to jwt_expiry seconds
+    # later, contradicting the "invalidate on logout" requirement.
+    session_result = await session.execute(
+        select(UserSession).where(
+            UserSession.access_token_hash == hash_token(token),
+            UserSession.revoked_at.is_(None),
+        )
+    )
+    user_session = session_result.scalar_one_or_none()
+
+    if user_session is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has been revoked or is invalid",
+        )
+
+    if user_session.expires_at <= datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session has expired",
+        )
+
     if user.status != "active":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -178,8 +207,15 @@ async def get_current_user_or_trial_session(
     credentials are present at all.
 
     Every route that should stay authenticated-only (dashboard, cover
-    letters, exports, company tracking) keeps using get_current_user
-    directly and is unaffected by this function's existence.
+    letters, company tracking) keeps using get_current_user directly and
+    is unaffected by this function's existence. Sprint 5 adds exports as
+    a partial exception: POST /exports/cv/{draftId} uses this dependency
+    too, since tailored CV generation itself is already trial-accessible
+    end to end and exporting a CV a trial identity was allowed to
+    generate shouldn't hit an account wall mid-flow — but
+    POST /exports/cover-letter/{workflowId} and
+    POST /exports/application-pack stay get_current_user-only, since both
+    require a CoverLetterWorkflow, which is itself account-only.
     """
     if credentials is not None:
         user = await get_current_user(request, credentials, session)
