@@ -14,7 +14,7 @@ feature behind the account wall, not something a first-touch trial
 identity needs.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -111,12 +111,15 @@ async def create_collection(
 
 @router.get("/job-post-collections", response_model=list[JobPostCollectionOut])
 async def list_collections(
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ):
     result = await session.execute(
         select(JobPostCollection).where(JobPostCollection.user_id == current_user.id)
         .order_by(JobPostCollection.created_at.desc())
+        .limit(limit).offset(offset)
     )
     return [JobPostCollectionOut.model_validate(c) for c in result.scalars().all()]
 

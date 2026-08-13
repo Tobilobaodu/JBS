@@ -29,6 +29,18 @@ celery_app.conf.update(
     task_track_started=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
+    # Without these, a Redis-side hang (broker unreachable, network partition)
+    # blocks the publishing/consuming socket call indefinitely instead of
+    # raising — the same class of gap _send_task_with_retry's retry_policy
+    # exists to catch, just at the socket layer instead of the publish layer.
+    broker_transport_options={
+        "socket_timeout": 10,
+        "socket_connect_timeout": 10,
+    },
+    redis_backend_transport_options={
+        "socket_timeout": 10,
+        "socket_connect_timeout": 10,
+    },
     # Autodiscover tasks from worker_jobs (avoids circular import)
     imports=("app.workers.worker_jobs",),
     # Periodic tasks, run by a `celery -A app.workers.tasks beat` process

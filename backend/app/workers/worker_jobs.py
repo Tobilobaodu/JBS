@@ -26,6 +26,12 @@ from sqlalchemy import select, delete, create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.job_states import (
+    ProcessingStatus,
+    RetryableWorkerError,
+    classify_error,
+    transition_job_status,
+)
 from app.core.logging import get_logger
 from app.core.metrics import (
     JOB_THROUGHPUT,
@@ -79,8 +85,14 @@ from app.workers.tasks import (
 
 logger = get_logger(__name__)
 
-# Synchronous engine for Celery workers (Celery tasks are not async)
-_sync_engine = create_engine(settings.database_url)
+# Synchronous engine for Celery workers (Celery tasks are not async).
+# connect_timeout (psycopg2's own kwarg name, not SQLAlchemy's "timeout")
+# bounds new-connection setup; pool_timeout bounds waiting for a pooled one.
+_sync_engine = create_engine(
+    settings.database_url,
+    pool_timeout=30,
+    connect_args={"connect_timeout": 10},
+)
 
 
 def _get_sync_session() -> Session:
@@ -96,7 +108,15 @@ def _get_sync_session() -> Session:
     bind=True,
     max_retries=3,
     default_retry_delay=30,
-    autoretry_for=(Exception,),
+    # Only retryable-classified failures (timeouts, connection errors,
+    # 429/5xx) get Celery's automatic retry — a malformed-file/validation
+    # failure retrying 3 times just delays the same inevitable failure by
+    # ~a minute. See classify_error/RetryableWorkerError/PermanentWorkerError
+    # in app/core/job_states.py; this is the one task piloting the pattern,
+    # not yet rolled out to the other 13 (a deliberate, separate follow-up —
+    # each needs its own verification, same reasoning as the docling version
+    # bump's risk-tiering).
+    autoretry_for=(RetryableWorkerError,),
     name="app.workers.worker_jobs.process_docling_extract",
     queue="docling_extract",
 )
@@ -121,7 +141,7 @@ def process_docling_extract(self, job_id: str) -> None:
             logger.error("job_not_found", job_id=job_id)
             return
 
-        job.status = "processing"
+        transition_job_status(job, ProcessingStatus.PROCESSING)
         job.started_at = datetime.now(timezone.utc)
         session.commit()
 
@@ -157,7 +177,7 @@ def process_docling_extract(self, job_id: str) -> None:
         cv_file.status = "extracting"
 
         # Mark job complete
-        job.status = "completed"
+        transition_job_status(job, ProcessingStatus.COMPLETED)
         job.completed_at = datetime.now(timezone.utc)
         session.commit()
 
@@ -187,18 +207,28 @@ def process_docling_extract(self, job_id: str) -> None:
         logger.error("docling_extract_failed", job_id=job_id, error=str(e))
         JOB_THROUGHPUT.labels(job_type="docling_extract", status="failed").inc()
         JOB_DURATION_SECONDS.labels(job_type="docling_extract").observe(duration_s)
+
+        error_type = classify_error(e)
+        # Celery only auto-retries RetryableWorkerError (see autoretry_for
+        # above) and only up to max_retries — anything else, or a
+        # retryable error on its last allowed attempt, is genuinely done.
+        is_final_attempt = (
+            error_type is not RetryableWorkerError
+            or self.request.retries >= self.max_retries
+        )
         try:
-            job.status = "failed"
-            job.last_error = str(e)
-            job.failed_at = datetime.now(timezone.utc)
-            cv_file = session.get(CvFile, job.source_entity_id)
-            if cv_file:
-                cv_file.status = "failed"
-                cv_file.error_message = str(e)
+            target_status = ProcessingStatus.FAILED if is_final_attempt else ProcessingStatus.RETRYING
+            transition_job_status(job, target_status, error=str(e))
+            if is_final_attempt:
+                job.failed_at = datetime.now(timezone.utc)
+                cv_file = session.get(CvFile, job.source_entity_id)
+                if cv_file:
+                    cv_file.status = "failed"
+                    cv_file.error_message = str(e)
             session.commit()
         except Exception:
             session.rollback()
-        raise
+        raise error_type(str(e)) from e
     finally:
         session.close()
         structlog.contextvars.unbind_contextvars("job_id")
@@ -1221,13 +1251,14 @@ def process_textract_extract(self, job_id: str) -> None:
             region_name=settings.aws_region,
             aws_access_key_id=settings.aws_access_key_id,
             aws_secret_access_key=settings.aws_secret_access_key,
-            config=BotoConfig(signature_version="s3v4"),
+            config=BotoConfig(signature_version="s3v4", connect_timeout=10, read_timeout=30),
         )
         textract = boto3.client(
             "textract",
             region_name=settings.aws_region,
             aws_access_key_id=settings.aws_access_key_id,
             aws_secret_access_key=settings.aws_secret_access_key,
+            config=BotoConfig(connect_timeout=10, read_timeout=30),
         )
 
         # Download from MinIO (where the upload service stored it)
@@ -1583,7 +1614,7 @@ def download_file_sync(storage_key: str) -> bytes:
             aws_access_key_id=settings.minio_root_user,
             aws_secret_access_key=settings.minio_root_password,
             region_name=settings.aws_region,
-            config=BotoConfig(signature_version="s3v4"),
+            config=BotoConfig(signature_version="s3v4", connect_timeout=10, read_timeout=30),
         )
     else:
         s3 = boto3.client(
@@ -1591,6 +1622,7 @@ def download_file_sync(storage_key: str) -> bytes:
             region_name=settings.aws_region,
             aws_access_key_id=settings.aws_access_key_id,
             aws_secret_access_key=settings.aws_secret_access_key,
+            config=BotoConfig(connect_timeout=10, read_timeout=30),
         )
 
     response = s3.get_object(Bucket=settings.s3_bucket_name, Key=storage_key)
@@ -1612,7 +1644,7 @@ def upload_file_sync(file_content: bytes, storage_key: str, content_type: str) -
             aws_access_key_id=settings.minio_root_user,
             aws_secret_access_key=settings.minio_root_password,
             region_name=settings.aws_region,
-            config=BotoConfig(signature_version="s3v4"),
+            config=BotoConfig(signature_version="s3v4", connect_timeout=10, read_timeout=30),
         )
     else:
         s3 = boto3.client(
@@ -1620,6 +1652,7 @@ def upload_file_sync(file_content: bytes, storage_key: str, content_type: str) -
             region_name=settings.aws_region,
             aws_access_key_id=settings.aws_access_key_id,
             aws_secret_access_key=settings.aws_secret_access_key,
+            config=BotoConfig(connect_timeout=10, read_timeout=30),
         )
 
     s3.put_object(Bucket=settings.s3_bucket_name, Key=storage_key, Body=file_content, ContentType=content_type)

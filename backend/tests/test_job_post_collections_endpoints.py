@@ -159,7 +159,7 @@ async def test_list_collections_scoped_to_current_user():
         )
 
     async with _test_session_factory() as s:
-        result = await list_collections(current_user=user, session=s)
+        result = await list_collections(limit=50, offset=0, current_user=user, session=s)
         assert len(result) == 1
         assert result[0].name == "Mine"
 

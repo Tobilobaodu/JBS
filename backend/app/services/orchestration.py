@@ -5,12 +5,16 @@ API endpoints call these functions to persist job records and dispatch
 tasks to Celery workers.
 """
 
+import hashlib
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from app.db.models import ProcessingJob, TrialSession, User
 from fastapi import HTTPException, status as fastapi_status
 from app.core.config import settings
+from app.core.job_states import ProcessingStatus, transition_job_status
 from app.workers.tasks import (
     enqueue_docling_extract,
     enqueue_textract_extract,
@@ -24,6 +28,31 @@ logger = get_logger(__name__)
 
 
 _ACTIVE_JOB_STATUSES = frozenset({'pending', 'queued', 'processing', 'retrying'})
+
+
+def compute_task_key(job_type: str, source_entity_id: str, owner_id: str) -> str:
+    """Idempotency key for ProcessingJob dedup — see task_key on the model
+    and migration 013. Deterministic per (job_type, entity, owner) so a
+    retried client request for the exact same operation resolves to the
+    same key, letting the DB's partial unique index (or an app-level
+    lookup first) find the in-flight job instead of starting a duplicate
+    real worker task."""
+    raw = f"{job_type}:{source_entity_id}:{owner_id}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def find_active_job_by_task_key(session: AsyncSession, task_key: str) -> ProcessingJob | None:
+    """Look up an in-flight job for a task_key before creating a new one —
+    used by both create_processing_job and the generation endpoints
+    (tailored_cvs.py, cover_letters.py) that build ProcessingJob rows
+    directly rather than through create_processing_job."""
+    result = await session.execute(
+        select(ProcessingJob).where(
+            ProcessingJob.task_key == task_key,
+            ProcessingJob.status.in_(_ACTIVE_JOB_STATUSES),
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 async def enforce_concurrent_job_limit(
@@ -101,6 +130,12 @@ async def create_processing_job(
             "create_processing_job requires exactly one of user_id/trial_session_id"
         )
 
+    task_key = compute_task_key(job_type, source_entity_id, user_id or trial_session_id)
+    existing = await find_active_job_by_task_key(session, task_key)
+    if existing is not None:
+        logger.info("processing_job_deduped", job_id=str(existing.id), job_type=job_type, task_key=task_key)
+        return existing
+
     await enforce_concurrent_job_limit(session, user_id=user_id, trial_session_id=trial_session_id)
 
     job = ProcessingJob(
@@ -110,9 +145,22 @@ async def create_processing_job(
         user_id=user_id,
         trial_session_id=trial_session_id,
         status="queued",
+        task_key=task_key,
     )
     session.add(job)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # Lost a race against a concurrent request for the same task_key —
+        # the partial unique index caught what the SELECT above couldn't.
+        # The other request's row is now the real job; use it instead of
+        # raising a 500 for what is, from the client's perspective, a
+        # successful (deduped) request.
+        await session.rollback()
+        existing = await find_active_job_by_task_key(session, task_key)
+        if existing is not None:
+            return existing
+        raise
 
     try:
         # Dispatch to the correct Celery queue based on job_type
@@ -126,8 +174,7 @@ async def create_processing_job(
             enqueue_ats_check(str(job.id))
         else:
             logger.warning("unknown_job_type_not_enqueued", job_type=job_type)
-            job.status = "failed"
-            job.last_error = f"Unknown job type: {job_type}"
+            transition_job_status(job, ProcessingStatus.FAILED, error=f"Unknown job type: {job_type}")
             await session.commit()
             return job
     except Exception as e:
@@ -154,8 +201,7 @@ def mark_job_publish_failed(job: ProcessingJob, error: str) -> None:
     publish fails, so the persisted job does not permanently occupy an
     active concurrency slot.
     """
-    job.status = "failed"
-    job.last_error = error
+    transition_job_status(job, ProcessingStatus.FAILED, error=error)
     job.failed_at = datetime.now(timezone.utc)
 
 

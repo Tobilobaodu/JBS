@@ -15,6 +15,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -353,6 +354,12 @@ class ProcessingJob(Base):
     max_retries: Mapped[int] = mapped_column(Integer, default=3)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     worker_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Idempotency key: sha256(job_type:source_entity_id:owner_id), set only by
+    # call sites that opt into dedup (create_processing_job's upload pipeline
+    # and the tailored-cv/cover-letter generation endpoints — see
+    # app/services/orchestration.py::compute_task_key). NULL for every other
+    # job_type, so the partial unique index below never blocks them.
+    task_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
     )
@@ -375,6 +382,17 @@ class ProcessingJob(Base):
             "(user_id IS NOT NULL AND trial_session_id IS NULL) OR "
             "(user_id IS NULL AND trial_session_id IS NOT NULL)",
             name="ck_processing_jobs_exactly_one_owner",
+        ),
+        # Partial unique index (task_key IS NOT NULL only) — a retried client
+        # request for the same job_type/entity/owner while one is still
+        # active must find the existing row via a race-safe DB constraint,
+        # not just an application-level SELECT-then-INSERT that a concurrent
+        # request could slip through.
+        Index(
+            "idx_processing_jobs_task_key_unique",
+            "task_key",
+            unique=True,
+            postgresql_where=text("task_key IS NOT NULL"),
         ),
         {"info": {"polymorphic_source": True}},
     )

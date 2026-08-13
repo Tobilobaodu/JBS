@@ -19,7 +19,12 @@ logger = get_logger(__name__)
 
 
 def _get_s3_client():
-    """Create a boto3 S3 client pointing at MinIO (local) or real S3."""
+    """Create a boto3 S3 client pointing at MinIO (local) or real S3.
+
+    connect_timeout/read_timeout bound this call from an API request
+    handler's perspective — without them a stalled storage backend hangs
+    the request indefinitely instead of surfacing a 5xx.
+    """
     if settings.minio_endpoint and "minio" in settings.minio_endpoint:
         return boto3.client(
             "s3",
@@ -27,13 +32,14 @@ def _get_s3_client():
             aws_access_key_id=settings.minio_root_user,
             aws_secret_access_key=settings.minio_root_password,
             region_name=settings.aws_region,
-            config=BotoConfig(signature_version="s3v4"),
+            config=BotoConfig(signature_version="s3v4", connect_timeout=10, read_timeout=30),
         )
     return boto3.client(
         "s3",
         region_name=settings.aws_region,
         aws_access_key_id=settings.aws_access_key_id,
         aws_secret_access_key=settings.aws_secret_access_key,
+        config=BotoConfig(connect_timeout=10, read_timeout=30),
     )
 
 

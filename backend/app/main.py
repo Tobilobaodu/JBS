@@ -128,15 +128,31 @@ app.add_middleware(
 )
 
 
-# Correlation ID middleware — inject a correlation_id into every request
+# Correlation ID + request-timing middleware — inject a correlation_id into
+# every request and record its latency. Combined into one middleware (rather
+# than a second `@app.middleware("http")`) since both need to wrap the same
+# call_next and Starlette runs middleware in registration order regardless.
 @app.middleware("http")
 async def correlation_id_middleware(request: Request, call_next):
+    import time
     import structlog
+    from app.core.metrics import HTTP_REQUEST_DURATION_SECONDS
 
     corr_id = request.headers.get("X-Correlation-ID", str(uuid.uuid4()))
     structlog.contextvars.bind_contextvars(correlation_id=corr_id)
+    t_start = time.perf_counter()
     response = await call_next(request)
+    duration_s = time.perf_counter() - t_start
     response.headers["X-Correlation-ID"] = corr_id
+
+    # Route template ("/cvs/{cv_id}"), not raw path, to keep the route label
+    # bounded — FastAPI sets scope["route"] once a route has matched.
+    route = request.scope.get("route")
+    route_path = route.path if route is not None else request.url.path
+    HTTP_REQUEST_DURATION_SECONDS.labels(
+        method=request.method, route=route_path, status_code=str(response.status_code),
+    ).observe(duration_s)
+
     return response
 
 

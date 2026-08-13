@@ -35,7 +35,12 @@ export function ExportButton({
     queryKey: ["export", exportId],
     queryFn: () => getExport(exportId as string),
     enabled: !!exportId,
-    refetchInterval: (q) => (q.state.data?.status === "completed" ? false : 1500),
+    refetchInterval: (q) => {
+      const status = q.state.data?.status
+      // Previously only stopped on "completed" — a failed export polled
+      // forever at 1500ms since nothing else ever flips isBusy to false.
+      return status === "completed" || status === "failed" ? false : 1500
+    },
   })
 
   useEffect(() => {

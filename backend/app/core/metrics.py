@@ -105,6 +105,17 @@ QUEUE_DEPTH_GAUGE = Gauge(
     ["job_type"],
 )
 
+# ── HTTP request latency (API process only — matches every other route
+# handler's request/response cycle, not worker task duration, which
+# JOB_DURATION_SECONDS already covers). Route template (e.g. "/cvs/{cv_id}"),
+# not the raw path, to keep cardinality bounded across id-scoped routes.
+HTTP_REQUEST_DURATION_SECONDS = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request duration in seconds, by method, route, and status code",
+    ["method", "route", "status_code"],
+    buckets=(0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
+)
+
 # ── Real spend on paid external APIs (Textract, OpenAI), by call type.
 # Token-based for LLM calls (real prompt_tokens/completion_tokens against
 # documented gpt-4o-mini per-token pricing), per-page for Textract (real

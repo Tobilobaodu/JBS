@@ -20,6 +20,8 @@ jobs:
         run: cd frontend && npm ci
       - name: Build
         run: cd frontend && npm run build
+      - name: Bundle size
+        run: cd frontend && npm run size
       - name: Lint
         run: cd frontend && npm run lint
       - name: Test

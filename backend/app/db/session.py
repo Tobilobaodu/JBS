@@ -8,6 +8,12 @@ engine = create_async_engine(
     echo=settings.environment == "local",
     pool_size=20,
     max_overflow=10,
+    # pool_timeout: how long a request waits for a free connection before
+    # raising, rather than hanging indefinitely under a connection-pool
+    # saturation spike. connect_args timeout: asyncpg's own timeout for
+    # establishing a new TCP connection, for the same reason.
+    pool_timeout=30,
+    connect_args={"timeout": 10},
 )
 
 async_session_factory = async_sessionmaker(
