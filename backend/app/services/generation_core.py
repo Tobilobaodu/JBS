@@ -155,6 +155,64 @@ def generate_and_verify_section(
         outcome.total_prompt_tokens += result.prompt_tokens
         outcome.total_completion_tokens += result.completion_tokens
 
+        raw_bullets = result.data.get("bullets")
+        if isinstance(raw_bullets, list) and raw_bullets:
+            # Structured-bullets shape (experience/project): verify each
+            # bullet independently against the evidence it cites, keep the
+            # ones that pass, join them into the section's content_text.
+            # This is stricter than the single-paragraph path — every claim
+            # must stand on its own — and simultaneously yields more detail.
+            kept_texts: list[str] = []
+            kept_refs: list[str] = []
+            rejection_reasons: list[str] = []
+            for bullet in raw_bullets:
+                if not isinstance(bullet, dict):
+                    rejection_reasons.append("bullet not an object")
+                    continue
+                bullet_text = (bullet.get("text") or "").strip()
+                bullet_indexes = bullet.get("evidenceIndexes")
+                if not bullet_text or not isinstance(bullet_indexes, list) or not bullet_indexes:
+                    rejection_reasons.append("bullet missing text or evidenceIndexes")
+                    continue
+                cited = [
+                    candidates[i] for i in bullet_indexes
+                    if isinstance(i, int) and 0 <= i < len(candidates)
+                ]
+                if not cited:
+                    rejection_reasons.append("bullet cited no valid evidence index")
+                    continue
+                bullet_evidence = [c.searchable_text for c in cited]
+                if extra_verification_context:
+                    bullet_evidence.append(extra_verification_context)
+                bullet_verification = evidence_binder.verify_claim_against_evidence(
+                    bullet_text, bullet_evidence, overlap_threshold,
+                )
+                if not bullet_verification.passed:
+                    rejection_reasons.append(bullet_verification.reason)
+                    continue
+                kept_texts.append(bullet_text)
+                for c in cited:
+                    if c.row_id not in kept_refs:
+                        kept_refs.append(c.row_id)
+
+            if not kept_texts:
+                correction = "no bullet passed verification" + (
+                    f": {'; '.join(rejection_reasons[:3])}" if rejection_reasons else ""
+                )
+                continue
+
+            return SectionResult(
+                section_type=section_type,
+                content_text="\n".join(kept_texts),
+                evidence_references=kept_refs,
+                generation_task=generation_task,
+                prompt_version=prompt_version,
+                model_id=result.model,
+                validation_status="passed",
+                order_index=order_index,
+                source_item_id=source_item_id,
+            )
+
         content_text = (result.data.get("contentText") or "").strip()
         evidence_indexes = result.data.get("evidenceIndexes")
 

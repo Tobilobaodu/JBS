@@ -41,7 +41,9 @@ Style rules:
 - Close with a sign-off ("Sincerely,") and the candidate's name if present in the evidence.
 - Honor the requested tone if one is given, without ever relaxing the non-fabrication rules below.
 
-{NON_FABRICATION_RULES}"""
+{NON_FABRICATION_RULES}
+
+Return your response as JSON matching the given schema — contentText (the complete letter body) and evidenceIndexes (the evidence indexes it draws on)."""
 
 COVER_LETTER_JSON_SCHEMA = dict(GENERATION_JSON_SCHEMA)
 

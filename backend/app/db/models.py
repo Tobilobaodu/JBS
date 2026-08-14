@@ -355,10 +355,14 @@ class ProcessingJob(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     worker_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Idempotency key: sha256(job_type:source_entity_id:owner_id), set only by
-    # call sites that opt into dedup (create_processing_job's upload pipeline
-    # and the tailored-cv/cover-letter generation endpoints — see
-    # app/services/orchestration.py::compute_task_key). NULL for every other
-    # job_type, so the partial unique index below never blocks them.
+    # call sites that opt into dedup — currently just create_processing_job's
+    # upload/ATS-check pipeline (see app/services/orchestration.py::
+    # compute_task_key). Deliberately NOT set by the tailored-cv/cover-letter
+    # generation endpoints (tailored_cvs.py, cover_letters.py) — those create
+    # ProcessingJob rows directly and are versioned "regenerate" flows, where
+    # a second request is often a legitimate new version rather than a retry.
+    # NULL for every other job_type, so the partial unique index below never
+    # blocks them.
     task_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False

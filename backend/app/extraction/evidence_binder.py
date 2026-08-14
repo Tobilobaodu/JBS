@@ -293,16 +293,19 @@ def verify_claim_against_evidence(
     evidence_texts: list[str],
     overlap_threshold: float,
 ) -> VerificationResult:
-    """Two layered checks against the *real* content of the cited evidence
-    rows — not whether a reference id was merely present and well-formed.
+    """Claim/entity verification against the *real* content of the cited
+    evidence rows — not whether a reference id was merely present and
+    well-formed.
 
-    1. Token-overlap floor: catches wholesale invention or off-topic
-       generation (the claim isn't meaningfully derived from the cited
-       text at all).
-    2. Hard fact check: every number/named-entity-like span in the claim
-       must appear in the cited evidence. Catches the narrower, more
-       dangerous case — a claim that's mostly grounded but has one
-       invented number or name slipped in.
+    1. Hard fact check (primary): every number/named-entity-like span in
+       the claim must appear in the cited evidence. This blocks
+       fabrication — a claim that's mostly grounded but has one invented
+       number or name slipped in — while permitting genuine rewriting: a
+       stronger-but-truthful rephrase with lower token overlap passes
+       because it is judged on its facts, not its phrasing.
+    2. Token-overlap floor (fallback only): when the claim extracts to no
+       checkable facts at all, some token grounding is required so
+       wholesale off-topic invention is still caught.
     """
     if not claim_text or not claim_text.strip():
         return VerificationResult(passed=False, reason="empty claim text")
@@ -311,28 +314,31 @@ def verify_claim_against_evidence(
     if not combined_evidence.strip():
         return VerificationResult(passed=False, reason="no evidence text to verify against")
 
-    claim_tokens = _tokenize(claim_text)
-    if not claim_tokens:
-        return VerificationResult(passed=False, reason="claim has no comparable tokens")
-
-    evidence_tokens = _tokenize(combined_evidence)
-    overlap_ratio = len(claim_tokens & evidence_tokens) / len(claim_tokens)
-    if overlap_ratio < overlap_threshold:
-        return VerificationResult(
-            passed=False,
-            reason=f"token overlap {overlap_ratio:.2f} below threshold {overlap_threshold:.2f}",
-        )
-
     combined_lower = combined_evidence.lower()
-    unsupported = [
-        fact for fact in _extract_facts(claim_text)
-        if fact.lower() not in combined_lower
-    ]
+    facts = _extract_facts(claim_text)
+    unsupported = [fact for fact in facts if fact.lower() not in combined_lower]
     if unsupported:
         return VerificationResult(
             passed=False,
             reason=f"unsupported facts not present in cited evidence: {unsupported}",
             unsupported_facts=unsupported,
         )
+
+    # Primary gate (facts) passed. When the claim extracted no checkable
+    # facts at all, fall back to a token-overlap floor so wholesale
+    # off-topic invention (no numbers, no named entities to check) is
+    # still caught — genuine rewriting is otherwise not penalized for
+    # low overlap.
+    if not facts:
+        claim_tokens = _tokenize(claim_text)
+        if not claim_tokens:
+            return VerificationResult(passed=False, reason="claim has no comparable tokens")
+        evidence_tokens = _tokenize(combined_evidence)
+        overlap_ratio = len(claim_tokens & evidence_tokens) / len(claim_tokens)
+        if overlap_ratio < overlap_threshold:
+            return VerificationResult(
+                passed=False,
+                reason=f"token overlap {overlap_ratio:.2f} below threshold {overlap_threshold:.2f}",
+            )
 
     return VerificationResult(passed=True)

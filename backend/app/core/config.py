@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     tailored_cv_max_generation_retries: int = 2
     tailored_cv_max_experience_items: int = 6
     tailored_cv_max_project_items: int = 4
+    tailored_cv_max_skill_items: int = 24
 
     # Cover letter generation (Sprint 4)
     # Independently tunable from tailored_cv's threshold above — letters

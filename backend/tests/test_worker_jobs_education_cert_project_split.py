@@ -80,17 +80,40 @@ class TestParseEducationLine:
         assert entry["degree"] is None
         assert entry["year"] == 2015
 
-    def test_unparseable_line_returns_none(self):
-        assert _parse_education_line("Completed several online courses") is None
+    def test_unparseable_line_is_preserved_not_dropped(self):
+        """A line with no degree/institution keyword is kept as a
+        low-confidence entry rather than silently dropped — a rendered
+        low-confidence qualification beats a discarded real one."""
+        entry = _parse_education_line("Completed several online courses")
+        assert entry is not None
+        assert entry["degree"] == "Completed several online courses"
+        assert entry["institution"] is None
+        assert entry["confidence"] == 0.3
 
     def test_bare_year_only_returns_none(self):
         assert _parse_education_line("2019") is None
 
-    def test_ambiguous_both_segments_look_like_degrees_returns_none(self):
-        assert _parse_education_line("BSc Computer Science, MSc Data Science") is None
+    def test_ambiguous_both_segments_look_like_degrees_is_preserved(self):
+        entry = _parse_education_line("BSc Computer Science, MSc Data Science")
+        assert entry is not None
+        assert entry["degree"] == "BSc Computer Science, MSc Data Science"
+        assert entry["institution"] is None
+        assert entry["confidence"] == 0.3
 
     def test_empty_line_returns_none(self):
         assert _parse_education_line("   ") is None
+
+    def test_certificate_with_online_provider_is_recognized(self):
+        entry = _parse_education_line("Google's UX Design Certificate — Coursera")
+        assert entry is not None
+        assert "Certificate" in entry["degree"]
+        assert entry["institution"] == "Coursera"
+
+    def test_online_course_with_provider_only_is_recognized(self):
+        entry = _parse_education_line("User Experience — FutureLearn")
+        assert entry is not None
+        assert entry["institution"] == "FutureLearn"
+        assert entry["degree"] == "User Experience"
 
 
 class TestParseCertificationLine:

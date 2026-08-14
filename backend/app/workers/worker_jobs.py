@@ -559,12 +559,14 @@ def process_cv_parse(self, job_id: str) -> None:
         project_items = _segment_projects(sections.get(PROJECTS, []))[:15]
 
         # ── Build cv_profile_versions ───────────────────────────────
+        header = _parse_header_block(sections.get("preamble", []))
         profile_payload = {
             "basics": {
-                "name": None,
-                "email": None,
-                "phone": None,
-                "location": None,
+                "name": header["name"],
+                "email": header["email"],
+                "phone": header["phone"],
+                "location": header["location"],
+                "urls": header["urls"],
                 "summary": "\n".join(sections.get(SUMMARY, [])) or None,
             },
             "workExperience": [
@@ -920,6 +922,105 @@ def _extract_skills_from_lines(lines: list[str]) -> list[str]:
     return result[:50]  # cap at 50 skills
 
 
+# ── header / contact block parsing ───────────────────────────────────
+# The 1-5 non-empty lines above the first recognised section heading are,
+# on essentially every CV, the name + contact block. worker_jobs.py
+# previously hardcoded basics.name/email/phone/location to None and
+# exported a CV with no candidate name on it. These helpers recover the
+# header conservatively — a field is only extracted on a clear positive
+# signal, never guessed from nothing (same non-fabrication discipline as
+# the rest of the pipeline).
+
+_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+_PHONE_RE = re.compile(r"(?:\+?\d[\d\s().-]{6,}\d)")
+_URL_RE = re.compile(
+    r"(?:https?://|www\.)[^\s|,;]+"
+    r"|\b[A-Za-z0-9-]+\.(?:com|co\.uk|io|net|org|me|dev|design|co)\b(?:/[^\s|,;]*)?",
+    re.I,
+)
+_NAME_WORD_RE = re.compile(r"^[A-Za-z][A-Za-z'’-]*$")
+_UK_POSTCODE_RE = re.compile(r"\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b")
+
+
+def _looks_like_name(line: str) -> bool:
+    """True when a line plausibly is a person's name: no digits, no
+    email/url/phone, 2-4 clean word tokens, title-case or all-caps."""
+    if not line or any(ch.isdigit() for ch in line):
+        return False
+    if _EMAIL_RE.search(line) or _URL_RE.search(line) or _PHONE_RE.search(line):
+        return False
+    words = line.split()
+    if not 2 <= len(words) <= 4:
+        return False
+    if not all(_NAME_WORD_RE.match(w) for w in words):
+        return False
+    return line.isupper() or line.istitle()
+
+
+def _parse_header_block(preamble_lines: list[str]) -> dict:
+    """Extract {name, email, phone, location, urls} from the CV preamble.
+    All fields None/[] when nothing is recoverable.
+    """
+    name = None
+    email = None
+    phone = None
+    location = None
+    urls: list[str] = []
+
+    for raw in preamble_lines:
+        line = raw.strip()
+        if not line:
+            continue
+
+        if email is None:
+            m = _EMAIL_RE.search(line)
+            if m:
+                email = m.group(0).rstrip(".,;")
+
+        if phone is None:
+            m = _PHONE_RE.search(line)
+            if m:
+                phone = m.group(0).strip()
+
+        url_line = line
+        if email:
+            url_line = url_line.replace(email, " ")
+        for m in _URL_RE.finditer(url_line):
+            u = m.group(0).strip(" .|,")
+            if u and u.lower() not in [x.lower() for x in urls]:
+                urls.append(u)
+
+        if name is None and _looks_like_name(line):
+            name = line
+            continue
+
+        # Location: only a clearly location-shaped leftover. Excludes
+        # all-caps or title-case multi-word lines (more likely a name or
+        # job title) and anything containing "/" (e.g. "UI/UX").
+        if location is None and not _looks_like_name(line):
+            tokens = line.split()
+            if (
+                len(line) <= 40
+                and len(tokens) <= 3
+                and "/" not in line
+                and not any(ch.isdigit() for ch in line)
+                and not _EMAIL_RE.search(line)
+                and not _URL_RE.search(line)
+                and not _PHONE_RE.search(line)
+                and not line.isupper()
+                and ("," in line or _UK_POSTCODE_RE.search(line) or len(tokens) == 1)
+            ):
+                location = line
+
+    return {
+        "name": name,
+        "email": email,
+        "phone": phone,
+        "location": location,
+        "urls": urls,
+    }
+
+
 # ── education / certification / project parsing ─────────────────────
 # Comma / en-dash / em-dash / pipe only — deliberately excludes a bare
 # hyphen, since institution/field/project names can legitimately contain
@@ -930,11 +1031,15 @@ _LABEL_SEPARATOR_RE = re.compile(r"\s*(?:,|–|—|\|)\s*")
 _EDU_DEGREE_KEYWORD_RE = re.compile(
     r"\b(Bachelor'?s?|Master'?s?|Doctorate|Ph\.?D\.?|BSc|B\.Sc\.?|BA|B\.A\.?|"
     r"BEng|B\.Eng\.?|BS|B\.S\.?|MSc|M\.Sc\.?|MA|M\.A\.?|MEng|M\.Eng\.?|MS|"
-    r"M\.S\.?|MBA|Diploma|Associate|HND|BTech|B\.Tech\.?|MTech|M\.Tech\.?)\b",
+    r"M\.S\.?|MBA|Diploma|Associate|HND|BTech|B\.Tech\.?|MTech|M\.Tech\.?|"
+    r"Certificate|Certification|Nanodegree|Bootcamp|Course|Specialization)\b",
     re.I,
 )
 _EDU_INSTITUTION_KEYWORD_RE = re.compile(
-    r"\b(University|College|Institute|Polytechnic|School of|Academy)\b", re.I
+    r"\b(University|College|Institute|Polytechnic|School of|Academy|"
+    r"Coursera|Udacity|edX|FutureLearn|LinkedIn Learning|Product School|"
+    r"General Assembly|Google|Meta|AWS|Microsoft)\b",
+    re.I,
 )
 
 
@@ -962,8 +1067,17 @@ def _split_degree_field(segment: str) -> tuple[str | None, str | None]:
 
 def _parse_education_line(line: str) -> dict | None:
     """Parse one education-section line into {institution, degree, field,
-    year, confidence, source_reference}, or None when nothing usable is
-    recoverable — never guesses which side of a split is which.
+    year, confidence, source_reference}.
+
+    Recognises both traditional academic credentials and modern online
+    credentials (Coursera, Udacity, edX, FutureLearn, Product School,
+    General Assembly, certificates, bootcamps, specializations...).
+
+    When a line can't be split into a confident degree/institution pair,
+    it is preserved as a low-confidence entry (degree=<full line>,
+    institution=None, confidence=0.3) rather than dropped — a rendered
+    low-confidence qualification beats a silently-discarded real one.
+    Only genuinely empty input or a bare year returns None.
     """
     stripped = line.strip()
     if not stripped:
@@ -980,6 +1094,18 @@ def _parse_education_line(line: str) -> dict | None:
         return None  # a bare year alone isn't education evidence
 
     parts = [p.strip() for p in _LABEL_SEPARATOR_RE.split(remainder, maxsplit=1) if p.strip()]
+    if not parts:
+        return None
+
+    def _preserve() -> dict:
+        return {
+            "institution": None,
+            "degree": remainder,
+            "field": None,
+            "year": year,
+            "confidence": 0.3,
+            "source_reference": stripped,
+        }
 
     institution: str | None = None
     degree: str | None = None
@@ -1001,21 +1127,19 @@ def _parse_education_line(line: str) -> dict | None:
             elif b_is_deg and not a_is_deg:
                 degree_field_seg, institution = seg_b, seg_a
             else:
-                return None  # ambiguous — never guess which side is which
+                return _preserve()  # ambiguous — preserve, don't discard
         degree, field = _split_degree_field(degree_field_seg)
-    elif len(parts) == 1:
+    else:  # len(parts) == 1
         seg = parts[0]
         if _EDU_INSTITUTION_KEYWORD_RE.search(seg):
             institution = seg
         elif _EDU_DEGREE_KEYWORD_RE.search(seg):
             degree, field = _split_degree_field(seg)
         else:
-            return None
-    else:
-        return None
+            return _preserve()
 
     if degree is None and institution is None:
-        return None
+        return _preserve()
 
     return {
         "institution": institution,
@@ -1209,18 +1333,30 @@ def process_textract_extract(self, job_id: str) -> None:
         if cv_file is None:
             raise ValueError(f"CV file {job.source_entity_id} not found")
 
-        if not settings.textract_enabled:
+        # Textract's start_document_text_detection only accepts PDF/PNG/JPEG/
+        # TIFF — DOCX (the only other type validate_file_type() lets through
+        # on upload, see app/services/file_validation.py) always fails with
+        # INVALID_IMAGE_TYPE. That's not a transient failure worth retrying
+        # or worth failing the whole CV over — Docling already extracted it
+        # fine — so DOCX takes the same skip-and-continue path as
+        # TEXTRACT_ENABLED=false below, rather than reaching the real
+        # Textract call at all.
+        textract_unsupported_mime = cv_file.mime_type != "application/pdf"
+
+        if not settings.textract_enabled or textract_unsupported_mime:
             logger.warning(
-                "textract_disabled_skipping",
+                "textract_skipped",
                 cv_id=cv_file.id,
-                hint="Set TEXTRACT_ENABLED=true and configure AWS credentials.",
+                reason="mime_type_unsupported" if textract_unsupported_mime else "textract_disabled",
+                mime_type=cv_file.mime_type,
+                hint="Set TEXTRACT_ENABLED=true and configure AWS credentials." if not textract_unsupported_mime else None,
             )
             # Write a placeholder pass so merge can continue
             pass_record = CvExtractionPass(
                 cv_file_id=cv_file.id,
                 pass_type="textract",
                 attempt_number=_get_next_attempt(session, cv_file.id, "textract"),
-                extracted_text="[Textract disabled — Docling-only extraction]",
+                extracted_text="[Textract skipped — Docling-only extraction]",
                 engine="amazon-textract",
                 engine_version="pending",
                 confidence_score=None,

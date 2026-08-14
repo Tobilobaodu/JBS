@@ -60,20 +60,38 @@ _SUGGESTION_TEMPLATES = {
 def _generate_skills_section(
     *, match_evidence_items, all_candidates, order_index: int,
 ) -> SectionResult | None:
-    """Deterministic filter of matched CvSkillItem rows — no LLM call, no
-    judgment call, zero marginal fabrication risk. Per the architecture
-    doc's own principle of reserving model calls for genuinely judgment-
-    requiring tasks."""
-    bound = evidence_binder.bind_evidence_pool(match_evidence_items, all_candidates)
-    skill_candidates = [c for c in bound if c.row_type == evidence_binder.SKILL]
-    if not skill_candidates:
+    """Deterministic listing of the candidate's own skills — include all,
+    use job matching only to *order* them, not to *exclude* them. No LLM
+    call, no judgment call, zero marginal fabrication risk.
+
+    The previous behavior filtered skills down to those the matching
+    engine had cited, via a single substring-containment rule that
+    systematically favors short generic tokens (e.g. "HTML") over
+    specific, distinguishing ones (e.g. "Figma"). Omitting a real skill
+    is lying by omission in the other direction — every skill here is the
+    candidate's own, so surfacing it is safe; job relevance only decides
+    what appears first.
+    """
+    all_skills = [c for c in all_candidates if c.row_type == evidence_binder.SKILL]
+    if not all_skills:
         return None
 
-    content_text = ", ".join(c.searchable_text for c in skill_candidates)
+    matched_ids = {
+        c.row_id
+        for c in evidence_binder.bind_evidence_pool(match_evidence_items, all_candidates)
+        if c.row_type == evidence_binder.SKILL
+    }
+    ordered = (
+        [c for c in all_skills if c.row_id in matched_ids]
+        + [c for c in all_skills if c.row_id not in matched_ids]
+    )
+    ordered = ordered[: settings.tailored_cv_max_skill_items]
+
+    content_text = ", ".join(c.searchable_text for c in ordered)
     return SectionResult(
         section_type=SECTION_SKILLS,
         content_text=content_text,
-        evidence_references=[c.row_id for c in skill_candidates],
+        evidence_references=[c.row_id for c in ordered],
         generation_task=SKILLS_GENERATION_TASK,
         prompt_version=None,
         model_id=SKILLS_MODEL_ID,
@@ -134,6 +152,23 @@ def _generate_education_section(
         validation_status="passed",
         order_index=order_index,
     )
+
+
+def _format_earlier_career_line(items) -> str:
+    """Condensed, deterministic line for experience roles that fell below
+    the relevance/cap cutoff — a senior CV needs continuity, so these
+    roles are listed rather than silently dropped (the candidate's own CV
+    already does exactly this). No LLM call, no fabrication risk: the
+    titles/companies come straight from the candidate's own rows.
+    """
+    parts = []
+    for item in items:
+        role_company = " — ".join(p for p in [item.title, item.company] if p)
+        if role_company:
+            parts.append(role_company)
+    if not parts:
+        return ""
+    return "Earlier Career: " + "; ".join(parts)
 
 
 def generate_draft_sections(
@@ -240,6 +275,22 @@ def generate_draft_sections(
         if section:
             outcome.sections.append(section)
             order_index += 1
+
+    dropped_experience = [e for e in experience_items if e.id not in ranked_experience_ids]
+    earlier_line = _format_earlier_career_line(dropped_experience)
+    if earlier_line:
+        outcome.sections.append(SectionResult(
+            section_type=SECTION_EXPERIENCE,
+            content_text=earlier_line,
+            evidence_references=[e.id for e in dropped_experience],
+            generation_task="tailored_cv_earlier_career",
+            prompt_version=None,
+            model_id="rules-based",
+            validation_status="passed",
+            order_index=order_index,
+            source_item_id=None,
+        ))
+        order_index += 1
 
     # Projects: relevance ranks display order when there are more projects
     # than the cap, but a zero-relevance project is still attempted rather

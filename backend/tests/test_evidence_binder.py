@@ -329,13 +329,27 @@ class TestVerifyClaimAgainstEvidence:
         assert not result.passed
         assert result.unsupported_facts
 
-    def test_wholesale_invention_fails_on_overlap(self):
+    def test_wholesale_invention_fails(self):
+        """Off-topic invention still fails — now caught by the fact check
+        (its invented numbers '12'/'500' aren't in the evidence) rather
+        than by the token-overlap floor."""
         result = verify_claim_against_evidence(
             "Led a team of 12 engineers at a Fortune 500 company managing cloud infrastructure.",
             self._evidence_texts, overlap_threshold=0.35,
         )
         assert not result.passed
-        assert "overlap" in result.reason
+        assert result.unsupported_facts
+
+    def test_grounded_reword_with_low_overlap_passes(self):
+        """The core 'verify claims, not tokens' behavior: a truthful
+        rephrase whose only shared token is the grounded number passes,
+        even though its token overlap is far below the old 0.35 floor."""
+        result = verify_claim_against_evidence(
+            "Achieved a 25% reduction in subscriber attrition.",
+            ["Reduced customer churn 25% for the subscription product."],
+            overlap_threshold=0.35,
+        )
+        assert result.passed
 
     def test_empty_claim_fails(self):
         result = verify_claim_against_evidence("", self._evidence_texts, overlap_threshold=0.35)

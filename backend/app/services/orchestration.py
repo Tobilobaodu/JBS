@@ -43,9 +43,10 @@ def compute_task_key(job_type: str, source_entity_id: str, owner_id: str) -> str
 
 async def find_active_job_by_task_key(session: AsyncSession, task_key: str) -> ProcessingJob | None:
     """Look up an in-flight job for a task_key before creating a new one —
-    used by both create_processing_job and the generation endpoints
-    (tailored_cvs.py, cover_letters.py) that build ProcessingJob rows
-    directly rather than through create_processing_job."""
+    used by create_processing_job (the upload/ATS-check pipeline). Not used
+    by the generation endpoints (tailored_cvs.py, cover_letters.py), which
+    build ProcessingJob rows directly and deliberately don't opt into
+    task_key dedup — see the task_key column comment on ProcessingJob."""
     result = await session.execute(
         select(ProcessingJob).where(
             ProcessingJob.task_key == task_key,

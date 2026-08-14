@@ -157,10 +157,11 @@ class TestGenerateDraftSections:
             if section.section_type != SECTION_SKILLS:
                 assert section.prompt_version, f"{section.section_type} missing prompt_version"
 
-    def test_section_with_no_evidence_is_omitted_not_placeholder(self):
-        """09-test-plan.md §6: 'A section with no evidence available is
-        omitted from the draft entirely, not filled with a vague or
-        invented placeholder.'"""
+    def test_no_evidence_omits_llm_sections_but_keeps_deterministic_ones(self):
+        """With no match evidence, the LLM-bound summary is omitted (and the
+        model is never called), but the deterministic skills and
+        earlier-career listings still surface the candidate's real content
+        — skills/roles must not silently vanish (cv-diagnosis.md)."""
         client = FakeClient()
         outcome = generate_draft_sections(
             match_evidence_items=[],  # nothing to bind at all
@@ -170,7 +171,10 @@ class TestGenerateDraftSections:
             job_requirements=["Python"],
             llm_client_override=client,
         )
-        assert outcome.sections == []
+        section_types = [s.section_type for s in outcome.sections]
+        assert SECTION_SUMMARY not in section_types
+        assert SECTION_SKILLS in section_types
+        assert SECTION_EXPERIENCE in section_types  # earlier-career line
         assert len(client.chat.completions.calls) == 0, "must not call the LLM with an empty evidence pool"
         assert any("no evidence available" in issue for issue in outcome.issues)
 
@@ -253,6 +257,62 @@ class TestGenerateDraftSections:
         assert skills_sections[0].model_id == "rules-based"
         assert skills_sections[0].prompt_version is None
 
+    def test_skills_include_all_ordered_matched_first(self):
+        """cv-diagnosis.md Failure 1: skills are included in full (matched
+        first, then the rest) — not filtered down to the matched subset."""
+        exp = _exp()
+        skill_matched = _skill(id="sk1", skill_name="Python")
+        skill_unmatched = _skill(id="sk2", skill_name="Figma")
+        evidence_items = [_evidence("supported", "Python")]
+        client = FakeClient()
+
+        outcome = generate_draft_sections(
+            match_evidence_items=evidence_items,
+            experience_items=[exp],
+            education_items=[],
+            skill_items=[skill_matched, skill_unmatched],
+            job_requirements=["Python"],
+            llm_client_override=client,
+        )
+        skills_sections = [s for s in outcome.sections if s.section_type == SECTION_SKILLS]
+        assert len(skills_sections) == 1
+        content = skills_sections[0].content_text
+        assert "Python" in content
+        assert "Figma" in content
+        assert content.index("Python") < content.index("Figma")
+
+    def test_bullets_shape_generates_multiple_verified_bullets(self):
+        """cv-diagnosis.md Failure 3: the experience schema returns a
+        bullets array; each bullet is verified independently — a grounded
+        bullet is kept, a fabricated one (invented number) is dropped."""
+        exp = _exp(bullets=["Built REST APIs serving 2M requests/day using Python"], technologies=["Python"])
+        evidence_items = [_evidence("supported", "Python")]
+        client = FakeClient(responses_by_schema={
+            "tailored_cv_experience_bullet": [
+                {"bullets": [
+                    {"text": "Built REST APIs handling 2M requests per day.", "evidenceIndexes": [0]},
+                    {"text": "Scaled the service to 50M requests per day.", "evidenceIndexes": [0]},
+                ]},
+            ],
+        })
+
+        outcome = generate_draft_sections(
+            match_evidence_items=evidence_items,
+            experience_items=[exp],
+            education_items=[],
+            skill_items=[],
+            job_requirements=["Python"],
+            llm_client_override=client,
+        )
+        experience_sections = [
+            s for s in outcome.sections
+            if s.section_type == SECTION_EXPERIENCE and s.source_item_id is not None
+        ]
+        assert len(experience_sections) == 1
+        content = experience_sections[0].content_text
+        assert "2M" in content
+        assert "50M" not in content
+
     def test_max_experience_items_cap_is_respected(self, monkeypatch):
         from app.core.config import settings
         monkeypatch.setattr(settings, "tailored_cv_max_experience_items", 1)
@@ -271,8 +331,18 @@ class TestGenerateDraftSections:
             job_requirements=["Python"],
             llm_client_override=client,
         )
-        experience_sections = [s for s in outcome.sections if s.section_type == SECTION_EXPERIENCE]
+        experience_sections = [
+            s for s in outcome.sections
+            if s.section_type == SECTION_EXPERIENCE and s.source_item_id is not None
+        ]
         assert len(experience_sections) == 1
+        # The dropped role is preserved as a condensed earlier-career line.
+        earlier = [
+            s for s in outcome.sections
+            if s.section_type == SECTION_EXPERIENCE and s.source_item_id is None
+        ]
+        assert len(earlier) == 1
+        assert "Backend Dev" in earlier[0].content_text
 
 
 class TestEducationSection:
@@ -363,7 +433,7 @@ class TestProjectsSection:
         proj_sections = [s for s in outcome.sections if s.section_type == SECTION_PROJECTS]
         assert len(proj_sections) == 1
         assert proj_sections[0].generation_task == "tailored_cv_project"
-        assert proj_sections[0].prompt_version == "v1"
+        assert proj_sections[0].prompt_version == "v2"
 
     def test_fabricated_project_claim_is_rejected_and_omitted(self):
         proj = _project(bullets=["Reduced manual entry by 80%"], technologies=[])
