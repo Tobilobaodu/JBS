@@ -354,6 +354,16 @@ class ProcessingJob(Base):
     max_retries: Mapped[int] = mapped_column(Integer, default=3)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     worker_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Outbox/recovery bookkeeping: published_at/celery_task_id record the
+    # most recent (re)publish by the stalled-job recovery task;
+    # publish_attempts bounds how many times recovery will retry a stuck
+    # job before giving up; last_publish_error records the failure reason.
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    celery_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    publish_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    last_publish_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Idempotency key: sha256(job_type:source_entity_id:owner_id), set only by
     # call sites that opt into dedup — currently just create_processing_job's
     # upload/ATS-check pipeline (see app/services/orchestration.py::

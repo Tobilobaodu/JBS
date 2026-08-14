@@ -13,6 +13,12 @@ class ProcessingJobResponse(BaseModel):
     retry_count: int = Field(alias="retryCount")
     last_error: str | None = Field(alias="lastError", default=None)
     created_at: datetime = Field(alias="createdAt")
+    # started_at is surfaced so callers can tell "queued/never picked up"
+    # (started_at None) apart from "slowly processing" (started_at set) — a
+    # job that looks stuck at a bare "pending"/"queued" for minutes is the
+    # first case, and this field is the only way to distinguish the two
+    # without a direct DB query.
+    started_at: datetime | None = Field(alias="startedAt", default=None)
     completed_at: datetime | None = Field(alias="completedAt", default=None)
 
     model_config = {"from_attributes": True, "populate_by_name": True}

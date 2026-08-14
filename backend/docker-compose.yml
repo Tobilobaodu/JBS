@@ -250,7 +250,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: celery -A app.workers.tasks worker -Q cv_generate --concurrency=2 --loglevel=info
+    command: celery -A app.workers.tasks worker -Q cv_generate --concurrency=4 --loglevel=info
     env_file:
       - .env.local
     depends_on:

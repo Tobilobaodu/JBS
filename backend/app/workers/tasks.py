@@ -52,6 +52,10 @@ celery_app.conf.update(
             "task": "app.workers.worker_jobs.cleanup_expired_trial_sessions",
             "schedule": timedelta(seconds=settings.trial_session_cleanup_interval_seconds),
         },
+        "recover-stalled-jobs": {
+            "task": "app.workers.worker_jobs.recover_stalled_jobs",
+            "schedule": timedelta(seconds=settings.stalled_job_recovery_interval_seconds),
+        },
     },
 )
 
@@ -63,7 +67,7 @@ _RETRY_POLICY = {
 }
 
 
-def _send_task_with_retry(name: str, job_id: str, queue: str) -> None:
+def _send_task_with_retry(name: str, job_id: str, queue: str) -> str:
     """Publish a Celery task with retry-on-failure and diagnostic logging.
 
     Without explicit retry, a transient broker connection issue silently
@@ -71,6 +75,9 @@ def _send_task_with_retry(name: str, job_id: str, queue: str) -> None:
     receives the message.  The retry policy here turns that silent loss
     into a raised exception the caller can handle (or a logged retry
     that eventually succeeds).
+
+    Returns the Celery task id of the published message, so callers (and
+    the stalled-job recovery task) can record it for diagnosis.
     """
     logger.info("publishing_task", job_id=job_id, task_name=name, queue=queue)
     result = celery_app.send_task(
@@ -81,25 +88,26 @@ def _send_task_with_retry(name: str, job_id: str, queue: str) -> None:
         retry_policy=_RETRY_POLICY,
     )
     logger.info("task_publish_confirmed", job_id=job_id, celery_task_id=result.id, queue=queue)
+    return result.id
 
 
-def enqueue_docling_extract(job_id: str) -> None:
+def enqueue_docling_extract(job_id: str) -> str:
     """Dispatch a Docling extraction job to the docling_extract queue."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_docling_extract", job_id, "docling_extract",
     )
 
 
-def enqueue_textract_extract(job_id: str) -> None:
+def enqueue_textract_extract(job_id: str) -> str:
     """Dispatch a Textract extraction job to the textract_extract queue."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_textract_extract", job_id, "textract_extract",
     )
 
 
-def enqueue_merge_parse(job_id: str) -> None:
+def enqueue_merge_parse(job_id: str) -> str:
     """Dispatch a merge + parse job to the merge_parse queue."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_merge_parse", job_id, "merge_parse",
     )
 
@@ -109,38 +117,38 @@ def enqueue_merge_parse(job_id: str) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def enqueue_job_post_fetch(job_id: str) -> None:
+def enqueue_job_post_fetch(job_id: str) -> str:
     """Dispatch an SSRF-safe URL fetch job to the job_post_fetch queue."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_job_post_fetch", job_id, "job_post_fetch",
     )
 
 
-def enqueue_cv_parse(job_id: str) -> None:
+def enqueue_cv_parse(job_id: str) -> str:
     """Dispatch a CV structured-profile extraction job to the cv_parse queue."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_cv_parse", job_id, "cv_parse",
     )
 
 
-def enqueue_match(job_id: str) -> None:
+def enqueue_match(job_id: str) -> str:
     """Dispatch a match analysis job to the match queue."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_match", job_id, "match",
     )
 
 
-def enqueue_job_post_parse(job_id: str) -> None:
+def enqueue_job_post_parse(job_id: str) -> str:
     """Dispatch a job post structuring job to the job_post_parse queue."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_job_post_parse", job_id, "job_post_parse",
     )
 
 
 
-def enqueue_ats_check(job_id: str) -> None:
+def enqueue_ats_check(job_id: str) -> str:
     """Dispatch an ATS structural-readiness check to the ats_check queue."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_ats_check", job_id, "ats_check",
     )
 
@@ -150,9 +158,9 @@ def enqueue_ats_check(job_id: str) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def enqueue_cv_generate(job_id: str) -> None:
+def enqueue_cv_generate(job_id: str) -> str:
     """Dispatch a tailored CV generation job to the cv_generate queue."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_cv_generate", job_id, "cv_generate",
     )
 
@@ -162,9 +170,9 @@ def enqueue_cv_generate(job_id: str) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def enqueue_cover_letter_generate(job_id: str) -> None:
+def enqueue_cover_letter_generate(job_id: str) -> str:
     """Dispatch a cover letter generation job to the cover_letter_generate queue."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_cover_letter_generate", job_id, "cover_letter_generate",
     )
 
@@ -174,18 +182,18 @@ def enqueue_cover_letter_generate(job_id: str) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def enqueue_export(job_id: str) -> None:
+def enqueue_export(job_id: str) -> str:
     """Dispatch a docx (or application-pack zip) export render job."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_export_docx", job_id, "export",
     )
 
 
-def enqueue_export_pdf(job_id: str) -> None:
+def enqueue_export_pdf(job_id: str) -> str:
     """Dispatch a docx-to-pdf conversion job — a separate queue from
     enqueue_export since it's a different infra dependency (Gotenberg,
     not just DB/storage) and a different Celery worker consumes it."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_export_pdf", job_id, "export_pdf",
     )
 
@@ -195,8 +203,8 @@ def enqueue_export_pdf(job_id: str) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def enqueue_coverage_report(job_id: str) -> None:
+def enqueue_coverage_report(job_id: str) -> str:
     """Dispatch a coverage-gap aggregation job to the coverage_report queue."""
-    _send_task_with_retry(
+    return _send_task_with_retry(
         "app.workers.worker_jobs.process_coverage_report", job_id, "coverage_report",
     )

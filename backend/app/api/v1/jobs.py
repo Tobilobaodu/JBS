@@ -58,5 +58,6 @@ async def get_job_status(
         retry_count=job.retry_count,
         last_error=job.last_error,
         created_at=job.created_at,
+        started_at=job.started_at,
         completed_at=job.completed_at,
     )

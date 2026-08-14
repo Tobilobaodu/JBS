@@ -16,13 +16,13 @@ import re
 import time
 import uuid
 import structlog
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import sqlalchemy as sa  # noqa: F401 — used by cv_parse helpers
 
 from celery import shared_task
 from celery.exceptions import MaxRetriesExceededError
-from sqlalchemy import select, delete, create_engine
+from sqlalchemy import select, delete, create_engine, or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -78,9 +78,19 @@ from app.extraction.docling_parser import DoclingParser
 from app.extraction.merge import merge_extractions
 from app.core.circuit_breaker import TEXTRACT_CIRCUIT
 from app.workers.tasks import (
+    enqueue_docling_extract,
     enqueue_textract_extract,
     enqueue_merge_parse,
+    enqueue_job_post_fetch,
     enqueue_cv_parse,
+    enqueue_match,
+    enqueue_job_post_parse,
+    enqueue_ats_check,
+    enqueue_cv_generate,
+    enqueue_cover_letter_generate,
+    enqueue_export,
+    enqueue_export_pdf,
+    enqueue_coverage_report,
 )
 
 logger = get_logger(__name__)
@@ -2074,6 +2084,107 @@ def process_job_post_parse(self, job_id: str) -> None:
     finally:
         session.close()
         structlog.contextvars.unbind_contextvars("job_id")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Stalled-job recovery (outbox/recovery)
+# ──────────────────────────────────────────────────────────────────────
+
+# Every job_type a worker consumes, mapped to the enqueue helper that
+# (re)publishes it. Recovery republishes via these, so a job orphaned
+# between the API producer and the Celery/Redis broker — or never consumed
+# by a worker — self-heals instead of sitting at pending/queued forever.
+_JOB_TYPE_TO_ENQUEUE = {
+    "docling_extract": enqueue_docling_extract,
+    "textract_extract": enqueue_textract_extract,
+    "merge_parse": enqueue_merge_parse,
+    "job_post_fetch": enqueue_job_post_fetch,
+    "cv_parse": enqueue_cv_parse,
+    "match": enqueue_match,
+    "job_post_parse": enqueue_job_post_parse,
+    "ats_check": enqueue_ats_check,
+    "cv_generate": enqueue_cv_generate,
+    "cover_letter_generate": enqueue_cover_letter_generate,
+    "export": enqueue_export,
+    "export_pdf": enqueue_export_pdf,
+    "coverage_report": enqueue_coverage_report,
+}
+
+
+@shared_task(
+    name="app.workers.worker_jobs.recover_stalled_jobs",
+    queue="maintenance",
+)
+def recover_stalled_jobs() -> dict:
+    """Republish processing jobs that never reached a worker.
+
+    A job stuck at pending/queued with no started_at is either (a) never
+    published, (b) published but lost between the API producer and the
+    broker, or (c) published but never consumed. All three look identical
+    from outside. This task republishes such jobs via the same enqueue
+    helpers the API uses, bounded by publish_attempts so it can't loop
+    forever against a permanently-down worker.
+
+    Idempotent by construction: it only touches a job whose most recent
+    (re)publish is older than the min-age window, so two runs in quick
+    succession do not double-publish the same job.
+    """
+    if not settings.stalled_job_recovery_enabled:
+        return {"republished": 0}
+
+    session = _get_sync_session()
+    republished = 0
+    try:
+        now = datetime.now(timezone.utc)
+        cutoff = now - timedelta(seconds=settings.stalled_job_min_age_seconds)
+        max_attempts = max(1, settings.stalled_job_max_publish_attempts)
+
+        jobs = session.execute(
+            select(ProcessingJob).where(
+                ProcessingJob.status.in_(("pending", "queued")),
+                ProcessingJob.started_at.is_(None),
+                ProcessingJob.created_at < cutoff,
+                ProcessingJob.publish_attempts < max_attempts,
+                or_(
+                    ProcessingJob.published_at.is_(None),
+                    ProcessingJob.published_at < cutoff,
+                ),
+            )
+        ).scalars().all()
+
+        for job in jobs:
+            enqueue_fn = _JOB_TYPE_TO_ENQUEUE.get(job.job_type)
+            if enqueue_fn is None:
+                logger.warning(
+                    "recover_stalled_job_unknown_type",
+                    job_id=job.id, job_type=job.job_type,
+                )
+                continue
+            try:
+                celery_task_id = enqueue_fn(str(job.id))
+                job.published_at = now
+                job.celery_task_id = celery_task_id
+                job.last_publish_error = None
+            except Exception as e:
+                job.last_publish_error = str(e)
+                logger.error(
+                    "recover_stalled_job_publish_failed",
+                    job_id=job.id, job_type=job.job_type, error=str(e),
+                )
+            job.publish_attempts = (job.publish_attempts or 0) + 1
+            republished += 1
+            logger.info(
+                "recover_stalled_job_republished",
+                job_id=job.id, job_type=job.job_type,
+                attempt=job.publish_attempts,
+            )
+
+        session.commit()
+        if republished:
+            logger.info("recover_stalled_jobs_done", republished=republished)
+    finally:
+        session.close()
+    return {"republished": republished}
 
 
 # ──────────────────────────────────────────────────────────────────────

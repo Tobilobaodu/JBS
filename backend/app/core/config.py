@@ -100,6 +100,14 @@ class Settings(BaseSettings):
     trial_session_ttl_hours: int = 48
     trial_session_cleanup_interval_seconds: int = 3600
 
+    # Stalled-job recovery (outbox/recovery): republish processing jobs
+    # stuck at pending/queued with no started_at — orphaned between the API
+    # producer and the Celery/Redis broker, or never consumed by a worker.
+    stalled_job_recovery_enabled: bool = True
+    stalled_job_min_age_seconds: int = 120
+    stalled_job_recovery_interval_seconds: int = 120
+    stalled_job_max_publish_attempts: int = 3
+
     # ClamAV
     clamd_host: str = "localhost"
     clamd_port: int = 3310
