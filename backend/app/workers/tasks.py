@@ -91,25 +91,31 @@ def _send_task_with_retry(name: str, job_id: str, queue: str) -> str:
     return result.id
 
 
-def enqueue_docling_extract(job_id: str) -> str:
-    """Dispatch a Docling extraction job to the docling_extract queue."""
+def enqueue_text_extract(job_id: str) -> str:
+    """Dispatch a text-extraction job to the text_extract queue.
+
+    Replaces enqueue_docling_extract — steps 3-6 are decommissioned (see
+    decommissioned/README.md). This is now the only extraction entrypoint.
+    """
     return _send_task_with_retry(
-        "app.workers.worker_jobs.process_docling_extract", job_id, "docling_extract",
+        "app.workers.worker_jobs.process_text_extract", job_id, "text_extract",
     )
 
 
-def enqueue_textract_extract(job_id: str) -> str:
-    """Dispatch a Textract extraction job to the textract_extract queue."""
-    return _send_task_with_retry(
-        "app.workers.worker_jobs.process_textract_extract", job_id, "textract_extract",
-    )
+# DECOMMISSIONED: enqueue_textract_extract — step removed, see decommissioned/README.md.
+# def enqueue_textract_extract(job_id: str) -> str:
+#     """Dispatch a Textract extraction job to the textract_extract queue."""
+#     return _send_task_with_retry(
+#         "app.workers.worker_jobs.process_textract_extract", job_id, "textract_extract",
+#     )
 
 
-def enqueue_merge_parse(job_id: str) -> str:
-    """Dispatch a merge + parse job to the merge_parse queue."""
-    return _send_task_with_retry(
-        "app.workers.worker_jobs.process_merge_parse", job_id, "merge_parse",
-    )
+# DECOMMISSIONED: enqueue_merge_parse — step removed, see decommissioned/README.md.
+# def enqueue_merge_parse(job_id: str) -> str:
+#     """Dispatch a merge + parse job to the merge_parse queue."""
+#     return _send_task_with_retry(
+#         "app.workers.worker_jobs.process_merge_parse", job_id, "merge_parse",
+#     )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -124,11 +130,12 @@ def enqueue_job_post_fetch(job_id: str) -> str:
     )
 
 
-def enqueue_cv_parse(job_id: str) -> str:
-    """Dispatch a CV structured-profile extraction job to the cv_parse queue."""
-    return _send_task_with_retry(
-        "app.workers.worker_jobs.process_cv_parse", job_id, "cv_parse",
-    )
+# DECOMMISSIONED: enqueue_cv_parse — step removed, see decommissioned/README.md.
+# def enqueue_cv_parse(job_id: str) -> str:
+#     """Dispatch a CV structured-profile extraction job to the cv_parse queue."""
+#     return _send_task_with_retry(
+#         "app.workers.worker_jobs.process_cv_parse", job_id, "cv_parse",
+#     )
 
 
 def enqueue_match(job_id: str) -> str:

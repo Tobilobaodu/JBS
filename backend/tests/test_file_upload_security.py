@@ -108,8 +108,10 @@ from app.services.file_validation import validate_file_type, validate_file_size 
 from app.services.malware_scan import scan_file  # noqa: E402
 from app.core.storage import generate_storage_key  # noqa: E402
 
-import app.extraction.docling_parser as docling_parser  # noqa: E402
-from app.extraction.docling_parser import DoclingParser  # noqa: E402
+# DECOMMISSIONED: the Docling imports and the convert-timeout test that
+# used them moved to decommissioned/tests_v1/test_docling_convert_timeout.py
+# when pipeline step 3 was retired. Everything else in this file (magic-byte
+# validation, storage-key handling, EICAR/ClamAV) is unaffected and still runs.
 
 
 PDF_BYTES = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF"
@@ -248,50 +250,3 @@ async def test_clean_file_passes_malware_scan(monkeypatch):
 
 
 # ── §2: Extraction timeout enforcement ─────────────────────────────────────
-
-
-@pytest.mark.asyncio(loop_scope="function")
-async def test_docling_conversion_timeout_kills_hung_parse(monkeypatch):
-    """A hung Docling convert() is killed at the configured bound, not left to
-    hang the worker. Self-contained: monkeypatches every docling-derived name
-    docling_parser uses, so it doesn't depend on whichever module-level stub an
-    earlier test file happened to install.
-    """
-    from types import SimpleNamespace
-
-    class _HangingConverter:
-        def __init__(self, format_options=None):
-            pass
-
-        def convert(self, source):
-            time.sleep(3)
-            raise AssertionError("converter should have been timed out")
-
-    class _PdfFormatOption:
-        def __init__(self, pipeline_options=None):
-            pass
-
-    class _WordFormatOption:
-        def __init__(self):
-            pass
-
-    class _DocumentStream:
-        def __init__(self, *args, **kwargs):
-            pass
-
-    class _PdfPipelineOptions:
-        do_ocr = False
-        do_table_structure = True
-
-    monkeypatch.setattr(docling_parser, "InputFormat", SimpleNamespace(PDF="pdf", DOCX="docx", IMAGE="image"))
-    monkeypatch.setattr(docling_parser, "PdfPipelineOptions", _PdfPipelineOptions)
-    monkeypatch.setattr(docling_parser, "PdfFormatOption", _PdfFormatOption)
-    monkeypatch.setattr(docling_parser, "WordFormatOption", _WordFormatOption)
-    monkeypatch.setattr(docling_parser, "DocumentStream", _DocumentStream)
-    monkeypatch.setattr(docling_parser, "DocumentConverter", _HangingConverter)
-    monkeypatch.setattr(docling_parser, "_DOCLING_CONVERT_TIMEOUT_SECONDS", 1)
-
-    parser = DoclingParser()
-    with pytest.raises(TimeoutError):
-        await parser.parse(PDF_BYTES, "application/pdf")
-

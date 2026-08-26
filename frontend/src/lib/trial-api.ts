@@ -106,6 +106,10 @@ export type JobPostDetail = {
   id: string
   sourceType: string
   sourceUrl: string | null
+  /** Written by the job_fetch worker. Present from status "structuring"
+   *  onward — i.e. before job_post_parse has finished, so a caller that
+   *  only wants the text does not have to wait for "completed". */
+  rawText: string
   status: string
   errorMessage: string | null
   profile: JobPostProfile | null
@@ -330,4 +334,66 @@ export type CoverageReport = {
 
 export function getCoverageReport(reportId: string) {
   return apiFetch<CoverageReport>(`/coverage-reports/${reportId}`)
+}
+
+// ── Single-call tailored CV (replaces the match → tailored-cv chain) ──
+// The job description is sent as raw text alongside the CV's extracted
+// text: the model does its own requirement extraction, so there is no
+// job-post parse or match step in this flow.
+
+export type CvRawText = {
+  cvId: string
+  canonicalText: string
+  characters: number
+  mergeStrategy: string | null
+  ocrUsed: boolean
+}
+
+export function getCvRawText(cvId: string) {
+  return apiFetch<CvRawText>(`/cvs/${cvId}/raw-text`)
+}
+
+export type ResumeRewriteStats = {
+  /** What the CV evidences vs what the role is, so a capped score can
+   *  explain itself rather than looking arbitrary. */
+  cvOccupation: string
+  jobOccupation: string
+  sameOccupation: boolean
+  atsScore: number
+  matchLabel: string
+  matchedSkills: string[]
+  transferableSkills: string[]
+  missingSkills: string[]
+  priorityKeywords: string[]
+}
+
+export type ResumeRewriteResult = {
+  tailoredResumeMarkdown: string
+  matchNotes: string[]
+  informationNeeded: string[]
+  stats: ResumeRewriteStats
+  promptVersion: string
+}
+
+/** Renders the tailored CV Markdown to a PDF. The rewrite is stateless, so
+ *  the Markdown is posted back rather than referenced by id. */
+export function downloadResumePdf(input: {
+  tailoredResumeMarkdown: string
+  fileName?: string
+}) {
+  return apiFetchBlob("/resume-rewrites/pdf", {
+    method: "POST",
+    body: input,
+  })
+}
+
+export function createResumeRewrite(input: {
+  cvId: string
+  jobDescription: string
+  targetTitle?: string
+}) {
+  return apiFetch<ResumeRewriteResult>("/resume-rewrites", {
+    method: "POST",
+    body: input,
+  })
 }

@@ -32,8 +32,15 @@ class Settings(BaseSettings):
     minio_root_user: str = "minioadmin"
     minio_root_password: str = "minioadmin"
 
-    # Textract
+    # Textract — DECOMMISSIONED (step 4). Kept so existing .env files with
+    # TEXTRACT_ENABLED set don't fail validation; nothing reads it now.
     textract_enabled: bool = False
+
+    # Extraction service — hosts Example's routes/extract.ts unchanged and
+    # replaces decommissioned steps 3-6. Reachable on the no_internet
+    # network only; it needs no egress.
+    extraction_service_url: str = "http://extraction:5050"
+    extraction_service_timeout_seconds: int = 120
 
     # LLM (Phase 3)
     openai_api_key: str = ""

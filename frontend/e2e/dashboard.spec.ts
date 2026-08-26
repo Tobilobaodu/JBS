@@ -7,8 +7,8 @@ import { test, expect } from "@playwright/test"
 // accessible (get_current_user_or_trial_session), so an authenticated user
 // can use /try/upload directly with no trial session at all. This avoids
 // depending on match creation or tailored-CV generation (see
-// trial-flow.spec.ts / auth-handoff.spec.ts for why those are slow and
-// non-deterministic) — this test only needs the upload itself to land.
+// auth-handoff.spec.ts for why those are slow and non-deterministic) —
+// this test only needs the upload itself to land.
 const REAL_CV_PATH = path.resolve(
   __dirname,
   "..",
@@ -30,15 +30,11 @@ test("an uploaded CV appears in the dashboard CVs list", async ({ page }) => {
   await page.getByRole("button", { name: "Create account" }).click()
   await page.waitForURL(/\/dashboard$/, { timeout: 15_000 })
 
+  // /try/upload now uploads on file selection, so nothing else is needed
+  // here — waiting for extraction to land is what proves the upload stuck.
   await page.goto("/try/upload")
-  await page.locator("#cv-file").setInputFiles(REAL_CV_PATH)
-  await page.getByLabel("Job description").fill(
-    "Senior Product Designer\n\n" +
-      "Requirements:\n- Figma\n- UX research\n- usability testing\n- wireframing\n- design systems\n- accessibility, WCAG 2.1\n\n" +
-      "Preferred:\n- stakeholder management\n- workshop facilitation"
-  )
-  await page.getByRole("button", { name: "Run my match" }).click()
-  await page.waitForURL(/\/try\/results$/, { timeout: 15_000 })
+  await page.getByTestId("input-cv-file").setInputFiles(REAL_CV_PATH)
+  await expect(page.getByTestId("status-ready")).toBeVisible({ timeout: 120_000 })
 
   await page.goto("/dashboard/cvs")
   await expect(page.getByText("Tobiloba_Odu_CV.pdf")).toBeVisible({ timeout: 15_000 })

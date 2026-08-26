@@ -2,7 +2,14 @@ import { defineConfig, devices } from "@playwright/test"
 
 export default defineConfig({
   testDir: "./e2e",
+  // Serial on purpose. The backend rate-limits per client IP and every
+  // worker is 127.0.0.1, so parallel workers share one budget: 5 trial
+  // sessions/hour, 5 auth requests/minute, 10 uploads/hour. Running these
+  // four specs on four workers reliably 429s and the failures look like
+  // application bugs (blank registration, upload "failed") rather than
+  // limits. fullyParallel stays on for when specs are split across shards.
   fullyParallel: true,
+  workers: 1,
   retries: 0,
   reporter: "list",
   use: {

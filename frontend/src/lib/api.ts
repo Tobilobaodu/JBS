@@ -77,19 +77,27 @@ export async function apiFetch<T>(
   return (await response.json()) as T
 }
 
-/** Like apiFetch, but for binary responses (e.g. file downloads) — returns a Blob instead of parsing JSON. */
+/** Like apiFetch, but for binary responses (e.g. file downloads) — returns a Blob instead of parsing JSON.
+ *  Accepts a body so a download can be produced by a POST, which the PDF
+ *  export needs: the rewrite is stateless, so the Markdown to render is
+ *  sent with the request rather than referenced by id. */
 export async function apiFetchBlob(
   path: string,
-  options: Omit<ApiFetchOptions, "body"> = {}
+  options: ApiFetchOptions = {}
 ): Promise<Blob> {
-  const { headers, ...rest } = options
+  const { body, headers, ...rest } = options
+  const isFormData = body instanceof FormData
 
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...rest,
     headers: {
+      ...(isFormData || body === undefined
+        ? {}
+        : { "Content-Type": "application/json" }),
       ...buildIdentityHeaders(),
       ...headers,
     },
+    body: isFormData ? body : body !== undefined ? JSON.stringify(body) : undefined,
   })
 
   if (response.status === 401) {

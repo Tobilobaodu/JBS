@@ -243,7 +243,7 @@ async def _call_reprocess_cv(a, ids, s):
 
 
 async def _call_get_cv_raw_text(a, ids, s):
-    await get_cv_raw_text(cv_id=ids["cv_id"], current_user=a, session=s)
+    await get_cv_raw_text(cv_id=ids["cv_id"], identity=_identity(a), session=s)
 
 
 async def _call_get_cv_extraction_detail(a, ids, s):

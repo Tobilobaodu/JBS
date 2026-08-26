@@ -18,7 +18,7 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.logging import setup_logging, get_logger
 from app.core import metrics as _metrics  # noqa: F401 — register Prometheus metrics
-from app.core.metrics import QUEUE_DEPTH_GAUGE
+from app.core.metrics import QUEUE_CONSUMERS_GAUGE, QUEUE_DEPTH_GAUGE
 from app.core.storage import ensure_bucket_exists
 from app.db import async_session_factory
 from app.api.v1.auth import router as auth_router
@@ -26,6 +26,7 @@ from app.api.v1.cvs import router as cvs_router
 from app.api.v1.jobs import router as jobs_router
 from app.api.v1.job_posts import router as job_posts_router
 from app.api.v1.matches import router as matches_router
+from app.api.v1.resume_rewrites import router as resume_rewrites_router
 from app.api.v1.cover_letters import router as cover_letters_router
 from app.api.v1.trial_sessions import router as trial_sessions_router
 from app.api.v1.tailored_cvs import router as tailored_cvs_router
@@ -37,6 +38,8 @@ logger = get_logger(__name__)
 
 
 _QUEUE_DEPTH_POLL_SECONDS = 15
+_QUEUE_CONSUMER_POLL_SECONDS = 30
+_QUEUE_CONSUMER_INSPECT_TIMEOUT_SECONDS = 5
 
 
 async def _poll_queue_depth() -> None:
@@ -74,11 +77,56 @@ async def _poll_queue_depth() -> None:
         await asyncio.sleep(_QUEUE_DEPTH_POLL_SECONDS)
 
 
+async def _poll_queue_consumers() -> None:
+    """Keeps QUEUE_CONSUMERS_GAUGE current from Celery's control plane.
+
+    Pairs with _poll_queue_depth to make "nobody is consuming this queue"
+    a detectable state. Depth on its own is ambiguous — a nonzero depth
+    looks identical whether workers are chewing through the backlog or
+    the queue has no consumer at all, and only the second one never
+    resolves on its own.
+
+    `inspect.active_queues()` is a synchronous broadcast RPC with its own
+    socket timeout, so it runs in a thread rather than blocking the event
+    loop. On any failure every gauge goes to -1 ("unknown"), never 0 —
+    a broker blip must not look like a missing worker, since the alert
+    that reads this gauge pages on 0.
+    """
+    while True:
+        try:
+            replies = await asyncio.to_thread(_inspect_active_queues)
+            if replies is None:
+                # Broker reachable but no worker answered at all. That is
+                # itself the condition we care about, so it is a real 0.
+                replies = {}
+            consumers: dict[str, int] = {job_type: 0 for job_type in _KNOWN_JOB_TYPES}
+            for queues in replies.values():
+                for queue in queues or []:
+                    name = queue.get("name")
+                    if name in consumers:
+                        consumers[name] += 1
+            for job_type, count in consumers.items():
+                QUEUE_CONSUMERS_GAUGE.labels(job_type=job_type).set(count)
+        except Exception as e:
+            logger.warning("queue_consumer_poll_failed", error=str(e))
+            for job_type in _KNOWN_JOB_TYPES:
+                QUEUE_CONSUMERS_GAUGE.labels(job_type=job_type).set(-1)
+        await asyncio.sleep(_QUEUE_CONSUMER_POLL_SECONDS)
+
+
+def _inspect_active_queues():
+    """Blocking Celery control-plane call, isolated for asyncio.to_thread."""
+    from app.workers.tasks import celery_app
+
+    return celery_app.control.inspect(
+        timeout=_QUEUE_CONSUMER_INSPECT_TIMEOUT_SECONDS
+    ).active_queues()
+
+
 _KNOWN_JOB_TYPES = {
-    "docling_extract",
-    "textract_extract",
-    "merge_parse",
-    "cv_parse",
+    # Steps 3-6 (docling_extract / textract_extract / merge_parse /
+    # cv_parse) are decommissioned — see decommissioned/README.md.
+    "text_extract",
     "ats_check",
     "job_post_fetch",
     "job_post_parse",
@@ -102,8 +150,10 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("bucket_setup_skipped", reason="storage may not be available yet")
     queue_depth_task = asyncio.create_task(_poll_queue_depth())
+    queue_consumer_task = asyncio.create_task(_poll_queue_consumers())
     yield
     queue_depth_task.cancel()
+    queue_consumer_task.cancel()
     logger.info("app_shutting_down")
 
 
@@ -193,6 +243,7 @@ app.include_router(cvs_router, prefix="/api/v1")
 app.include_router(jobs_router, prefix="/api/v1")
 app.include_router(job_posts_router, prefix="/api/v1")
 app.include_router(matches_router, prefix="/api/v1")
+app.include_router(resume_rewrites_router, prefix="/api/v1")
 app.include_router(cover_letters_router, prefix="/api/v1")
 app.include_router(trial_sessions_router, prefix="/api/v1")
 app.include_router(tailored_cvs_router, prefix="/api/v1")

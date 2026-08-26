@@ -105,6 +105,30 @@ QUEUE_DEPTH_GAUGE = Gauge(
     ["job_type"],
 )
 
+# ── Queue consumers. Depth alone cannot distinguish "work is queued and
+# being worked through" from "work is queued and nobody is listening" —
+# both look like a nonzero depth, and the second one never resolves. A
+# job whose queue has no consumer sits at pending forever with no error,
+# no timeout and no failed status: the API accepted it, the broker holds
+# it, and the UI spins indefinitely. Confirmed live twice in one session
+# (worker_textract, then worker_cv_generate), each time diagnosed only by
+# reading `docker ps` by hand.
+#
+# recover_stalled_jobs does not cover this: it republishes to the same
+# queue, so with no consumer it re-queues into the same void — correct
+# for a lost publish, useless for a missing worker.
+#
+# Updated from the API process (like QUEUE_DEPTH_GAUGE) via Celery's
+# control-plane inspect, so it needs no Pushgateway. -1 means "could not
+# determine" (broker unreachable / inspect timed out) — deliberately not
+# 0, so a failed poll can't masquerade as a missing worker and page
+# someone at 3am for a network blip.
+QUEUE_CONSUMERS_GAUGE = Gauge(
+    "processing_queue_consumers",
+    "Number of Celery workers currently consuming each queue (-1 = unknown)",
+    ["job_type"],
+)
+
 # ── HTTP request latency (API process only — matches every other route
 # handler's request/response cycle, not worker task duration, which
 # JOB_DURATION_SECONDS already covers). Route template (e.g. "/cvs/{cv_id}"),

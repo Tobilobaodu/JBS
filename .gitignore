@@ -11,3 +11,21 @@ temp_metrics.txt
 # output (backend/app/data/skills_index.json, ~5MB) is what's committed.
 ESCO dataset*/
 ESCO dataset*.zip
+
+# Reference implementation checked out for side-by-side comparison, not a
+# part of this project. It carries its own .git, .replit and node_modules,
+# so committing it would nest a foreign repo inside this one. The parts we
+# actually adopted were copied to backend/extraction-service/ (tracked) and
+# are documented in backend/decommissioned/README.md.
+Example/
+
+# Diagnostic scratchpad from the Example-vs-JBS comparison. The raw JSON
+# both systems returned for one CV/JD pair is evidence for a decision, not
+# code the app runs. The three analysis docs alongside it were already
+# committed and stay committed, so this ignores entries individually and
+# re-includes them by name — a bare `CV matching fix/` would exclude the
+# directory, and git cannot re-include a file whose parent dir is excluded.
+CV matching fix/*
+!CV matching fix/bug-report.md
+!CV matching fix/cv-diagnosis.md
+!CV matching fix/essay-diagnostic-methodology.md

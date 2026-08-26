@@ -74,6 +74,34 @@ groups:
           summary: "Unusual queue depth / job volume"
           description: "processing_queue_depth is {{ $value }} for {{ $labels.job_type }} — possible abuse/DoS or a stuck consumer."
 
+      # 5b. A queue has work but no consumer. QueueDepthSpike above cannot
+      #     catch this: it needs depth > 5 sustained for 10m, but a single
+      #     stuck job is depth 1 and sits there forever, silently. The
+      #     failure mode is invisible from every other signal — the API
+      #     returned 202, the broker holds the message, the job row reads
+      #     "pending" with no error, and the UI spins indefinitely.
+      #     Confirmed live twice in one session (worker_textract, then
+      #     worker_cv_generate); both were diagnosed only by reading
+      #     `docker ps` by hand.
+      #
+      #     recover_stalled_jobs does not cover it either — it republishes
+      #     to the same queue, which with no consumer re-queues into the
+      #     same void.
+      #
+      #     `== 0` is deliberate, not `< 1`: the gauge reports -1 when the
+      #     control-plane poll itself failed (broker unreachable, inspect
+      #     timeout), and an unknown must not page as a missing worker.
+      #     `for: 2m` clears the normal case of a worker restarting or a
+      #     deploy rolling.
+      - alert: QueueHasNoConsumer
+        expr: processing_queue_consumers == 0 and on (job_type) processing_queue_depth > 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Queue {{ $labels.job_type }} has queued work but no worker consuming it"
+          description: "processing_queue_consumers is 0 for {{ $labels.job_type }} while jobs are outstanding — the worker for this queue is down. Jobs will sit at pending indefinitely with no error and no timeout."
+
       # 6. Unusual spend rate on paid external APIs (Textract, OpenAI) — a
       #    runaway regenerate loop or abuse pattern shows up here before it
       #    shows up on a bill. cost_usd_total only increments in worker

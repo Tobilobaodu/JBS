@@ -16,9 +16,7 @@ from fastapi import HTTPException, status as fastapi_status
 from app.core.config import settings
 from app.core.job_states import ProcessingStatus, transition_job_status
 from app.workers.tasks import (
-    enqueue_docling_extract,
-    enqueue_textract_extract,
-    enqueue_merge_parse,
+    enqueue_text_extract,
     enqueue_ats_check,
 )
 from datetime import datetime, timezone
@@ -165,12 +163,8 @@ async def create_processing_job(
 
     try:
         # Dispatch to the correct Celery queue based on job_type
-        if job_type == "docling_extract":
-            enqueue_docling_extract(str(job.id))
-        elif job_type == "textract_extract":
-            enqueue_textract_extract(str(job.id))
-        elif job_type == "merge_parse":
-            enqueue_merge_parse(str(job.id))
+        if job_type == "text_extract":
+            enqueue_text_extract(str(job.id))
         elif job_type == "ats_check":
             enqueue_ats_check(str(job.id))
         else:
@@ -214,13 +208,13 @@ async def start_extraction_pipeline(
 ) -> ProcessingJob:
     """Kick off the Docling → Textract → merge pipeline for a newly uploaded CV.
 
-    Creates the first job (docling_extract) — the Docling worker will chain
+    Creates the first (and now only) extraction job (text_extract) — steps 3-6
     the Textract and merge jobs on completion. Accepts either a real user
     or a trial session (Sprint 2) — exactly one, per create_processing_job.
     """
     return await create_processing_job(
         session=session,
-        job_type="docling_extract",
+        job_type="text_extract",
         source_entity_type="cv_file",
         source_entity_id=cv_file_id,
         user_id=user_id,

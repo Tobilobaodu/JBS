@@ -417,21 +417,29 @@ async def reprocess_cv(
 @router.get("/cvs/{cv_id}/raw-text", response_model=CvRawTextResponse)
 async def get_cv_raw_text(
     cv_id: str,
-    current_user: User = Depends(get_current_user),
+    identity: RequestIdentity = Depends(get_current_user_or_trial_session),
     session: AsyncSession = Depends(get_session),
 ):
-    """Get canonical merged extracted text."""
+    """Get canonical merged extracted text.
+
+    Trial-accessible: the tailor flow shows the extracted text back to the
+    user before they run an analysis, and that has to work for an anonymous
+    trial session — which is the only identity a first-time visitor has.
+    Scoped by identity_owner_filter exactly like every other trial-
+    accessible route, so this widens who can read their *own* text, not
+    what anyone can read.
+    """
     # Verify ownership via cv_file, excluding soft-deleted rows
     result = await session.execute(
         select(CvFile).where(
             CvFile.id == cv_id,
-            CvFile.user_id == current_user.id,
+            identity_owner_filter(CvFile, identity),
             CvFile.deleted_at.is_(None),
         )
     )
     if result.scalar_one_or_none() is None:
         raise await ownership_denied(
-            session, user_id=current_user.id, entity_type="cv_file",
+            session, user_id=identity.user_id, entity_type="cv_file",
             entity_id=cv_id, detail="CV not found.",
         )
 

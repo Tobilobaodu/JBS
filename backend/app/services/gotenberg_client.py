@@ -18,6 +18,47 @@ from app.core.config import settings
 _DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
+def convert_html_to_pdf(
+    html: str,
+    *,
+    client: httpx.Client | None = None,
+    margin_inches: float = 0.6,
+) -> bytes:
+    """Convert a self-contained HTML document to PDF via Gotenberg's
+    Chromium route.
+
+    Used by the single-call rewrite flow, which produces Markdown rather
+    than a docx: going Markdown -> HTML -> Chromium keeps full control of
+    the print styling and avoids a LibreOffice round-trip through a
+    document format nothing else in that flow uses.
+
+    The HTML must be self-contained — Gotenberg runs on the `no_internet`
+    network, so any external stylesheet, font or image simply fails to
+    load. Same client-ownership contract as convert_docx_to_pdf.
+    """
+    owns_client = client is None
+    http_client = client or httpx.Client(
+        timeout=settings.gotenberg_request_timeout_seconds
+    )
+    try:
+        response = http_client.post(
+            f"{settings.gotenberg_url}/forms/chromium/convert/html",
+            files={"files": ("index.html", html.encode("utf-8"), "text/html")},
+            data={
+                "marginTop": str(margin_inches),
+                "marginBottom": str(margin_inches),
+                "marginLeft": str(margin_inches),
+                "marginRight": str(margin_inches),
+                "printBackground": "true",
+            },
+        )
+        response.raise_for_status()
+        return response.content
+    finally:
+        if owns_client:
+            http_client.close()
+
+
 def convert_docx_to_pdf(docx_bytes: bytes, *, client: httpx.Client | None = None) -> bytes:
     """Converts docx bytes to pdf bytes via Gotenberg's LibreOffice
     conversion route. Raises httpx.HTTPStatusError on a non-2xx response

@@ -5,6 +5,14 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    # Also on no_internet so the synchronous PDF export can reach the
+    # gotenberg container, which is no_internet-ONLY by design (it renders
+    # untrusted CV content and must not have egress). Multi-homing the API
+    # grants gotenberg nothing — the API already has egress via `default`
+    # for the LLM provider.
+    networks:
+      - default
+      - no_internet
     env_file:
       - .env.local
     depends_on:
@@ -103,70 +111,97 @@ services:
       retries: 10
       start_period: 60s
 
-  # Celery worker - Docling extraction
-  worker_docling:
+  # ──────────────────────────────────────────────────────────────────
+  # DECOMMISSIONED — pipeline steps 3-6 (Docling / Textract / merge /
+  # cv_parse). Replaced by the `extraction` service below, which hosts
+  # Example's routes/extract.ts unchanged. Task code moved verbatim to
+  # decommissioned/extraction_v1/. Left commented rather than deleted
+  # so the old pipeline can be restored by uncommenting this block and
+  # restoring the modules it imports.
+  # ──────────────────────────────────────────────────────────────────
+#  # Celery worker - Docling extraction
+#  worker_docling:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    command: celery -A app.workers.tasks worker -Q docling_extract --concurrency=2 --loglevel=info
+#    env_file:
+#      - .env.local
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
+#      redis:
+#        condition: service_started
+#      minio:
+#        condition: service_started
+#    volumes:
+#      - ./app:/app/app:ro
+#    restart: unless-stopped
+#    # Docling worker: no_internet ONLY, not also `default` — being
+#    # multi-homed on both would let traffic still route out via
+#    # `default`'s gateway regardless of no_internet's `internal: true`,
+#    # silently defeating the whole point (confirmed live: this was
+#    # exactly the bug before this network config was corrected).
+#    networks:
+#      - no_internet
+
+#  # Celery worker - Textract enrichment
+#  worker_textract:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    command: celery -A app.workers.tasks worker -Q textract_extract --concurrency=2 --loglevel=info
+#    env_file:
+#      - .env.local
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
+#      redis:
+#        condition: service_started
+#    volumes:
+#      - ./app:/app/app:ro
+#    restart: unless-stopped
+#    # Textract worker: needs outbound to AWS Textract endpoint only
+#    networks:
+#      - default
+
+#  # Celery worker - merge and structural validation
+#  worker_merge:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    command: celery -A app.workers.tasks worker -Q merge_parse --concurrency=2 --loglevel=info
+#    env_file:
+#      - .env.local
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
+#      redis:
+#        condition: service_started
+#    volumes:
+#      - ./app:/app/app:ro
+#    restart: unless-stopped
+
+#  # Celery worker - job post URL fetch (SSRF-safe, network-isolated)
+
+  # Extraction service — Example's step 2, copied unchanged.
+  # Node rather than Python because extract.ts is used verbatim (the ask was
+  # to copy the code, not reimplement it). Needs poppler-utils + unzip, which
+  # its Dockerfile installs; extract.ts shells out to both.
+  extraction:
     build:
-      context: .
+      context: ./extraction-service
       dockerfile: Dockerfile
-    command: celery -A app.workers.tasks worker -Q docling_extract --concurrency=2 --loglevel=info
-    env_file:
-      - .env.local
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-      minio:
-        condition: service_started
-    volumes:
-      - ./app:/app/app:ro
+    environment:
+      PORT: "5050"
+      NODE_ENV: production
     restart: unless-stopped
-    # Docling worker: no_internet ONLY, not also `default` — being
-    # multi-homed on both would let traffic still route out via
-    # `default`'s gateway regardless of no_internet's `internal: true`,
-    # silently defeating the whole point (confirmed live: this was
-    # exactly the bug before this network config was corrected).
+    # No DB, no broker, no object storage: it takes bytes in and returns text.
+    # On no_internet only — it never needs egress, matching the isolation the
+    # decommissioned Docling worker had.
     networks:
       - no_internet
 
-  # Celery worker - Textract enrichment
-  worker_textract:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: celery -A app.workers.tasks worker -Q textract_extract --concurrency=2 --loglevel=info
-    env_file:
-      - .env.local
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    volumes:
-      - ./app:/app/app:ro
-    restart: unless-stopped
-    # Textract worker: needs outbound to AWS Textract endpoint only
-    networks:
-      - default
-
-  # Celery worker - merge and structural validation
-  worker_merge:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    command: celery -A app.workers.tasks worker -Q merge_parse --concurrency=2 --loglevel=info
-    env_file:
-      - .env.local
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    volumes:
-      - ./app:/app/app:ro
-    restart: unless-stopped
-
-  # Celery worker - job post URL fetch (SSRF-safe, network-isolated)
   worker_job_fetch:
     build:
       context: .
@@ -224,11 +259,37 @@ services:
     restart: unless-stopped
 
   # Celery worker - CV structured profile extraction (Phase 2)
-  worker_cv_parse:
+  # DECOMMISSIONED — step 6 (cv_parse). Moved to
+  # decommissioned/extraction_v1/step6_cv_parse_task.py.
+#  worker_cv_parse:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile
+#    command: celery -A app.workers.tasks worker -Q cv_parse --concurrency=2 --loglevel=info
+#    env_file:
+#      - .env.local
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
+#      redis:
+#        condition: service_started
+#    volumes:
+#      - ./app:/app/app:ro
+#    restart: unless-stopped
+#    # CV parse worker: reads from cv_raw_text, writes to profile tables.
+#    # no_internet ONLY — see worker_docling's comment for why not also
+#    # `default`.
+#    networks:
+#      - no_internet
+
+#  # Celery worker - tailored CV generation (Sprint 3)
+
+  # Celery worker - text extraction (replaces steps 3-6)
+  worker_text_extract:
     build:
       context: .
       dockerfile: Dockerfile
-    command: celery -A app.workers.tasks worker -Q cv_parse --concurrency=2 --loglevel=info
+    command: celery -A app.workers.tasks worker -Q text_extract --concurrency=2 --loglevel=info
     env_file:
       - .env.local
     depends_on:
@@ -236,16 +297,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+      minio:
+        condition: service_started
+      extraction:
+        condition: service_started
     volumes:
       - ./app:/app/app:ro
     restart: unless-stopped
-    # CV parse worker: reads from cv_raw_text, writes to profile tables.
-    # no_internet ONLY — see worker_docling's comment for why not also
-    # `default`.
+    # no_internet only: reaches postgres, redis, minio and the extraction
+    # service, all of which are reachable on that network. Same posture the
+    # decommissioned Docling worker had.
     networks:
       - no_internet
 
-  # Celery worker - tailored CV generation (Sprint 3)
   worker_cv_generate:
     build:
       context: .
