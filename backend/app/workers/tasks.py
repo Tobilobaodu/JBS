@@ -160,6 +160,14 @@ def enqueue_ats_check(job_id: str) -> str:
     )
 
 
+def enqueue_cv_analyze(job_id: str) -> str:
+    """Dispatch an LLM-based, job-agnostic CV analysis to the cv_analyze
+    queue. Auto-chained from process_text_extract — see that task."""
+    return _send_task_with_retry(
+        "app.workers.worker_jobs.process_cv_analyze", job_id, "cv_analyze",
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Sprint 3: Tailored CV generation
 # ──────────────────────────────────────────────────────────────────────

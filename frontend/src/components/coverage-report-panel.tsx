@@ -4,9 +4,6 @@ import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import { toast } from "sonner"
 
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
 import { errorMessage } from "@/lib/api"
 import { listCvs } from "@/lib/dashboard-api"
 import {
@@ -15,13 +12,14 @@ import {
   getCoverageReport,
 } from "@/lib/trial-api"
 import { useJobPoll } from "@/hooks/use-job-poll"
+import { Tag } from "@/components/modernist/tag"
 
 /**
  * Sprint 5's multi-job-post coverage reporting (job-post-collections +
- * coverage-reports) had zero dashboard UI before this. Self-contained: pick
- * a CV, create a collection from the selected job posts, trigger the
- * report, poll, render aggregate gaps. Reuses useJobPoll (ProcessingJobRef)
- * the same way ATS-check does.
+ * coverage-reports) restyled to Modernist per the Jobs-screen mockup's
+ * "coverage report" panel — same data flow as before (pick a CV, create a
+ * collection from the selected job posts, trigger the report, poll, render
+ * aggregate gaps), reusing useJobPoll (ProcessingJobRef) like ATS-check.
  */
 export function CoverageReportPanel({
   selectedJobPostIds,
@@ -70,19 +68,20 @@ export function CoverageReportPanel({
   if (selectedJobPostIds.length === 0) return null
 
   return (
-    <Card className="mt-4">
-      <CardHeader>
-        <CardTitle className="text-base">
-          Coverage report — {selectedJobPostIds.length} job{selectedJobPostIds.length === 1 ? "" : "s"} selected
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex items-center gap-2">
-          <select
-            className="h-8 rounded-md border border-border bg-background px-2 text-sm"
-            value={cvId}
-            onChange={(e) => setCvId(e.target.value)}
-          >
+    <section style={{ background: "var(--color-surface)", padding: "28px 32px" }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 24, marginBottom: 20 }}>
+        <h3 style={{ fontSize: 20, margin: 0 }}>
+          COVERAGE REPORT — {selectedJobPostIds.length} JOB{selectedJobPostIds.length === 1 ? "" : "S"} SELECTED
+        </h3>
+        <button type="button" className="btn btn-ghost" onClick={onClearSelection}>
+          Clear selection
+        </button>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 16, marginBottom: 24, flexWrap: "wrap" }}>
+        <div className="field" style={{ width: 280 }}>
+          <label>Compare against</label>
+          <select className="input" value={cvId} onChange={(e) => setCvId(e.target.value)}>
             <option value="">Select a CV…</option>
             {cvsQuery.data?.items.map((cv) => (
               <option key={cv.id} value={cv.id}>
@@ -90,40 +89,51 @@ export function CoverageReportPanel({
               </option>
             ))}
           </select>
-          <Button size="sm" onClick={handleRun} disabled={!cvId || isStarting || !!jobId}>
-            {isStarting ? "Starting…" : "Run coverage report"}
-          </Button>
-          <Button size="sm" variant="ghost" onClick={onClearSelection}>
-            Clear selection
-          </Button>
         </div>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={handleRun}
+          disabled={!cvId || isStarting || !!jobId}
+        >
+          {isStarting ? "Starting…" : "Run coverage report"}
+        </button>
+      </div>
 
-        {jobId && !isCompleted && !isFailed && (
-          <p className="text-sm text-muted-foreground">Running report across selected jobs…</p>
-        )}
-        {isFailed && <p className="text-sm text-destructive">The report failed. Please try again.</p>}
-        {isCompleted && reportQuery.isLoading && (
-          <p className="text-sm text-muted-foreground">Loading results…</p>
-        )}
-        {reportQuery.data && (
-          <div className="space-y-2">
-            {reportQuery.data.aggregateGaps.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No recurring gaps found.</p>
-            ) : (
-              reportQuery.data.aggregateGaps.map((gap, i) => (
-                <div key={i} className="rounded-md border border-border p-2 text-sm">
-                  <div className="flex items-center justify-between">
-                    <span className="font-medium">{gap.requirementTextCluster}</span>
-                    <Badge variant="secondary">
-                      {gap.recurrenceCount} of {selectedJobPostIds.length} jobs
-                    </Badge>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+      {jobId && !isCompleted && !isFailed && (
+        <p style={{ fontSize: 13, color: "var(--color-neutral-700)" }}>Running report across selected jobs…</p>
+      )}
+      {isFailed && <p style={{ fontSize: 13, color: "var(--color-accent-700)" }}>The report failed. Please try again.</p>}
+      {isCompleted && reportQuery.isLoading && (
+        <p style={{ fontSize: 13, color: "var(--color-neutral-700)" }}>Loading results…</p>
+      )}
+      {reportQuery.data && (
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          {reportQuery.data.aggregateGaps.length === 0 ? (
+            <p style={{ fontSize: 13, color: "var(--color-neutral-700)" }}>No recurring gaps found.</p>
+          ) : (
+            reportQuery.data.aggregateGaps.map((gap, i, arr) => (
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 20,
+                  padding: "12px 0",
+                  borderTop: "1px solid var(--color-divider)",
+                  borderBottom: i === arr.length - 1 ? "1px solid var(--color-divider)" : undefined,
+                }}
+              >
+                <div style={{ fontSize: 14 }}>{gap.requirementTextCluster}</div>
+                <Tag variant={gap.recurrenceCount === selectedJobPostIds.length ? "accent" : "neutral"}>
+                  {gap.recurrenceCount} of {selectedJobPostIds.length} jobs
+                </Tag>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </section>
   )
 }

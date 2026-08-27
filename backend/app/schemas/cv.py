@@ -24,6 +24,12 @@ class CvFileResponse(BaseModel):
     upload_status: str = Field(alias="uploadStatus")
     processing_status: str = Field(alias="processingStatus")
     job_status: str | None = Field(None, alias="jobStatus")
+    # From the latest CvAnalysis row for this CV, if the cv_analyze job has
+    # completed — None while analysis hasn't run yet or is still in
+    # progress, same "surface what's ready, don't block on it" precedent
+    # as job_status above.
+    resume_score: float | None = Field(None, alias="resumeScore")
+    issue_count: int | None = Field(None, alias="issueCount")
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
 
@@ -95,6 +101,43 @@ class AtsReadinessCheckResponse(BaseModel):
     overall_score: float = Field(alias="overallScore")
     contact_info_parseable: bool | None = Field(None, alias="contactInfoParseable")
     checks: list[AtsCheckItem]
+    created_at: datetime = Field(alias="createdAt")
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# LLM-based CV analysis
+# ──────────────────────────────────────────────────────────────────────
+
+
+class CvIssueItem(BaseModel):
+    """One ATS or formatting checklist entry from a CvAnalysis row.
+
+    Distinct shape from AtsCheckItem above (no `check_type`, has `title`)
+    — matches the LLM engine's own atsIssues/formattingIssues contract
+    (see app/prompts/cv_analysis_prompts.py), not the older rules-based
+    ats_check.py's checklist shape.
+    """
+
+    passed: bool
+    severity: str
+    title: str
+    detail: str
+
+    model_config = {"populate_by_name": True}
+
+
+class CvAnalysisResponse(BaseModel):
+    id: str
+    cv_id: str = Field(alias="cvId")
+    cv_profile_version_id: str | None = Field(None, alias="cvProfileVersionId")
+    overall_score: float = Field(alias="overallScore")
+    skillset_score: float = Field(alias="skillsetScore")
+    formatting_score: float = Field(alias="formattingScore")
+    ats_issues: list[CvIssueItem] = Field(alias="atsIssues")
+    formatting_issues: list[CvIssueItem] = Field(alias="formattingIssues")
+    tips: list[str]
     created_at: datetime = Field(alias="createdAt")
 
     model_config = {"from_attributes": True, "populate_by_name": True}

@@ -27,8 +27,9 @@ describe("CoverLettersPage", () => {
               jobPostId: "jp-1",
               jobTitle: "Senior Engineer",
               employer: "Acme",
-              status: "awaiting_answers",
-              currentStep: 1,
+              status: "approved",
+              currentStep: 4,
+              totalSteps: 4,
               createdAt: new Date().toISOString(),
             },
           ],
@@ -43,7 +44,42 @@ describe("CoverLettersPage", () => {
 
     expect(await screen.findByText("Senior Engineer")).toBeInTheDocument()
     expect(screen.getByText("Acme")).toBeInTheDocument()
-    expect(screen.getByText("awaiting_answers")).toBeInTheDocument()
+    expect(screen.getByText("Approved")).toBeInTheDocument()
+  })
+
+  it("shows the guided question step for an in-progress workflow", async () => {
+    server.use(
+      http.get(`${BASE}/cover-letters`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: "wf-2",
+              jobPostId: "jp-2",
+              jobTitle: "Design Systems Lead",
+              employer: "Wise",
+              status: "awaiting_answers",
+              currentStep: 2,
+              totalSteps: 4,
+              createdAt: new Date().toISOString(),
+            },
+          ],
+          total: 1,
+          limit: 20,
+          offset: 0,
+        })
+      ),
+      http.get(`${BASE}/cover-letters/wf-2/questions`, () =>
+        HttpResponse.json([
+          { id: "q-1", stepNumber: 2, questionText: "Why this company?", questionCategory: "motivation" },
+        ])
+      )
+    )
+
+    renderPage()
+
+    expect(await screen.findByText("DESIGN SYSTEMS LEAD")).toBeInTheDocument()
+    expect(await screen.findByText("Why this company?")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Continue" })).toBeInTheDocument()
   })
 
   it("shows an empty state when there are no workflows", async () => {
@@ -56,9 +92,7 @@ describe("CoverLettersPage", () => {
     renderPage()
 
     expect(
-      await screen.findByText(
-        "No cover letters yet — cover-letter generation is a premium feature, coming soon."
-      )
+      await screen.findByText("No cover letters yet — start one from a match's report page.")
     ).toBeInTheDocument()
   })
 

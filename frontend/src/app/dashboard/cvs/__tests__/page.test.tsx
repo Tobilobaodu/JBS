@@ -17,7 +17,7 @@ function renderPage() {
 }
 
 describe("CvsPage", () => {
-  it("renders the list of CVs returned by the API", async () => {
+  it("renders the list of CVs returned by the API, with the newest tagged Current", async () => {
     server.use(
       http.get(`${BASE}/cvs`, () =>
         HttpResponse.json({
@@ -31,6 +31,8 @@ describe("CvsPage", () => {
               uploadStatus: "completed",
               processingStatus: "completed",
               jobStatus: null,
+              resumeScore: 85,
+              issueCount: 9,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             },
@@ -39,20 +41,24 @@ describe("CvsPage", () => {
           limit: 20,
           offset: 0,
         })
+      ),
+      http.get(`${BASE}/matches`, () =>
+        HttpResponse.json({ items: [], total: 0, limit: 20, offset: 0 })
       )
     )
 
     renderPage()
 
     expect(await screen.findByText("resume.pdf")).toBeInTheDocument()
-    expect(screen.getByText("parsed")).toBeInTheDocument()
+    expect(screen.getByText("Parsed")).toBeInTheDocument()
+    expect(screen.getByText("Current")).toBeInTheDocument()
+    expect(screen.getByText("9")).toBeInTheDocument()
   })
 
   it("shows an empty state when there are no CVs", async () => {
     server.use(
-      http.get(`${BASE}/cvs`, () =>
-        HttpResponse.json({ items: [], total: 0, limit: 20, offset: 0 })
-      )
+      http.get(`${BASE}/cvs`, () => HttpResponse.json({ items: [], total: 0, limit: 20, offset: 0 })),
+      http.get(`${BASE}/matches`, () => HttpResponse.json({ items: [], total: 0, limit: 20, offset: 0 }))
     )
 
     renderPage()
@@ -63,7 +69,10 @@ describe("CvsPage", () => {
   })
 
   it("shows an error message when the request fails", async () => {
-    server.use(http.get(`${BASE}/cvs`, () => HttpResponse.json({}, { status: 500 })))
+    server.use(
+      http.get(`${BASE}/cvs`, () => HttpResponse.json({}, { status: 500 })),
+      http.get(`${BASE}/matches`, () => HttpResponse.json({ items: [], total: 0, limit: 20, offset: 0 }))
+    )
 
     renderPage()
 

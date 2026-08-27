@@ -51,76 +51,89 @@
 }
 
 @layer base {
-  .theme {
-    --font-heading: var(--font-geist-sans);
-    --font-sans: var(--font-geist-sans);
-  }
+  /*
+   * shadcn/ui's own oklch palette ("radix-nova") is replaced with a
+   * pass-through onto Modernist's tokens (src/styles/modernist.css) so the
+   * remaining shadcn primitives (dialog, dropdown-menu, tabs, progress,
+   * skeleton, sonner, avatar) inherit the new look without each needing a
+   * bespoke rewrite — the 8 dashboard mockup screens and the marketing/
+   * auth/try pages are ported to Modernist's own classes directly (see
+   * src/components/modernist/*), this mapping covers everything else.
+   * There is no dark variant in Modernist (a light, near-mono system by
+   * design) and no theme toggle wired up in this app, so .dark intentionally
+   * mirrors :root rather than diverging.
+   */
   :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
-    --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+    /* NB: the shadcn scaffold originally gated these two behind an unused
+       `.theme` class (never applied to any element) — moved onto :root
+       directly so `font-sans`/`font-heading` utilities actually resolve. */
+    --font-heading: var(--font-archivo), system-ui, sans-serif;
+    --font-sans: var(--font-archivo), system-ui, sans-serif;
+    --background: var(--color-bg);
+    --foreground: var(--color-text);
+    --card: var(--color-surface);
+    --card-foreground: var(--color-text);
+    --popover: var(--color-surface);
+    --popover-foreground: var(--color-text);
+    --primary: var(--color-accent);
+    --primary-foreground: var(--color-bg);
+    --secondary: var(--color-surface);
+    --secondary-foreground: var(--color-text);
+    --muted: var(--color-neutral-200);
+    --muted-foreground: color-mix(in srgb, var(--color-text) 55%, transparent);
+    --accent: var(--color-neutral-200);
+    --accent-foreground: var(--color-text);
+    --destructive: var(--color-accent-700);
+    --border: var(--color-divider);
+    --input: var(--color-divider);
+    --ring: var(--color-accent);
+    --chart-1: var(--color-accent-500);
+    --chart-2: var(--color-neutral-600);
+    --chart-3: var(--color-neutral-500);
+    --chart-4: var(--color-neutral-400);
+    --chart-5: var(--color-neutral-300);
+    --radius: 0px;
+    --sidebar: var(--color-bg);
+    --sidebar-foreground: var(--color-text);
+    --sidebar-primary: var(--color-text);
+    --sidebar-primary-foreground: var(--color-bg);
+    --sidebar-accent: var(--color-neutral-200);
+    --sidebar-accent-foreground: var(--color-text);
+    --sidebar-border: var(--color-divider);
+    --sidebar-ring: var(--color-accent);
   }
   .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
-    --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
-    --chart-4: oklch(0.371 0 0);
-    --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --background: var(--color-bg);
+    --foreground: var(--color-text);
+    --card: var(--color-surface);
+    --card-foreground: var(--color-text);
+    --popover: var(--color-surface);
+    --popover-foreground: var(--color-text);
+    --primary: var(--color-accent);
+    --primary-foreground: var(--color-bg);
+    --secondary: var(--color-surface);
+    --secondary-foreground: var(--color-text);
+    --muted: var(--color-neutral-200);
+    --muted-foreground: color-mix(in srgb, var(--color-text) 55%, transparent);
+    --accent: var(--color-neutral-200);
+    --accent-foreground: var(--color-text);
+    --destructive: var(--color-accent-700);
+    --border: var(--color-divider);
+    --input: var(--color-divider);
+    --ring: var(--color-accent);
+    --chart-1: var(--color-accent-500);
+    --chart-2: var(--color-neutral-600);
+    --chart-3: var(--color-neutral-500);
+    --chart-4: var(--color-neutral-400);
+    --chart-5: var(--color-neutral-300);
+    --sidebar: var(--color-bg);
+    --sidebar-foreground: var(--color-text);
+    --sidebar-primary: var(--color-text);
+    --sidebar-primary-foreground: var(--color-bg);
+    --sidebar-accent: var(--color-neutral-200);
+    --sidebar-accent-foreground: var(--color-text);
+    --sidebar-border: var(--color-divider);
+    --sidebar-ring: var(--color-accent);
   }
   * {
     @apply border-border outline-ring/50;

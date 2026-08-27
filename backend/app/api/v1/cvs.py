@@ -19,6 +19,7 @@ from app.db import get_session
 from app.db.models import (
     AtsReadinessCheck,
     AuditEvent,
+    CvAnalysis,
     CvFile,
     CvExtractionPass,
     CvProfile,
@@ -29,11 +30,13 @@ from app.db.models import (
 )
 from app.schemas.cv import (
     AtsReadinessCheckResponse,
+    CvAnalysisResponse,
     CvUploadAccepted,
     CvFileResponse,
     CvListResponse,
     CvExtractionDetailResponse,
     CvExtractionPassResponse,
+    CvIssueItem,
     CvRawTextResponse,
     StructuralValidationResult,
 )
@@ -78,6 +81,20 @@ def _derive_status(cv_status: str, job_status: str | None) -> str:
     if job_status in ("queued", "processing", "retrying"):
         return "processing"
     return "pending"
+
+
+def _resume_score(analysis: CvAnalysis | None) -> float | None:
+    return analysis.overall_score if analysis is not None else None
+
+
+def _issue_count(analysis: CvAnalysis | None) -> int | None:
+    if analysis is None:
+        return None
+    return sum(
+        1
+        for item in (*(analysis.ats_issues or []), *(analysis.formatting_issues or []))
+        if not item.get("passed", True)
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -224,6 +241,10 @@ async def list_cvs(
 
     # Batch-query most recent processing job per CV for status visibility
     job_status_map: dict[str, str] = {}
+    # Batch-query most recent CvAnalysis per CV for resumeScore/issueCount —
+    # one query for the whole page, same reasoning as job_status_map above:
+    # an N+1 query per row here would scale with page size for no reason.
+    analysis_map: dict[str, CvAnalysis] = {}
     if cv_files:
         cv_ids = [f.id for f in cv_files]
         job_result = await session.execute(
@@ -238,6 +259,15 @@ async def list_cvs(
             if source_id not in job_status_map:
                 job_status_map[source_id] = status
 
+        analysis_result = await session.execute(
+            select(CvAnalysis)
+            .where(CvAnalysis.cv_file_id.in_(cv_ids))
+            .order_by(CvAnalysis.created_at.desc())
+        )
+        for analysis in analysis_result.scalars().all():
+            if analysis.cv_file_id not in analysis_map:
+                analysis_map[analysis.cv_file_id] = analysis
+
     items = [
         CvFileResponse(
             id=f.id,
@@ -248,6 +278,8 @@ async def list_cvs(
             upload_status="stored" if f.storage_key else "pending",
             processing_status=f.status,
             job_status=job_status_map.get(f.id),
+            resume_score=_resume_score(analysis_map.get(f.id)),
+            issue_count=_issue_count(analysis_map.get(f.id)),
             created_at=f.created_at,
             updated_at=f.updated_at,
         )
@@ -300,6 +332,14 @@ async def get_cv(
     )
     job_status = job_result.scalar()
 
+    analysis_result = await session.execute(
+        select(CvAnalysis)
+        .where(CvAnalysis.cv_file_id == cv_id)
+        .order_by(CvAnalysis.created_at.desc())
+        .limit(1)
+    )
+    analysis = analysis_result.scalar_one_or_none()
+
     return CvFileResponse(
         id=cv_file.id,
         original_filename=cv_file.filename,
@@ -309,6 +349,8 @@ async def get_cv(
         upload_status="stored" if cv_file.storage_key else "pending",
         processing_status=cv_file.status,
         job_status=job_status,
+        resume_score=_resume_score(analysis),
+        issue_count=_issue_count(analysis),
         created_at=cv_file.created_at,
         updated_at=cv_file.updated_at,
     )
@@ -685,4 +727,115 @@ async def get_ats_check(
         contact_info_parseable=check.contact_info_parseable,
         checks=check.checks,
         created_at=check.created_at,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# POST /cvs/{cv_id}/analysis  — LLM-based CV analysis
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.post("/cvs/{cv_id}/analysis", status_code=202)
+async def run_cv_analysis(
+    request: Request,
+    cv_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Run (or re-run) the LLM-based CV analysis for this CV.
+
+    Authenticated only, mirrors POST /cvs/{cv_id}/ats-check exactly.
+    Normally this doesn't need to be called directly — process_text_extract
+    auto-chains into it on every successful extraction — but it's exposed
+    so a CV can be re-analyzed on demand (e.g. after a reprocess) without
+    re-uploading.
+
+    Rate-limited on the generation tier — this is a real paid LLM call,
+    same bucket as /matches and /resume-rewrites.
+    """
+    client_key = get_client_key(request)
+    if not check_generation_rate_limit(client_key):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests. Please wait and try again.",
+        )
+
+    result = await session.execute(
+        select(CvFile).where(
+            CvFile.id == cv_id,
+            CvFile.user_id == current_user.id,
+            CvFile.deleted_at.is_(None),
+        )
+    )
+    cv_file = result.scalar_one_or_none()
+    if cv_file is None:
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="cv_file",
+            entity_id=cv_id, detail="CV not found.",
+        )
+
+    # create_processing_job commits internally (before dispatching to
+    # Celery) — nothing left to commit here.
+    processing_job = await create_processing_job(
+        session=session,
+        job_type="cv_analyze",
+        source_entity_type="cv_file",
+        source_entity_id=cv_file.id,
+        user_id=current_user.id,
+    )
+
+    from app.schemas.jobs import ProcessingJobRef
+    return ProcessingJobRef(job_id=processing_job.id, status="queued")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# GET /cvs/{cv_id}/analysis  — LLM-based CV analysis
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.get("/cvs/{cv_id}/analysis", response_model=CvAnalysisResponse)
+async def get_cv_analysis(
+    cv_id: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Retrieve the latest LLM-based CV analysis for this CV.
+
+    Returns 404 if no analysis has run yet.
+    """
+    result = await session.execute(
+        select(CvFile).where(
+            CvFile.id == cv_id,
+            CvFile.user_id == current_user.id,
+            CvFile.deleted_at.is_(None),
+        )
+    )
+    if result.scalar_one_or_none() is None:
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="cv_file",
+            entity_id=cv_id, detail="CV not found.",
+        )
+
+    analysis_result = await session.execute(
+        select(CvAnalysis)
+        .where(CvAnalysis.cv_file_id == cv_id)
+        .order_by(CvAnalysis.created_at.desc())
+        .limit(1)
+    )
+    analysis = analysis_result.scalar_one_or_none()
+    if analysis is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail="No analysis result available yet.")
+
+    return CvAnalysisResponse(
+        id=analysis.id,
+        cv_id=analysis.cv_file_id,
+        cv_profile_version_id=analysis.cv_profile_version_id,
+        overall_score=analysis.overall_score,
+        skillset_score=analysis.skillset_score,
+        formatting_score=analysis.formatting_score,
+        ats_issues=[CvIssueItem(**item) for item in (analysis.ats_issues or [])],
+        formatting_issues=[CvIssueItem(**item) for item in (analysis.formatting_issues or [])],
+        tips=analysis.tips or [],
+        created_at=analysis.created_at,
     )

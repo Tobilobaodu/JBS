@@ -11,6 +11,7 @@ Per security plan §2: Docling worker runs with no outbound network.
 Textract worker needs outbound to AWS Textract endpoint only.
 """
 
+import hashlib
 import json
 import re
 import time
@@ -18,7 +19,7 @@ import uuid
 import structlog
 from datetime import datetime, timedelta, timezone
 
-import sqlalchemy as sa  # noqa: F401 — used by cv_parse helpers
+import sqlalchemy as sa  # used by _write_cv_profile_shim's version-count query
 
 from celery import shared_task
 from celery.exceptions import MaxRetriesExceededError
@@ -27,6 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.job_states import (
+    PermanentWorkerError,
     ProcessingStatus,
     RetryableWorkerError,
     classify_error,
@@ -48,6 +50,7 @@ from app.core.storage import download_file
 from app.db.models import (
     AtsReadinessCheck,
     AuditEvent,
+    CvAnalysis,
     CoverLetterAnswer,
     CoverLetterDraft,
     CoverLetterQuestion,
@@ -81,6 +84,7 @@ from app.workers.tasks import (
     enqueue_match,
     enqueue_job_post_parse,
     enqueue_ats_check,
+    enqueue_cv_analyze,
     enqueue_cv_generate,
     enqueue_cover_letter_generate,
     enqueue_export,
@@ -230,8 +234,59 @@ def process_text_extract(self, job_id: str) -> None:
         JOB_DURATION_SECONDS.labels(job_type="text_extract").observe(duration_s)
         EXTRACTION_CHARS.labels(pass_type="example_extract").observe(len(canonical_text))
 
-        # Pipeline ends here. Steps 5 and 6 are decommissioned, so there is
-        # no merge to hand off to and no structured profile to build.
+        # Auto-chain into the LLM-based CV analysis step. Steps 5 and 6
+        # (merge/cv_parse) are decommissioned, so there is no structured
+        # profile to build the old way — process_cv_analyze is what now
+        # produces both the analysis result and (via its FK-satisfying
+        # shim) the CvProfileVersion/CvProfile row that MatchRun and
+        # CoverLetterWorkflow still require. Hand-rolled rather than via
+        # orchestration.create_processing_job: that helper is async
+        # (AsyncSession) and this worker only ever holds a sync Session,
+        # so it can't be called directly from here. task_key still uses
+        # orchestration's own compute_task_key for the same idempotency
+        # convention every other job-creating call site uses.
+        #
+        # The text_extract success above is already committed by this
+        # point, so this whole block is wrapped defensively: a reprocess
+        # (POST /cvs/{cv_id}/reprocess) recomputes the same deterministic
+        # task_key as its first run, and the partial unique index on
+        # task_key is not scoped to active jobs (see migration 013) — a
+        # second attempt can collide with the first run's now-completed
+        # row. That must never retroactively fail the text_extract job
+        # that already succeeded; it's logged and the CV simply doesn't
+        # get a fresh analysis chained this time.
+        try:
+            from app.services.orchestration import compute_task_key
+
+            owner_id = cv_file.user_id or cv_file.trial_session_id
+            analyze_job = ProcessingJob(
+                job_type="cv_analyze",
+                source_entity_type="cv_file",
+                source_entity_id=cv_file.id,
+                user_id=cv_file.user_id,
+                trial_session_id=cv_file.trial_session_id,
+                status="pending",
+                task_key=(
+                    compute_task_key("cv_analyze", cv_file.id, owner_id)
+                    if owner_id else None
+                ),
+            )
+            session.add(analyze_job)
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            logger.error("cv_analyze_chain_create_failed", cv_id=cv_file.id, error=str(e))
+            analyze_job = None
+
+        if analyze_job is not None:
+            try:
+                enqueue_cv_analyze(analyze_job.id)
+            except Exception as e:
+                analyze_job.status = "failed"
+                analyze_job.last_error = "Failed to publish task to message broker."
+                analyze_job.failed_at = datetime.now(timezone.utc)
+                session.commit()
+                logger.error("cv_analyze_publish_failed", job_id=analyze_job.id, error=str(e))
 
     except Exception as e:
         duration_s = time.monotonic() - t_start
@@ -271,9 +326,20 @@ def process_text_extract(self, job_id: str) -> None:
 
 
 def _run_and_persist_match(session: Session, match_run: MatchRun):
-    """Runs match_engine.run_match() for an existing MatchRun row
+    """Runs match_analysis.run_match_llm() for an existing MatchRun row
     (already pointing at a real cv_profile_version_id/job_post_profile_id)
     and persists the result onto it plus its MatchEvidenceItem rows.
+
+    LLM-based replacement for the old match_engine.run_match() call — see
+    app/services/match_analysis.py's module docstring and
+    app/workers/worker_jobs.py's top-of-file comment. match_engine.py
+    itself is untouched, still directly unit-tested, and no longer called
+    from here. cv_profile_version_id still resolves to a real cv_file_id
+    (process_cv_analyze's FK-satisfying shim guarantees a CvProfileVersion
+    row exists for every analyzed CV), so this reads the CV's raw text via
+    that cv_file_id rather than cv_profile_version.structured_payload,
+    which is now just the minimal basics/skills shim payload, not a
+    source of match-worthy CV detail.
 
     Extracted from process_match (Sprint 5) so the coverage-report
     reuse-or-run helper below can share the exact same matching+
@@ -284,32 +350,37 @@ def _run_and_persist_match(session: Session, match_run: MatchRun):
     must never differ from what a standalone POST /matches call would
     produce for the same CV/job-post pair).
     """
-    from app.extraction.match_engine import run_match
-    from app.db.models import CvProfileVersion, CvSkillItem, JobPostProfile
+    from app.services.match_analysis import run_match_llm
+    from app.db.models import CvProfileVersion, JobPostProfile
 
     cv_version = session.get(CvProfileVersion, match_run.cv_profile_version_id)
     if cv_version is None:
         raise ValueError(f"CvProfileVersion {match_run.cv_profile_version_id} not found")
 
-    skill_items = session.execute(
-        select(CvSkillItem).where(
-            CvSkillItem.cv_profile_version_id == cv_version.id
-        )
-    ).scalars().all()
-    cv_skills = [s.skill_name for s in skill_items]
+    cv_raw_text = session.execute(
+        select(CvRawText).where(CvRawText.cv_file_id == cv_version.cv_file_id)
+    ).scalar_one_or_none()
+    if cv_raw_text is None or not (cv_raw_text.canonical_text or "").strip():
+        raise ValueError(f"CV raw text not available for cv_file {cv_version.cv_file_id}")
 
     jp_profile = session.get(JobPostProfile, match_run.job_post_profile_id)
     if jp_profile is None:
         raise ValueError(f"JobPostProfile {match_run.job_post_profile_id} not found")
 
+    job_post = session.get(JobPost, jp_profile.job_post_id)
+    if job_post is None or not (job_post.raw_text or "").strip():
+        raise ValueError(f"JobPost raw_text not available for job_post_profile {jp_profile.id}")
+
     jp_dict = {
+        "job_title": jp_profile.job_title,
+        "employer": jp_profile.employer,
         "required_skills": jp_profile.required_skills or [],
         "preferred_skills": jp_profile.preferred_skills or [],
         "qualifications": jp_profile.qualifications or [],
         "keywords": jp_profile.keywords or [],
     }
 
-    result = run_match(cv_version.structured_payload, cv_skills, jp_dict)
+    result = run_match_llm(cv_raw_text.canonical_text, job_post.raw_text, jp_dict)
 
     for item in result.evidence_items:
         session.add(MatchEvidenceItem(
@@ -331,8 +402,22 @@ def _run_and_persist_match(session: Session, match_run: MatchRun):
     match_run.unclear_count = result.unclear_count
     match_run.total_requirements = result.total_requirements
     match_run.summary_analysis = result.summary_analysis
+    match_run.match_json = {
+        "ats_issues": result.ats_issues,
+        "formatting_issues": result.formatting_issues,
+        "tips": result.tips,
+    }
     match_run.status = "completed"
     match_run.completed_at = datetime.now(timezone.utc)
+
+    # Real spend (§10 CostSpikeSuspect): gpt-4o-mini token-based pricing,
+    # same rates cv_generate uses — see COST_USD_COUNTER's own comment.
+    if result.prompt_tokens or result.completion_tokens:
+        COST_USD_COUNTER.labels(call_type="match").inc(
+            result.prompt_tokens * 0.150 / 1_000_000
+            + result.completion_tokens * 0.600 / 1_000_000
+        )
+        push_worker_metrics("worker_match")
 
     return result
 
@@ -377,10 +462,11 @@ def _get_or_run_match(
     queue="match",
 )
 def process_match(self, job_id: str) -> None:
-    """Run evidence-based matching between a CV profile and a job post.
+    """Run evidence-based matching between a CV and a job post.
 
-    Uses the rules-based match engine (heuristic, no LLM) for a fast first
-    pass. An LLM-backed engine can be swapped in later.
+    Uses the LLM-based match engine (app/services/match_analysis.py) — the
+    rules-based match_engine.py it replaced depended on a structured CV
+    profile the decommissioned cv_parse step no longer produces.
     """
     structlog.contextvars.bind_contextvars(job_id=job_id)
     t_start = time.monotonic()
@@ -435,18 +521,192 @@ def process_match(self, job_id: str) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Phase 2: CV structured profile extraction worker
+# LLM-based CV analysis — replaces the decommissioned structured-parsing
+# pipeline's role as the source of a per-CV quality signal, and (via the
+# shim below) the source of the CvProfileVersion/CvProfile row that
+# MatchRun and CoverLetterWorkflow still require. See
+# app/services/cv_analysis.py and app/db/models.py::CvAnalysis.
 # ──────────────────────────────────────────────────────────────────────
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Textract extraction worker
-# ──────────────────────────────────────────────────────────────────────
+def _write_cv_profile_shim(
+    session: Session, *, cv_file: CvFile, basics: dict, skills: list[str],
+) -> CvProfileVersion:
+    """Writes a minimal CvProfileVersion, upserts CvProfile.current_version_id
+    to point at it, and creates CvSkillItem rows from `skills` — purely to
+    satisfy the NOT NULL cv_profile_version_id FKs MatchRun and
+    CoverLetterWorkflow still carry, now that the old exhaustive
+    experience/education/certification/project parser (cv_parse) is
+    decommissioned. Deliberately minimal: `structured_payload` here is
+    just `{"basics": ..., "skills": ...}`, not a reimplementation of that
+    parser's full schema — this is a product-approved shim, not a revival
+    of the decommissioned pipeline.
+
+    Called once per completed process_cv_analyze run. version_number
+    increments per cv_file_id like the old cv_parse step did, so a
+    reprocessed/re-analyzed CV gets a new version rather than mutating an
+    existing (supposedly immutable, per CvProfileVersion's own docstring)
+    row.
+    """
+    structured_payload = {"basics": basics, "skills": skills}
+    profile_hash = hashlib.sha256(
+        json.dumps(structured_payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+    existing_version_count = session.execute(
+        select(sa.func.count()).select_from(CvProfileVersion).where(
+            CvProfileVersion.cv_file_id == cv_file.id
+        )
+    ).scalar_one()
+    version_number = (existing_version_count or 0) + 1
+
+    version = CvProfileVersion(
+        cv_file_id=cv_file.id,
+        user_id=cv_file.user_id,
+        trial_session_id=cv_file.trial_session_id,
+        version_number=version_number,
+        profile_hash=profile_hash,
+        schema_version="llm_shim_v1",
+        source_pass_ids=None,
+        structured_payload=structured_payload,
+        confidence_summary=None,
+        validation_status="passed",
+    )
+    session.add(version)
+    session.flush()
+
+    profile = session.execute(
+        select(CvProfile).where(CvProfile.cv_file_id == cv_file.id)
+    ).scalar_one_or_none()
+    if profile is None:
+        session.add(CvProfile(cv_file_id=cv_file.id, current_version_id=version.id))
+    else:
+        profile.current_version_id = version.id
+
+    for skill_name in skills:
+        if not skill_name:
+            continue
+        session.add(CvSkillItem(
+            cv_profile_version_id=version.id,
+            skill_name=skill_name,
+            category=None,
+            confidence=None,
+            source_reference=None,
+        ))
+
+    return version
 
 
-# ──────────────────────────────────────────────────────────────────────
-# Merge + structural validation worker
-# ──────────────────────────────────────────────────────────────────────
+@shared_task(
+    bind=True,
+    max_retries=2,
+    default_retry_delay=30,
+    name="app.workers.worker_jobs.process_cv_analyze",
+    queue="cv_analyze",
+)
+def process_cv_analyze(self, job_id: str) -> None:
+    """Run the LLM-based, job-agnostic CV analysis against a CV's raw
+    text, persist a CvAnalysis row, and write the FK-satisfying
+    CvProfileVersion/CvProfile/CvSkillItem shim (_write_cv_profile_shim
+    above) so MatchRun/CoverLetterWorkflow's NOT NULL FKs resolve again.
+
+    One-shot terminal job (like 'match'/'ats_check') — mirrors
+    process_ats_check's structure. Auto-chained from process_text_extract
+    on successful extraction (see the end of that task); can also be
+    triggered directly via POST /cvs/{cv_id}/analysis.
+    """
+    structlog.contextvars.bind_contextvars(job_id=job_id)
+    t_start = time.monotonic()
+    session = _get_sync_session()
+    try:
+        job = session.get(ProcessingJob, job_id)
+        if job is None:
+            logger.error("job_not_found", job_id=job_id)
+            return
+
+        job.status = "processing"
+        job.started_at = datetime.now(timezone.utc)
+        session.commit()
+
+        cv_file = session.get(CvFile, job.source_entity_id)
+        if cv_file is None:
+            raise ValueError(f"CV file {job.source_entity_id} not found")
+
+        raw_text = session.execute(
+            select(CvRawText).where(CvRawText.cv_file_id == cv_file.id)
+        ).scalar_one_or_none()
+        if raw_text is None or not (raw_text.canonical_text or "").strip():
+            raise ValueError(f"CV raw text not available for cv_file {cv_file.id}")
+
+        from app.services.cv_analysis import analyze_cv
+
+        result = analyze_cv(raw_text.canonical_text)
+
+        version = _write_cv_profile_shim(
+            session, cv_file=cv_file, basics=result.basics, skills=result.skills,
+        )
+
+        session.add(CvAnalysis(
+            cv_file_id=cv_file.id,
+            cv_profile_version_id=version.id,
+            overall_score=result.overall_score,
+            skillset_score=result.skillset_score,
+            formatting_score=result.formatting_score,
+            ats_issues=result.ats_issues,
+            formatting_issues=result.formatting_issues,
+            tips=result.tips,
+        ))
+
+        job.status = "completed"
+        job.completed_at = datetime.now(timezone.utc)
+        session.commit()
+
+        JOB_THROUGHPUT.labels(job_type="cv_analyze", status="completed").inc()
+        duration_s = time.monotonic() - t_start
+        JOB_DURATION_SECONDS.labels(job_type="cv_analyze").observe(duration_s)
+
+        # Real spend (§10 CostSpikeSuspect): gpt-4o-mini token-based
+        # pricing, same rates cv_generate uses — see COST_USD_COUNTER's
+        # own comment.
+        if result.prompt_tokens or result.completion_tokens:
+            COST_USD_COUNTER.labels(call_type="cv_analyze").inc(
+                result.prompt_tokens * 0.150 / 1_000_000
+                + result.completion_tokens * 0.600 / 1_000_000
+            )
+            push_worker_metrics("worker_cv_analyze")
+
+        logger.info(
+            "cv_analyze_complete",
+            job_id=job_id,
+            cv_id=cv_file.id,
+            overall_score=result.overall_score,
+            skillset_score=result.skillset_score,
+            formatting_score=result.formatting_score,
+            duration_ms=int(duration_s * 1000),
+        )
+
+    except Exception as e:
+        session.rollback()
+        duration_s = time.monotonic() - t_start
+        logger.error("cv_analyze_failed", job_id=job_id, error=str(e))
+        JOB_THROUGHPUT.labels(job_type="cv_analyze", status="failed").inc()
+        JOB_DURATION_SECONDS.labels(job_type="cv_analyze").observe(duration_s)
+        try:
+            job = session.get(ProcessingJob, job_id)
+            if job is not None:
+                job.status = "failed"
+                job.last_error = str(e)
+                job.failed_at = datetime.now(timezone.utc)
+                session.commit()
+        except Exception as finalize_err:
+            logger.error(
+                "cv_analyze_finalize_failed",
+                job_id=job_id, error=str(finalize_err),
+            )
+        raise
+    finally:
+        session.close()
+        structlog.contextvars.unbind_contextvars("job_id")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -730,6 +990,30 @@ def process_job_post_parse(self, job_id: str) -> None:
                         new_terms=len(new_terms),
                     )
 
+        # A parse that found nothing structured isn't a completed job
+        # post — it's a failed one. A page an anti-bot challenge blocked,
+        # a JS-rendered posting ssrf_safe_fetch never saw past the shell
+        # of, or a paste that wasn't actually a job description all clear
+        # extract_job_text and the parser without raising. Writing an
+        # empty profile and marking this "completed" leaves the Jobs page
+        # permanently showing a blank Role/Employer with no way to retry,
+        # and — worse — lets a match run score a CV against nothing.
+        # Raising here instead routes through the except block below,
+        # which marks both rows "failed" and surfaces the existing
+        # "paste the text instead" recovery flow.
+        found_something = bool(
+            result.job_title
+            or result.employer
+            or result.required_skills
+            or result.qualifications
+            or result.responsibilities
+        )
+        if not found_something:
+            raise ValueError(
+                "Couldn't find any job details on that page. "
+                "Please paste the job description text instead."
+            )
+
         # Upsert the profile row
         existing = session.execute(
             select(JobPostProfile).where(
@@ -815,6 +1099,7 @@ _JOB_TYPE_TO_ENQUEUE = {
     "match": enqueue_match,
     "job_post_parse": enqueue_job_post_parse,
     "ats_check": enqueue_ats_check,
+    "cv_analyze": enqueue_cv_analyze,
     "cv_generate": enqueue_cv_generate,
     "cover_letter_generate": enqueue_cover_letter_generate,
     "export": enqueue_export,

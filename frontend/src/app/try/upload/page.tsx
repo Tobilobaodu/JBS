@@ -3,14 +3,6 @@
 import { useEffect, useRef, useState } from "react"
 import { toast } from "sonner"
 
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Textarea } from "@/components/ui/textarea"
-import { Progress } from "@/components/ui/progress"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ApiError, errorMessage } from "@/lib/api"
 import {
   createResumeRewrite,
@@ -24,6 +16,9 @@ import {
 } from "@/lib/trial-api"
 import { useAuthStore } from "@/store/auth-store"
 import { useTrialStore } from "@/store/trial-store"
+import { ScoreBar } from "@/components/modernist/score-bar"
+import { Tag } from "@/components/modernist/tag"
+import { SegmentedControl } from "@/components/modernist/segmented-control"
 
 type UploadState =
   | { phase: "idle" }
@@ -63,32 +58,6 @@ const JOB_FETCH_TIMEOUT_MS = 60_000
 // Mirrors the API's own min_length on jobDescription.
 const MIN_JOB_TEXT_CHARS = 40
 
-/** Score ring — same read as the stat card in the reference app: the
- *  number is the headline, the ring is secondary reinforcement. */
-function ScoreRing({ score }: { score: number }) {
-  const radius = 45
-  const circumference = 2 * Math.PI * radius
-  const clamped = Math.max(0, Math.min(score, 100))
-  const offset = circumference - (clamped / 100) * circumference
-  return (
-    <div className="relative h-28 w-28 shrink-0" data-testid="metric-ats-score">
-      <svg className="h-full w-full -rotate-90" viewBox="0 0 116 116" aria-hidden="true">
-        <circle cx="58" cy="58" r={radius} fill="none" stroke="currentColor"
-                className="text-muted" strokeWidth="8" />
-        <circle cx="58" cy="58" r={radius} fill="none" stroke="currentColor"
-                className="text-primary" strokeLinecap="round" strokeWidth="8"
-                strokeDasharray={circumference} strokeDashoffset={offset} />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="text-3xl font-bold tabular-nums">{Math.round(clamped)}</span>
-        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-          out of 100
-        </span>
-      </div>
-    </div>
-  )
-}
-
 function SkillList({
   title, items, tone, testId,
 }: {
@@ -98,23 +67,31 @@ function SkillList({
   testId: string
 }) {
   if (!items.length) return null
-  const toneClass = {
-    matched: "border-emerald-600/30 bg-emerald-600/10 text-emerald-800 dark:text-emerald-300",
-    transferable: "border-amber-600/30 bg-amber-600/10 text-amber-800 dark:text-amber-300",
-    missing: "border-destructive/30 bg-destructive/10 text-destructive",
-    keyword: "border-primary/30 bg-primary/10 text-primary",
-  }[tone]
+  const variant = {
+    matched: "neutral",
+    transferable: "accent-2",
+    missing: "outline",
+    keyword: "accent",
+  }[tone] as "neutral" | "accent-2" | "outline" | "accent"
   return (
     <div data-testid={testId}>
-      <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-        {title} <span className="ml-1 tabular-nums">({items.length})</span>
+      <h4
+        style={{
+          margin: "0 0 8px",
+          fontSize: 11,
+          fontWeight: 600,
+          textTransform: "uppercase",
+          letterSpacing: "0.08em",
+          color: "var(--color-neutral-600)",
+        }}
+      >
+        {title} <span style={{ marginLeft: 4 }}>({items.length})</span>
       </h4>
-      <div className="flex flex-wrap gap-1.5">
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         {items.map((item) => (
-          <span key={item}
-                className={`inline-flex rounded-md border px-2 py-1 text-xs font-medium ${toneClass}`}>
+          <Tag key={item} variant={variant}>
             {item}
-          </span>
+          </Tag>
         ))}
       </div>
     </div>
@@ -420,210 +397,239 @@ export default function TailorPage() {
   const canAnalyse = upload.phase === "ready" && hasJobInput && !busy
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-10">
-      <header className="mb-8">
-        <h1 className="text-3xl font-bold tracking-tight">Tailor your CV</h1>
-        <p className="mt-2 max-w-2xl text-muted-foreground">
+    <div style={{ maxWidth: 1280, margin: "0 auto", padding: "40px 24px" }}>
+      <header style={{ marginBottom: 32 }}>
+        <h1 style={{ fontSize: 32, margin: "0 0 8px" }}>TAILOR YOUR CV</h1>
+        <p style={{ margin: 0, maxWidth: "60ch", fontSize: 15, color: "var(--color-neutral-700)" }}>
           Your CV starts extracting the moment you choose a file. Add the role you
           want, and we&apos;ll show what already lands and what doesn&apos;t.
         </p>
       </header>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(320px,0.85fr)_minmax(0,1.15fr)]">
+      <div style={{ display: "grid", gap: 24, gridTemplateColumns: "minmax(320px, 0.85fr) minmax(0, 1.15fr)" }}>
         {/* ── Left column: source ─────────────────────────────────── */}
-        <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">1. Your CV</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-2">
-                <Label htmlFor="cv-file">CV (PDF or DOCX)</Label>
-                <Input id="cv-file" type="file" accept=".pdf,.docx"
-                       data-testid="input-cv-file" onChange={onFileSelected} />
-              </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+          <div className="card">
+            <div className="card-title">1. YOUR CV</div>
+            <div className="field">
+              <label htmlFor="cv-file">CV (PDF or DOCX)</label>
+              <input
+                id="cv-file"
+                type="file"
+                accept=".pdf,.docx"
+                className="input"
+                data-testid="input-cv-file"
+                onChange={onFileSelected}
+              />
+            </div>
 
-              {upload.phase === "uploading" && (
-                <div data-testid="status-uploading" className="space-y-2">
-                  <p className="text-sm text-muted-foreground">
-                    Uploading {upload.fileName}…
-                  </p>
-                  <Progress value={35} />
-                </div>
-              )}
-
-              {upload.phase === "extracting" && (
-                <div data-testid="status-extracting" className="space-y-2">
-                  <p className="text-sm text-muted-foreground">
-                    Extracting text from {upload.fileName}…
-                  </p>
-                  <Progress value={70} />
-                </div>
-              )}
-
-              {upload.phase === "ready" && (
-                <div data-testid="status-ready"
-                     className="flex items-center justify-between gap-3 rounded-md border bg-muted/40 p-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium">{upload.fileName}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {upload.text.length.toLocaleString()} characters extracted
-                    </p>
-                  </div>
-                  <Button type="button" variant="outline" size="sm"
-                          data-testid="button-view-extracted"
-                          onClick={() => setCvPanelOpen(true)}>
-                    View extracted CV
-                  </Button>
-                </div>
-              )}
-
-              {upload.phase === "failed" && (
-                <p data-testid="status-upload-failed" className="text-sm text-destructive">
-                  {upload.message}
+            {upload.phase === "uploading" && (
+              <div data-testid="status-uploading" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <p style={{ margin: 0, fontSize: 13, color: "var(--color-neutral-700)" }}>
+                  Uploading {upload.fileName}…
                 </p>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">2. The role you want</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-2">
-                <Label htmlFor="target-title">Target title (optional)</Label>
-                <Input id="target-title" data-testid="input-target-title"
-                       placeholder="e.g. Senior Product Designer"
-                       value={targetTitle}
-                       onChange={(e) => setTargetTitle(e.target.value)} />
+                <ProgressBar value={35} />
               </div>
-              <Tabs value={jobSource}
-                    onValueChange={(v) => setJobSource(v as "text" | "url")}>
-                <TabsList className="grid w-full grid-cols-2">
-                  <TabsTrigger value="text" data-testid="tab-job-text">
-                    Paste description
-                  </TabsTrigger>
-                  <TabsTrigger value="url" data-testid="tab-job-url">
-                    From a URL
-                  </TabsTrigger>
-                </TabsList>
+            )}
 
-                <TabsContent value="text" className="mt-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="job-text">Job description</Label>
-                    <Textarea id="job-text" rows={10} data-testid="input-job-description"
-                              placeholder="Paste the job posting text here…"
-                              value={jobDescription}
-                              onChange={(e) => setJobDescription(e.target.value)} />
-                    {jobFetch.phase === "fetched" && (
-                      <p data-testid="status-job-fetched"
-                         className="text-xs text-muted-foreground">
-                        Fetched from {jobFetch.url}. This is the text the analysis
-                        reads — trim anything the page brought along with it.
-                      </p>
-                    )}
-                    <p className="text-xs text-muted-foreground">
-                      {jobDescription.trim().length < 40
-                        ? `${40 - jobDescription.trim().length} more characters needed`
-                        : "Job description looks ready"}
-                    </p>
-                  </div>
-                </TabsContent>
+            {upload.phase === "extracting" && (
+              <div data-testid="status-extracting" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <p style={{ margin: 0, fontSize: 13, color: "var(--color-neutral-700)" }}>
+                  Extracting text from {upload.fileName}…
+                </p>
+                <ProgressBar value={70} />
+              </div>
+            )}
 
-                <TabsContent value="url" className="mt-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="job-url">Job posting URL</Label>
-                    <Input id="job-url" type="url" data-testid="input-job-url"
-                           placeholder="https://example.com/careers/role"
-                           value={jobUrl}
-                           onChange={(e) => setJobUrl(e.target.value)} />
-                    {jobFetch.phase === "failed" && (
-                      <p data-testid="status-job-fetch-failed"
-                         className="text-sm text-destructive">
-                        {jobFetch.message}
-                      </p>
-                    )}
-                    <p className="text-xs text-muted-foreground">
-                      Tailor my CV fetches the page, drops the text into the box
-                      next door so you can see and edit exactly what gets
-                      analysed, then runs the analysis. Sites that block
-                      automated fetching, and private or internal addresses, are
-                      refused — paste the description instead.
-                    </p>
-                  </div>
-                </TabsContent>
-              </Tabs>
-              <Button type="button" size="lg" className="w-full"
-                      data-testid="button-analyse"
-                      disabled={!canAnalyse} onClick={onAnalyse}>
-                {busy === "fetching"
-                  ? "Fetching job post…"
-                  : busy === "analysing"
-                    ? "Analysing…"
-                    : "Tailor my CV"}
-              </Button>
-            </CardContent>
-          </Card>
+            {upload.phase === "ready" && (
+              <div
+                data-testid="status-ready"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  gap: 12,
+                  background: "var(--color-bg)",
+                  border: "1px solid var(--color-divider)",
+                  padding: 12,
+                }}
+              >
+                <div style={{ minWidth: 0 }}>
+                  <p style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>{upload.fileName}</p>
+                  <p style={{ margin: 0, fontSize: 12, color: "var(--color-neutral-700)" }}>
+                    {upload.text.length.toLocaleString()} characters extracted
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  data-testid="button-view-extracted"
+                  onClick={() => setCvPanelOpen(true)}
+                >
+                  View extracted CV
+                </button>
+              </div>
+            )}
+
+            {upload.phase === "failed" && (
+              <p data-testid="status-upload-failed" style={{ margin: 0, fontSize: 13, color: "var(--color-accent-700)" }}>
+                {upload.message}
+              </p>
+            )}
+          </div>
+
+          <div className="card">
+            <div className="card-title">2. THE ROLE YOU WANT</div>
+            <div className="field">
+              <label htmlFor="target-title">Target title (optional)</label>
+              <input
+                id="target-title"
+                className="input"
+                data-testid="input-target-title"
+                placeholder="e.g. Senior Product Designer"
+                value={targetTitle}
+                onChange={(e) => setTargetTitle(e.target.value)}
+              />
+            </div>
+
+            <SegmentedControl
+              name="job-source"
+              value={jobSource}
+              onChange={setJobSource}
+              options={[
+                { value: "text", label: "Paste description", testId: "tab-job-text" },
+                { value: "url", label: "From a URL", testId: "tab-job-url" },
+              ]}
+            />
+
+            {jobSource === "text" ? (
+              <div className="field" style={{ marginTop: 16 }}>
+                <label htmlFor="job-text">Job description</label>
+                <textarea
+                  id="job-text"
+                  rows={10}
+                  className="input"
+                  data-testid="input-job-description"
+                  placeholder="Paste the job posting text here…"
+                  value={jobDescription}
+                  onChange={(e) => setJobDescription(e.target.value)}
+                />
+                {jobFetch.phase === "fetched" && (
+                  <p data-testid="status-job-fetched" style={{ margin: "6px 0 0", fontSize: 12, color: "var(--color-neutral-700)" }}>
+                    Fetched from {jobFetch.url}. This is the text the analysis
+                    reads — trim anything the page brought along with it.
+                  </p>
+                )}
+                <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--color-neutral-700)" }}>
+                  {jobDescription.trim().length < 40
+                    ? `${40 - jobDescription.trim().length} more characters needed`
+                    : "Job description looks ready"}
+                </p>
+              </div>
+            ) : (
+              <div className="field" style={{ marginTop: 16 }}>
+                <label htmlFor="job-url">Job posting URL</label>
+                <input
+                  id="job-url"
+                  type="url"
+                  className="input"
+                  data-testid="input-job-url"
+                  placeholder="https://example.com/careers/role"
+                  value={jobUrl}
+                  onChange={(e) => setJobUrl(e.target.value)}
+                />
+                {jobFetch.phase === "failed" && (
+                  <p data-testid="status-job-fetch-failed" style={{ margin: "6px 0 0", fontSize: 13, color: "var(--color-accent-700)" }}>
+                    {jobFetch.message}
+                  </p>
+                )}
+                <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--color-neutral-700)" }}>
+                  Tailor my CV fetches the page, drops the text into the box
+                  next door so you can see and edit exactly what gets
+                  analysed, then runs the analysis. Sites that block
+                  automated fetching, and private or internal addresses, are
+                  refused — paste the description instead.
+                </p>
+              </div>
+            )}
+            <button
+              type="button"
+              className="btn btn-primary btn-block"
+              style={{ justifyContent: "center", textAlign: "center" }}
+              data-testid="button-analyse"
+              disabled={!canAnalyse}
+              onClick={onAnalyse}
+            >
+              {busy === "fetching"
+                ? "Fetching job post…"
+                : busy === "analysing"
+                  ? "Analysing…"
+                  : "Tailor my CV"}
+            </button>
+          </div>
         </div>
 
         {/* ── Right column: results ───────────────────────────────── */}
         <div>
           {busy && (
-            <Card data-testid="state-loading">
-              <CardContent className="space-y-4 py-10">
-                <Progress value={60} />
-                <p className="text-center text-sm text-muted-foreground">
-                  {busy === "fetching"
-                    ? "Fetching the job post…"
-                    : "Reading the role against your experience…"}
-                </p>
-              </CardContent>
-            </Card>
+            <div className="card" data-testid="state-loading">
+              <ProgressBar value={60} />
+              <p style={{ margin: 0, textAlign: "center", fontSize: 13, color: "var(--color-neutral-700)" }}>
+                {busy === "fetching"
+                  ? "Fetching the job post…"
+                  : "Reading the role against your experience…"}
+              </p>
+            </div>
           )}
 
           {!busy && !result && (
-            <Card data-testid="state-empty">
-              <CardContent className="flex min-h-[420px] flex-col items-center justify-center text-center">
-                <h2 className="text-xl font-semibold">Your tailored CV appears here</h2>
-                <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-                  Add your CV and the job description. We&apos;ll show the fit score,
-                  what matches, what&apos;s transferable, and what&apos;s missing.
-                </p>
-              </CardContent>
-            </Card>
+            <div
+              className="card"
+              data-testid="state-empty"
+              style={{ minHeight: 420, alignItems: "center", justifyContent: "center", textAlign: "center" }}
+            >
+              <h2 style={{ fontSize: 20, margin: 0 }}>Your tailored CV appears here</h2>
+              <p style={{ margin: "8px 0 0", maxWidth: 360, fontSize: 13, color: "var(--color-neutral-700)" }}>
+                Add your CV and the job description. We&apos;ll show the fit score,
+                what matches, what&apos;s transferable, and what&apos;s missing.
+              </p>
+            </div>
           )}
 
           {!busy && result && (
-            <div data-testid="state-complete" className="space-y-6">
-              <Card>
-                <CardContent className="flex flex-col gap-6 pt-6 sm:flex-row sm:items-center">
-                  <ScoreRing score={result.stats.atsScore} />
-                  <div className="min-w-0">
-                    <Badge data-testid="text-match-label">{result.stats.matchLabel}</Badge>
-                    <p className="mt-3 text-sm text-muted-foreground">
-                      {result.stats.matchedSkills.length} matched ·{" "}
-                      {result.stats.transferableSkills.length} transferable ·{" "}
-                      {result.stats.missingSkills.length} missing
-                    </p>
-                    {result.stats.sameOccupation === false &&
-                      result.stats.cvOccupation &&
-                      result.stats.jobOccupation && (
-                        <p data-testid="text-occupation-gap"
-                           className="mt-2 text-sm font-medium text-amber-700 dark:text-amber-400">
-                          Career change: your CV evidences{" "}
-                          {result.stats.cvOccupation}, this role is{" "}
-                          {result.stats.jobOccupation}. The score is capped
-                          for a different profession.
-                        </p>
-                      )}
-                  </div>
-                </CardContent>
-              </Card>
+            <div data-testid="state-complete" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+              <div className="card" style={{ flexDirection: "row", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
+                <div style={{ width: 140 }} data-testid="metric-ats-score">
+                  <ScoreBar score={result.stats.atsScore} />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <Tag variant="accent" data-testid="text-match-label" >
+                    {result.stats.matchLabel}
+                  </Tag>
+                  <p style={{ margin: "10px 0 0", fontSize: 13, color: "var(--color-neutral-700)" }}>
+                    {result.stats.matchedSkills.length} matched ·{" "}
+                    {result.stats.transferableSkills.length} transferable ·{" "}
+                    {result.stats.missingSkills.length} missing
+                  </p>
+                  {result.stats.sameOccupation === false &&
+                    result.stats.cvOccupation &&
+                    result.stats.jobOccupation && (
+                      <p
+                        data-testid="text-occupation-gap"
+                        style={{ margin: "8px 0 0", fontSize: 13, fontWeight: 600, color: "var(--color-accent-700)" }}
+                      >
+                        Career change: your CV evidences{" "}
+                        {result.stats.cvOccupation}, this role is{" "}
+                        {result.stats.jobOccupation}. The score is capped
+                        for a different profession.
+                      </p>
+                    )}
+                </div>
+              </div>
 
-              <Card>
-                <CardHeader><CardTitle className="text-base">Matching criteria</CardTitle></CardHeader>
-                <CardContent className="space-y-5">
+              <div className="card">
+                <div className="card-title">Matching criteria</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
                   <SkillList title="Matched" tone="matched" testId="list-matched"
                              items={result.stats.matchedSkills} />
                   <SkillList title="Transferable" tone="transferable" testId="list-transferable"
@@ -632,48 +638,56 @@ export default function TailorPage() {
                              items={result.stats.missingSkills} />
                   <SkillList title="Priority keywords" tone="keyword" testId="list-keywords"
                              items={result.stats.priorityKeywords} />
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {result.matchNotes.length > 0 && (
-                <Card>
-                  <CardHeader><CardTitle className="text-base">Evidence-based match notes</CardTitle></CardHeader>
-                  <CardContent>
-                    <ul data-testid="list-match-notes" className="list-disc space-y-2 pl-5 text-sm">
-                      {result.matchNotes.map((note) => <li key={note}>{note}</li>)}
-                    </ul>
-                  </CardContent>
-                </Card>
+                <div className="card">
+                  <div className="card-title">Evidence-based match notes</div>
+                  <ul data-testid="list-match-notes" style={{ margin: 0, paddingLeft: 20, fontSize: 13, display: "flex", flexDirection: "column", gap: 8 }}>
+                    {result.matchNotes.map((note) => <li key={note}>{note}</li>)}
+                  </ul>
+                </div>
               )}
 
               {result.informationNeeded.length > 0 && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base">Information that would strengthen this</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <ul data-testid="list-information-needed" className="list-disc space-y-2 pl-5 text-sm">
-                      {result.informationNeeded.map((q) => <li key={q}>{q}</li>)}
-                    </ul>
-                  </CardContent>
-                </Card>
+                <div className="card">
+                  <div className="card-title">Information that would strengthen this</div>
+                  <ul data-testid="list-information-needed" style={{ margin: 0, paddingLeft: 20, fontSize: 13, display: "flex", flexDirection: "column", gap: 8 }}>
+                    {result.informationNeeded.map((q) => <li key={q}>{q}</li>)}
+                  </ul>
+                </div>
               )}
 
-              <Card>
-                <CardHeader className="flex flex-row items-center justify-between gap-4 space-y-0">
-                  <CardTitle className="text-base">Tailored CV</CardTitle>
-                  <Button type="button" size="sm" data-testid="button-download-pdf"
-                          disabled={isExporting} onClick={onDownloadPdf}>
+              <div className="card">
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+                  <div className="card-title" style={{ margin: 0 }}>Tailored CV</div>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    data-testid="button-download-pdf"
+                    disabled={isExporting}
+                    onClick={onDownloadPdf}
+                  >
                     {isExporting ? "Building PDF…" : "Download PDF"}
-                  </Button>
-                </CardHeader>
-                <CardContent>
-                  <pre data-testid="text-tailored-cv"
-                       className="max-h-[520px] overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-4 text-sm">
-                    {result.tailoredResumeMarkdown}
-                  </pre>
-                </CardContent>
-              </Card>
+                  </button>
+                </div>
+                <pre
+                  data-testid="text-tailored-cv"
+                  style={{
+                    maxHeight: 520,
+                    overflow: "auto",
+                    whiteSpace: "pre-wrap",
+                    background: "var(--color-bg)",
+                    border: "1px solid var(--color-divider)",
+                    padding: 16,
+                    fontSize: 13,
+                    margin: 0,
+                  }}
+                >
+                  {result.tailoredResumeMarkdown}
+                </pre>
+              </div>
             </div>
           )}
         </div>
@@ -681,33 +695,53 @@ export default function TailorPage() {
 
       {/* ── Left slide-over: the extracted CV text ─────────────────── */}
       {cvPanelOpen && upload.phase === "ready" && (
-        <div className="fixed inset-0 z-50 flex" data-testid="modal-extracted-cv">
-          <button type="button" aria-label="Close extracted CV"
-                  data-testid="button-close-extracted-backdrop"
-                  className="absolute inset-0 bg-black/50"
-                  onClick={() => setCvPanelOpen(false)} />
-          <aside className="relative flex h-full w-full max-w-xl flex-col border-r bg-background shadow-xl">
-            <div className="flex items-start justify-between gap-4 border-b p-4">
-              <div className="min-w-0">
-                <h2 className="truncate text-lg font-semibold">Extracted CV</h2>
-                <p className="text-xs text-muted-foreground">
+        <div style={{ position: "fixed", inset: 0, zIndex: 50, display: "flex" }} data-testid="modal-extracted-cv">
+          <button
+            type="button"
+            aria-label="Close extracted CV"
+            data-testid="button-close-extracted-backdrop"
+            style={{ position: "absolute", inset: 0, background: "color-mix(in srgb, var(--color-neutral-900) 55%, transparent)", border: 0, cursor: "pointer" }}
+            onClick={() => setCvPanelOpen(false)}
+          />
+          <aside
+            style={{
+              position: "relative",
+              display: "flex",
+              flexDirection: "column",
+              height: "100%",
+              width: "100%",
+              maxWidth: 560,
+              borderRight: "1px solid var(--color-divider)",
+              background: "var(--color-bg)",
+              boxShadow: "var(--shadow-lg)",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, borderBottom: "1px solid var(--color-divider)", padding: 16 }}>
+              <div style={{ minWidth: 0 }}>
+                <h2 style={{ fontSize: 20, margin: 0 }}>Extracted CV</h2>
+                <p style={{ margin: "4px 0 0", fontSize: 12, color: "var(--color-neutral-700)" }}>
                   {upload.fileName} · {upload.text.length.toLocaleString()} characters
                 </p>
               </div>
-              <Button type="button" variant="ghost" size="sm"
-                      data-testid="button-close-extracted"
-                      onClick={() => setCvPanelOpen(false)}>
+              <button
+                type="button"
+                className="btn btn-ghost"
+                data-testid="button-close-extracted"
+                onClick={() => setCvPanelOpen(false)}
+              >
                 Close
-              </Button>
+              </button>
             </div>
-            <div className="flex-1 overflow-auto p-4">
-              <pre data-testid="text-extracted-cv"
-                   className="whitespace-pre-wrap font-mono text-xs leading-relaxed">
+            <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
+              <pre
+                data-testid="text-extracted-cv"
+                style={{ whiteSpace: "pre-wrap", fontFamily: "monospace", fontSize: 12, lineHeight: 1.6, margin: 0 }}
+              >
                 {upload.text}
               </pre>
             </div>
-            <div className="border-t p-3">
-              <p className="text-xs text-muted-foreground">
+            <div style={{ borderTop: "1px solid var(--color-divider)", padding: 12 }}>
+              <p style={{ margin: 0, fontSize: 12, color: "var(--color-neutral-700)" }}>
                 This is exactly the text the analysis reads. If something is missing
                 or garbled here, it will be missing from the tailored CV too.
               </p>
@@ -715,6 +749,14 @@ export default function TailorPage() {
           </aside>
         </div>
       )}
+    </div>
+  )
+}
+
+function ProgressBar({ value }: { value: number }) {
+  return (
+    <div style={{ height: 6, background: "var(--color-neutral-300)" }}>
+      <div style={{ height: "100%", width: `${value}%`, background: "var(--color-accent)" }} />
     </div>
   )
 }

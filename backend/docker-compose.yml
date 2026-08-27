@@ -374,6 +374,32 @@ services:
     networks:
       - no_internet
 
+  # Celery worker - LLM-based CV analysis. Replaces the decommissioned
+  # structured-parsing pipeline's role as the source of a per-CV quality
+  # signal, and (via its FK-satisfying shim) the source of the
+  # CvProfileVersion/CvProfile row MatchRun/CoverLetterWorkflow require —
+  # see app/services/cv_analysis.py and worker_jobs.py::process_cv_analyze.
+  # Auto-chained from worker_text_extract on every successful extraction.
+  worker_cv_analyze:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q cv_analyze --concurrency=2 --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+    # Calls the OpenAI API — needs outbound internet, same reasoning as
+    # worker_cv_generate/worker_cover_letter_generate above.
+    networks:
+      - default
+
   # Gotenberg — self-hosted, open-source LibreOffice-backed HTTP
   # document-conversion service (Sprint 5). Used only for docx→pdf
   # conversion, called by worker_export over the internal Docker network.

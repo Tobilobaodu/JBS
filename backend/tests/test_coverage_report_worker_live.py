@@ -9,6 +9,13 @@ Celery/Redis needed. Proves: reuse of an existing completed MatchRun
 exists, graceful skip of a job post with no JobPostProfile yet (report
 still completes), and aggregate ranking against a small constructed
 fixture with a known shared gap.
+
+_run_and_persist_match now calls app.services.match_analysis.run_match_llm
+(an LLM call) instead of the old rules-based match_engine.run_match() —
+every test below monkeypatches run_match_llm to a small deterministic
+fake so this file makes no real API calls, and seeds CvRawText (the LLM
+engine reads the CV's raw text, not cv_profile_versions.structured_payload,
+which is now just the FK-satisfying shim's minimal basics/skills payload).
 """
 import sys
 import types
@@ -51,13 +58,48 @@ if "magic" not in sys.modules:
 from app.core.config import settings
 from app.workers.worker_jobs import _get_or_run_match, process_coverage_report
 from app.db.models import (
-    CoverageReport, CvFile, CvProfileVersion, CvSkillItem, JobPost,
+    CoverageReport, CvFile, CvProfileVersion, CvRawText, CvSkillItem, JobPost,
     JobPostCollection, JobPostProfile, MatchEvidenceItem, MatchRun,
     ProcessingJob, User,
 )
 
 _test_engine = create_async_engine(settings.database_url_async, poolclass=NullPool)
 _test_session_factory = async_sessionmaker(_test_engine, expire_on_commit=False)
+
+
+def _fake_run_match_llm(cv_text, job_post_text, job_post_profile=None, *, client=None):
+    """Deterministic stand-in for app.services.match_analysis.run_match_llm:
+    a required skill is "supported" if its name (case-insensitively)
+    appears in cv_text, else "unsupported" — mirrors what the fixtures
+    below actually need (a CV whose raw text mentions "Python" but not
+    "Kubernetes") without making a real LLM call."""
+    from app.extraction.match_engine import SUPPORTED, UNSUPPORTED, EvidenceItem
+    from app.services.match_analysis import MatchAnalysisResult
+
+    required = list((job_post_profile or {}).get("required_skills") or [])
+    cv_lower = (cv_text or "").lower()
+    items = [
+        EvidenceItem(
+            requirement_text=skill,
+            requirement_type="required",
+            support_level=SUPPORTED if skill.lower() in cv_lower else UNSUPPORTED,
+            confidence=0.8,
+        )
+        for skill in required
+    ]
+    supported = sum(1 for e in items if e.support_level == SUPPORTED)
+    unsupported = sum(1 for e in items if e.support_level == UNSUPPORTED)
+    return MatchAnalysisResult(
+        score=round(supported / max(len(items), 1), 2),
+        supported_count=supported,
+        partial_count=0,
+        unsupported_count=unsupported,
+        contradictory_count=0,
+        unclear_count=0,
+        total_requirements=len(items),
+        summary_analysis="fake match analysis for coverage-report tests",
+        evidence_items=items,
+    )
 
 
 async def _user(session, tag=""):
@@ -77,6 +119,13 @@ async def _cv_profile_version(session, user, *, skills=()):
     )
     session.add(cv_file)
     await session.flush()
+    # _run_and_persist_match now reads the CV's raw text (via
+    # cv_profile_version.cv_file_id), not structured_payload — without
+    # this row it raises before _fake_run_match_llm is ever reached.
+    session.add(CvRawText(
+        id=str(uuid.uuid4()), cv_file_id=cv_file.id,
+        canonical_text="Experienced engineer. Skills: " + ", ".join(skills or ["Python"]),
+    ))
     pv = CvProfileVersion(
         id=str(uuid.uuid4()), cv_file_id=cv_file.id, user_id=user.id, version_number=1,
         profile_hash=uuid.uuid4().hex, schema_version="1.0",
@@ -139,7 +188,10 @@ async def _report_and_job(session, user, collection, cv_profile_version_id):
 
 
 class TestProcessCoverageReport:
-    def test_completes_with_gap_shared_across_two_posts(self):
+    def test_completes_with_gap_shared_across_two_posts(self, monkeypatch):
+        import app.services.match_analysis as match_analysis
+        monkeypatch.setattr(match_analysis, "run_match_llm", _fake_run_match_llm)
+
         async def _seed():
             async with _test_session_factory() as s:
                 user = await _user(s, "run1")
@@ -172,7 +224,10 @@ class TestProcessCoverageReport:
         assert gaps["Kubernetes"]["recurrence_count"] == 2
         assert gaps["Kubernetes"]["recurrence_ratio"] == 1.0
 
-    def test_job_post_with_no_profile_is_skipped_not_blocking(self):
+    def test_job_post_with_no_profile_is_skipped_not_blocking(self, monkeypatch):
+        import app.services.match_analysis as match_analysis
+        monkeypatch.setattr(match_analysis, "run_match_llm", _fake_run_match_llm)
+
         async def _seed():
             async with _test_session_factory() as s:
                 user = await _user(s, "run2")
@@ -245,7 +300,10 @@ class TestGetOrRunMatch:
             count_after = sync_session.execute(select(func.count()).select_from(MatchRun)).scalar_one()
         assert count_after == count_before, "no duplicate MatchRun should have been created"
 
-    def test_runs_fresh_match_when_none_exists(self):
+    def test_runs_fresh_match_when_none_exists(self, monkeypatch):
+        import app.services.match_analysis as match_analysis
+        monkeypatch.setattr(match_analysis, "run_match_llm", _fake_run_match_llm)
+
         async def _seed():
             async with _test_session_factory() as s:
                 user = await _user(s, "reuse2")

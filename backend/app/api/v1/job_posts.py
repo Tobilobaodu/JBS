@@ -294,12 +294,16 @@ async def list_job_posts(
     session: AsyncSession = Depends(get_session),
 ):
     """List job posts for the current user, with pagination."""
-    query = select(JobPost).where(JobPost.user_id == current_user.id)
+    query = select(JobPost).where(
+        JobPost.user_id == current_user.id,
+        JobPost.deleted_at.is_(None),
+    )
     if status:
         query = query.where(JobPost.status == status)
 
     total_query = select(func.count()).select_from(JobPost).where(
-        JobPost.user_id == current_user.id
+        JobPost.user_id == current_user.id,
+        JobPost.deleted_at.is_(None),
     )
     total = (await session.execute(total_query)).scalar() or 0
 
@@ -343,6 +347,7 @@ async def get_job_post(
         .options(selectinload(JobPost.profile))
         .where(
             JobPost.id == jobPostId,
+            JobPost.deleted_at.is_(None),
             identity_owner_filter(JobPost, identity),
         )
     )
@@ -354,6 +359,49 @@ async def get_job_post(
         )
 
     return _job_post_to_response(job_post)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# DELETE /job-posts/{jobPostId}
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.delete("/job-posts/{jobPostId}", status_code=202)
+async def delete_job_post(
+    jobPostId: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+):
+    """Delete a job post. Returns 404 if not owned by current user or already deleted."""
+    result = await session.execute(
+        select(JobPost).where(
+            JobPost.id == jobPostId,
+            JobPost.user_id == current_user.id,
+            JobPost.deleted_at.is_(None),
+        )
+    )
+    job_post = result.scalar_one_or_none()
+
+    if job_post is None:
+        raise await ownership_denied(
+            session, user_id=current_user.id, entity_type="job_post",
+            entity_id=jobPostId, detail="Job post not found.",
+        )
+
+    job_post.deleted_at = func.now()
+
+    session.add(
+        AuditEvent(
+            user_id=current_user.id,
+            event_type="deletion_requested",
+            entity_type="job_post",
+            entity_id=job_post.id,
+            actor_type="user",
+        )
+    )
+
+    await session.commit()
+    logger.info("job_post_deleted", job_post_id=jobPostId, user_id=current_user.id)
 
 
 # ──────────────────────────────────────────────────────────────────────

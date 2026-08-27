@@ -1,10 +1,14 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { render, screen } from "@testing-library/react"
 import { http, HttpResponse } from "msw"
 import { server } from "@/test/msw/server"
 import { createQueryWrapper } from "@/test/query-wrapper"
 import DashboardPage from "@/app/dashboard/page"
 import { useAuthStore } from "@/store/auth-store"
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn() }),
+}))
 
 const BASE = "http://localhost:8000/api/v1"
 
@@ -20,7 +24,7 @@ function renderPage() {
 const emptyList = () => HttpResponse.json({ items: [], total: 0, limit: 20, offset: 0 })
 
 describe("DashboardPage", () => {
-  it("shows summary counts for all four lists and recent items from CVs/jobs", async () => {
+  it("shows the current resume, stat band, and recent matches from real data", async () => {
     useAuthStore.getState().setAuth("token-1", { id: "u1", email: "a@b.com" })
     server.use(
       http.get(`${BASE}/cvs`, () =>
@@ -35,14 +39,19 @@ describe("DashboardPage", () => {
               uploadStatus: "completed",
               processingStatus: "completed",
               jobStatus: null,
+              resumeScore: 85,
+              issueCount: 9,
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
             },
           ],
-          total: 4,
+          total: 1,
           limit: 20,
           offset: 0,
         })
+      ),
+      http.get(`${BASE}/cvs/cv-1/analysis`, () =>
+        HttpResponse.json({}, { status: 404 })
       ),
       http.get(`${BASE}/job-posts`, () =>
         HttpResponse.json({
@@ -64,36 +73,47 @@ describe("DashboardPage", () => {
         })
       ),
       http.get(`${BASE}/matches`, () =>
-        HttpResponse.json({ items: [], total: 3, limit: 20, offset: 0 })
+        HttpResponse.json({
+          items: [
+            {
+              id: "match-1",
+              jobPostId: "jp-1",
+              jobTitle: "Senior Engineer",
+              employer: "Acme",
+              status: "completed",
+              score: 82,
+              createdAt: new Date().toISOString(),
+              completedAt: new Date().toISOString(),
+            },
+          ],
+          total: 3,
+          limit: 20,
+          offset: 0,
+        })
       ),
-      http.get(`${BASE}/cover-letters`, () =>
-        HttpResponse.json({ items: [], total: 1, limit: 20, offset: 0 })
-      )
+      http.get(`${BASE}/job-post-collections`, () => HttpResponse.json([]))
     )
 
     renderPage()
 
-    expect(screen.getByText("Signed in as a@b.com.")).toBeInTheDocument()
-    expect(await screen.findByText("4")).toBeInTheDocument()
-    expect(await screen.findByText("2")).toBeInTheDocument()
-    expect(await screen.findByText("3")).toBeInTheDocument()
-    expect(await screen.findByText("1")).toBeInTheDocument()
+    expect(await screen.findByText("OVERVIEW")).toBeInTheDocument()
     expect(await screen.findByText("resume.pdf")).toBeInTheDocument()
     expect(await screen.findByText("Senior Engineer")).toBeInTheDocument()
+    expect(screen.getByText("Acme")).toBeInTheDocument()
   })
 
-  it("shows 'No CVs yet.' / 'No jobs yet.' when both lists are empty", async () => {
+  it("shows the first-run empty state when there are no CVs yet", async () => {
     useAuthStore.getState().setAuth("token-1", { id: "u1", email: "a@b.com" })
     server.use(
       http.get(`${BASE}/cvs`, emptyList),
       http.get(`${BASE}/job-posts`, emptyList),
       http.get(`${BASE}/matches`, emptyList),
-      http.get(`${BASE}/cover-letters`, emptyList)
+      http.get(`${BASE}/job-post-collections`, () => HttpResponse.json([]))
     )
 
     renderPage()
 
-    expect(await screen.findByText("No CVs yet.")).toBeInTheDocument()
-    expect(await screen.findByText("No jobs yet.")).toBeInTheDocument()
+    expect(await screen.findByText("NOTHING HERE YET. THAT'S THE POINT.")).toBeInTheDocument()
+    expect(screen.getByRole("link", { name: /Start your first match/ })).toBeInTheDocument()
   })
 })

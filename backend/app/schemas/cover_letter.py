@@ -32,6 +32,7 @@ class CoverLetterWorkflowListItem(BaseModel):
     employer: str | None = None
     status: str
     current_step: int = Field(alias="currentStep")
+    total_steps: int = Field(alias="totalSteps")
     created_at: datetime = Field(alias="createdAt")
 
     model_config = {"from_attributes": True, "populate_by_name": True}

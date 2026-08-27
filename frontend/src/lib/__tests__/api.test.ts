@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 import { http, HttpResponse } from "msw"
 import { server } from "@/test/msw/server"
-import { apiFetch, ApiError } from "@/lib/api"
+import { apiFetch, ApiError, errorMessage } from "@/lib/api"
 import { useAuthStore } from "@/store/auth-store"
 import { useTrialStore } from "@/store/trial-store"
 
@@ -137,5 +137,65 @@ describe("apiFetch identity headers", () => {
     await apiFetch("/upload", { method: "POST", body: formData })
 
     expect(receivedContentType).not.toBe("application/json")
+  })
+})
+
+describe("errorMessage", () => {
+  function apiError(status: number, body: unknown) {
+    return new ApiError(status, body)
+  }
+
+  it("returns a string detail unchanged", () => {
+    expect(
+      errorMessage(apiError(409, { detail: "Already exists." }), "fallback")
+    ).toBe("Already exists.")
+  })
+
+  it("extracts msg and field from a FastAPI 422 detail array", () => {
+    const body = {
+      detail: [
+        {
+          type: "string_too_short",
+          loc: ["body", "password"],
+          msg: "String should have at least 12 characters",
+          ctx: { min_length: 12 },
+        },
+      ],
+    }
+    expect(errorMessage(apiError(422, body), "fallback")).toBe(
+      "password: String should have at least 12 characters"
+    )
+  })
+
+  it("joins multiple validation issues", () => {
+    const body = {
+      detail: [
+        { loc: ["body", "email"], msg: "value is not a valid email address" },
+        { loc: ["body", "password"], msg: "String should have at least 12 characters" },
+      ],
+    }
+    expect(errorMessage(apiError(422, body), "fallback")).toBe(
+      "email: value is not a valid email address " +
+        "password: String should have at least 12 characters"
+    )
+  })
+
+  it("omits the field prefix when loc carries no usable field name", () => {
+    const body = { detail: [{ loc: ["body"], msg: "Invalid payload" }] }
+    expect(errorMessage(apiError(422, body), "fallback")).toBe("Invalid payload")
+  })
+
+  it("falls back when detail is an empty array or has no usable msg", () => {
+    expect(errorMessage(apiError(422, { detail: [] }), "fallback")).toBe("fallback")
+    expect(
+      errorMessage(apiError(422, { detail: [{ loc: ["body"] }] }), "fallback")
+    ).toBe("fallback")
+  })
+
+  it("falls back for a non-ApiError or a body without detail", () => {
+    expect(errorMessage(new Error("boom"), "fallback")).toBe("fallback")
+    expect(errorMessage(apiError(500, { message: "nope" }), "fallback")).toBe(
+      "fallback"
+    )
   })
 })

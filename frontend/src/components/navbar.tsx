@@ -2,7 +2,6 @@
 
 import Link from "next/link"
 import { useRouter, usePathname } from "next/navigation"
-import { Button } from "@/components/ui/button"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,41 +27,35 @@ export function Navbar() {
   }
 
   return (
-    <header className="border-b bg-background">
-      <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-4">
-        <Link href="/" className="text-sm font-semibold">
-          CV Tailoring
-        </Link>
+    <header className="nav">
+      <Link href="/" className="nav-brand" style={{ textDecoration: "none", color: "inherit" }}>
+        CV TAILORING
+      </Link>
 
-        <nav className="flex items-center gap-2">
-          {user ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm">
-                  {user.email}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem asChild>
-                  <Link href="/dashboard">Dashboard</Link>
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={handleLogout}>
-                  Log out
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          ) : (
-            <>
-              <Button variant="ghost" size="sm" asChild>
-                <Link href="/login">Log in</Link>
-              </Button>
-              <Button size="sm" asChild>
-                <Link href="/try">Try for free</Link>
-              </Button>
-            </>
-          )}
-        </nav>
-      </div>
+      <nav style={{ display: "flex", alignItems: "center", gap: "var(--space-3)" }}>
+        {user ? (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button type="button" className="btn btn-secondary">
+                {user.email}
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem asChild>
+                <Link href="/dashboard">Dashboard</Link>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={handleLogout}>Log out</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          <>
+            <Link href="/login">Log in</Link>
+            <Link href="/try" className="btn btn-primary">
+              Try for free
+            </Link>
+          </>
+        )}
+      </nav>
     </header>
   )
 }

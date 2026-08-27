@@ -487,6 +487,9 @@ class JobPost(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     profile: Mapped["JobPostProfile | None"] = relationship(
         back_populates="job_post", uselist=False, cascade="all, delete-orphan"
@@ -714,6 +717,9 @@ class MatchRun(Base):
     completed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class MatchEvidenceItem(Base):
@@ -773,7 +779,7 @@ class CoverLetterWorkflow(Base):
     # /regenerate has a state to recover from rather than a permanent
     # dead end when generation genuinely fails.
     current_step: Mapped[int] = mapped_column(Integer, default=1)
-    total_steps: Mapped[int] = mapped_column(Integer, default=3)
+    total_steps: Mapped[int] = mapped_column(Integer, default=4)
     question_set_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
@@ -903,6 +909,60 @@ class AtsReadinessCheck(Base):
     contact_info_parseable: Mapped[bool | None] = mapped_column(
         Boolean, nullable=True,
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# LLM-based CV analysis — replaces the decommissioned structured-parsing
+# pipeline's role as the source of a per-CV quality signal. See
+# app/workers/worker_jobs.py's top-of-file comment and
+# decommissioned/README.md for why: with Docling/Textract/merge/cv_parse
+# retired, nothing computes a resume-quality score or ATS/formatting
+# issue list any more. process_cv_analyze (worker_jobs.py) sends the
+# CV's raw text straight to the model (app/services/cv_analysis.py) and
+# writes the result here — one row per analysis run, latest wins for
+# display, matching AtsReadinessCheck's own "one row per check run"
+# shape.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class CvAnalysis(Base):
+    """LLM-generated CV quality analysis: overall/skillset/formatting
+    scores, ATS and formatting issue checklists, and improvement tips.
+
+    Deliberately a new table rather than widening AtsReadinessCheck —
+    that table holds one flat rules-based checklist with no score
+    breakdown and no tips; this one needs three separate scores and two
+    separate issue lists plus free-text tips, a wider shape the existing
+    table was never designed for (see the task's constraint against
+    changing AtsReadinessCheck).
+    """
+
+    __tablename__ = "cv_analyses"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    cv_file_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("cv_files.id"), nullable=False,
+        index=True,
+    )
+    cv_profile_version_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("cv_profile_versions.id"),
+        nullable=True, index=True,
+    )
+    overall_score: Mapped[float] = mapped_column(nullable=False)  # 0-100
+    skillset_score: Mapped[float] = mapped_column(nullable=False)  # 0-100, skillset vs market
+    formatting_score: Mapped[float] = mapped_column(nullable=False)  # 0-100
+    ats_issues: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list
+    )  # [{passed, severity, title, detail}]
+    formatting_issues: Mapped[list] = mapped_column(
+        JSONB, nullable=False, default=list
+    )  # same shape as ats_issues
+    tips: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)  # [str]
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False,
     )

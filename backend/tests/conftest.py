@@ -53,6 +53,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
+from urllib.parse import urlparse
 
 from app.core.config import settings
 from app.db.models import Base
@@ -67,11 +68,30 @@ def _run_migrations() -> None:
     command.upgrade(cfg, "head")
 
 
+def _assert_test_database(url: str) -> None:
+    """Refuse to touch anything that doesn't look like an isolated test
+    database. This fixture TRUNCATEs every app table — it wiped the shared
+    dev database once already when a caller's env override pointed
+    DATABASE_URL at `cv_tailoring` instead of `cv_tailoring_test`, and
+    `os.environ.setdefault` above can't protect against that since an
+    explicit override always wins. Fail loudly instead."""
+    db_name = urlparse(url).path.lstrip("/")
+    if not db_name.endswith("_test"):
+        raise RuntimeError(
+            f"Refusing to run the test suite against database {db_name!r} — "
+            "expected a name ending in '_test'. This fixture TRUNCATEs "
+            "every table; do not override DATABASE_URL/DATABASE_URL_ASYNC "
+            "when running pytest — conftest.py already points them at the "
+            "correct isolated database by default."
+        )
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolated_test_database():
     """Runs once per test session: migrate, then clear stale rows from any
     previous run. Excludes audit_events (append-only) and alembic_version
     (migration bookkeeping, not app data)."""
+    _assert_test_database(settings.database_url_async)
     _run_migrations()
 
     async def _truncate_all():

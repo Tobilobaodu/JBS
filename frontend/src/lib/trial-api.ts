@@ -131,6 +131,8 @@ export function createMatch(cvProfileVersionId: string, jobPostId: string) {
   })
 }
 
+export type MatchIssue = { passed: boolean; severity: string; title: string; detail: string }
+
 export type MatchResult = {
   id: string
   status: string
@@ -138,8 +140,29 @@ export type MatchResult = {
   supportedCount: number | null
   partialCount: number | null
   unsupportedCount: number | null
+  /** Being added alongside atsIssues/formattingIssues/tips — optional
+   *  until the backend extension lands; render as 0 rather than crash. */
+  contradictoryCount?: number | null
+  unclearCount?: number | null
   totalRequirements: number | null
   summaryAnalysis: string | null
+  /** Report-detail's ATS Readiness / Formatting / Tips sections. Same
+   *  shape as GET /cvs/{id}/analysis's issue lists. Optional until the
+   *  backend extension lands. */
+  atsIssues?: MatchIssue[]
+  formattingIssues?: MatchIssue[]
+  tips?: string[]
+  /** Kept optional and read defensively even though the backend now
+   *  always populates these for a resolved match_run — an older/failed
+   *  run can still legitimately have nulls here. When absent, the Report
+   *  detail page falls back to whatever it can resolve from
+   *  listMatches()'s cache for the header, and hides the "resume summary"
+   *  section rather than guessing a CV id. */
+  jobPostId?: string
+  cvId?: string
+  jobTitle?: string | null
+  employer?: string | null
+  createdAt?: string
 }
 
 export function getMatch(matchId: string) {
@@ -396,4 +419,105 @@ export function createResumeRewrite(input: {
     method: "POST",
     body: input,
   })
+}
+
+// ── CV analysis (resume score / ATS readiness / formatting / tips) ──
+// Powers the Overview and Report-detail "resume summary" ScoreBar trio.
+// GET 404s until an analysis has run for this CV — callers should trigger
+// one (POST, same path) and poll, the same accepted-job pattern as
+// triggerAtsCheck/getAtsCheck above.
+
+export type CvAnalysisIssue = { passed: boolean; severity: string; title: string; detail: string }
+
+export type CvAnalysis = {
+  overallScore: number
+  skillsetScore: number
+  formattingScore: number
+  atsIssues: CvAnalysisIssue[]
+  formattingIssues: CvAnalysisIssue[]
+  tips: string[]
+}
+
+/** 404s until an analysis has run — callers should treat that as "not scored yet", not an error. */
+export function getCvAnalysis(cvId: string) {
+  return apiFetch<CvAnalysis>(`/cvs/${cvId}/analysis`)
+}
+
+export function triggerCvAnalysis(cvId: string) {
+  return apiFetch<ProcessingJobRef>(`/cvs/${cvId}/analysis`, { method: "POST" })
+}
+
+// ── Cover letter workflow (guided Q&A) ──
+// app/api/v1/cover_letters.py: POST /start, GET .../questions,
+// POST .../answers, GET .../draft, POST .../regenerate, POST .../approve.
+// Account-only (no trial_session_id path) — matches the backend router's
+// own get_current_user-only gate.
+
+export type CoverLetterWorkflow = {
+  id: string
+  cvId: string
+  jobPostId: string
+  matchId: string | null
+  currentStep: number
+  /** total_steps is moving from 3 to 4 on the backend (in flight) —
+   *  optional here so this stays correct either way; read it, never
+   *  hardcode a step count. */
+  totalSteps?: number
+  status: string
+  questionSetVersion: number
+  createdAt: string
+}
+
+export function startCoverLetterWorkflow(input: { cvId: string; jobPostId: string; matchId?: string }) {
+  return apiFetch<CoverLetterWorkflow>("/cover-letters/start", {
+    method: "POST",
+    body: input,
+  })
+}
+
+export type CoverLetterQuestion = {
+  id: string
+  stepNumber: number
+  questionText: string
+  questionCategory: string
+}
+
+export function getCoverLetterQuestions(workflowId: string) {
+  return apiFetch<CoverLetterQuestion[]>(`/cover-letters/${workflowId}/questions`)
+}
+
+export function submitCoverLetterAnswers(
+  workflowId: string,
+  answers: { questionId: string; answerText: string }[]
+) {
+  return apiFetch<CoverLetterWorkflow>(`/cover-letters/${workflowId}/answers`, {
+    method: "POST",
+    body: { answers },
+  })
+}
+
+export type CoverLetterDraft = {
+  id: string
+  workflowId: string
+  versionNumber: number
+  status: string
+  bodyText: string
+  evidenceReferences: string[] | null
+  promptVersion: string | null
+  modelId: string | null
+  createdAt: string
+  approvedAt: string | null
+}
+
+/** 404s until every step is answered and generation has finished. */
+export function getCoverLetterDraft(workflowId: string) {
+  return apiFetch<CoverLetterDraft>(`/cover-letters/${workflowId}/draft`)
+}
+
+export function regenerateCoverLetter(workflowId: string) {
+  return apiFetch<ProcessingJobRef>(`/cover-letters/${workflowId}/regenerate`, { method: "POST" })
+}
+
+export function approveCoverLetterDraft(workflowId: string) {
+  return apiFetch<CoverLetterDraft>(`/cover-letters/${workflowId}/approve`, { method: "POST" })
 }

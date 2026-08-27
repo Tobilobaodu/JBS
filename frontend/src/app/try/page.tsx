@@ -36,7 +36,7 @@ export default function TryPage() {
   }, [trialSessionId, expiresAt, router, setTrialSession])
 
   return (
-    <div className="mx-auto max-w-md px-4 py-24 text-center text-muted-foreground">
+    <div style={{ maxWidth: 400, margin: "0 auto", padding: "96px 24px", textAlign: "center", color: "var(--color-neutral-700)" }}>
       Setting up your trial…
     </div>
   )

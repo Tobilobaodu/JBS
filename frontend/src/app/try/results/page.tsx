@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { PaywallDialog } from "@/components/paywall-dialog"
 import { useJobPoll } from "@/hooks/use-job-poll"
+import { usePollUntilReady } from "@/hooks/use-poll-until-ready"
 import { useTrialStore } from "@/store/trial-store"
 import { useAuthStore } from "@/store/auth-store"
 import { errorMessage } from "@/lib/api"
@@ -51,11 +52,11 @@ export default function TrialResultsPage() {
   const cvJob = useJobPoll(cvProcessingJobId)
   const jobPostJob = useJobPoll(jobPostProcessingJobId)
 
-  const cvProfileQuery = useQuery({
-    queryKey: ["cv-profile", cvId],
-    queryFn: () => getParsedCvProfile(cvId as string),
-    enabled: cvJob.isCompleted && !!cvId,
-  })
+  const cvProfilePoll = usePollUntilReady(
+    ["cv-profile", cvId],
+    () => getParsedCvProfile(cvId as string),
+    cvJob.isCompleted && !!cvId
+  )
 
   const jobPostQuery = useQuery({
     queryKey: ["job-post", jobPostId],
@@ -64,17 +65,23 @@ export default function TrialResultsPage() {
   })
 
   useEffect(() => {
-    if (cvProfileQuery.data && cvProfileQuery.data.profileVersionId !== cvProfileVersionId) {
-      setWorkflow({ cvProfileVersionId: cvProfileQuery.data.profileVersionId })
+    if (cvProfilePoll.data && cvProfilePoll.data.profileVersionId !== cvProfileVersionId) {
+      setWorkflow({ cvProfileVersionId: cvProfilePoll.data.profileVersionId })
     }
-  }, [cvProfileQuery.data, cvProfileVersionId, setWorkflow])
+  }, [cvProfilePoll.data, cvProfileVersionId, setWorkflow])
+
+  useEffect(() => {
+    if (cvProfilePoll.isTimedOut) {
+      toast.error("Your CV is taking longer than usual to process. Please try again shortly.")
+    }
+  }, [cvProfilePoll.isTimedOut])
 
   // ── Stage 2: create the match once both are parsed ─────────────────
   const [matchProcessingJobId, setMatchProcessingJobId] = useState<string | null>(null)
   const matchStartedRef = useRef(false)
 
   useEffect(() => {
-    const profileId = cvProfileQuery.data?.profileVersionId
+    const profileId = cvProfilePoll.data?.profileVersionId
     // POST /matches 404s if the job post isn't structured yet (app/api/v1/
     // matches.py requires a JobPostProfile row to already exist) — gating on
     // jobPostId alone races CV parsing finishing before job post parsing
@@ -92,7 +99,7 @@ export default function TrialResultsPage() {
         matchStartedRef.current = false
         toast.error(errorMessage(error, "Couldn't compare your CV against this job."))
       })
-  }, [cvProfileQuery.data, jobPostQuery.data, jobPostId, matchId, setWorkflow])
+  }, [cvProfilePoll.data, jobPostQuery.data, jobPostId, matchId, setWorkflow])
 
   // matchId is set as soon as the match is *created* (queued) — the actual
   // scoring is async, tracked separately via its own processing job.

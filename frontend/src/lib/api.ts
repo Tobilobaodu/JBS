@@ -117,16 +117,59 @@ export async function apiFetchBlob(
   return await response.blob()
 }
 
+/** FastAPI puts an *array* of issue objects in `detail` for a 422 validation
+ *  error, not a string:
+ *    { detail: [{ loc: ["body","password"], msg: "String should have at
+ *                 least 12 characters", type: "string_too_short" }] }
+ *  Without this branch every 422 fell through to the caller's generic
+ *  fallback. That is how the frontend/backend password-length mismatch
+ *  stayed invisible: the real reason was in the response body and the user
+ *  only ever saw "Could not create your account."
+ *
+ *  The field name is taken from the tail of `loc` ("body" dropped), because
+ *  a bare "String should have at least 12 characters" does not say which
+ *  input is wrong. */
+function validationDetailMessage(detail: unknown): string | null {
+  if (!Array.isArray(detail) || detail.length === 0) {
+    return null
+  }
+
+  const messages: string[] = []
+  for (const issue of detail) {
+    if (!issue || typeof issue !== "object") continue
+    const { msg, loc } = issue as { msg?: unknown; loc?: unknown }
+    if (typeof msg !== "string") continue
+
+    let field: string | undefined
+    if (Array.isArray(loc)) {
+      const parts = loc.filter(
+        (part): part is string => typeof part === "string" && part !== "body"
+      )
+      field = parts.length > 0 ? parts[parts.length - 1] : undefined
+    }
+
+    messages.push(field ? `${field}: ${msg}` : msg)
+  }
+
+  return messages.length > 0 ? messages.join(" ") : null
+}
+
 /** Extracts a human-readable message from the backend's HTTPException body shape ({"detail": "..."}). */
 export function errorMessage(error: unknown, fallback: string): string {
   if (
     error instanceof ApiError &&
     error.body &&
     typeof error.body === "object" &&
-    "detail" in error.body &&
-    typeof (error.body as { detail?: unknown }).detail === "string"
+    "detail" in error.body
   ) {
-    return (error.body as { detail: string }).detail
+    const { detail } = error.body as { detail?: unknown }
+    if (typeof detail === "string") {
+      return detail
+    }
+    const validationMessage = validationDetailMessage(detail)
+    if (validationMessage !== null) {
+      return validationMessage
+    }
   }
   return fallback
 }

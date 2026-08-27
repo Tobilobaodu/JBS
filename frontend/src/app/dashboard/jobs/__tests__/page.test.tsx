@@ -6,6 +6,7 @@ import { createQueryWrapper } from "@/test/query-wrapper"
 import JobsPage from "@/app/dashboard/jobs/page"
 
 const BASE = "http://localhost:8000/api/v1"
+const emptyMatches = () => HttpResponse.json({ items: [], total: 0, limit: 20, offset: 0 })
 
 function renderPage() {
   const Wrapper = createQueryWrapper()
@@ -37,20 +38,23 @@ describe("JobsPage", () => {
           limit: 20,
           offset: 0,
         })
-      )
+      ),
+      http.get(`${BASE}/matches`, emptyMatches)
     )
 
     renderPage()
 
     expect(await screen.findByText("Senior Engineer")).toBeInTheDocument()
     expect(screen.getByText("Acme")).toBeInTheDocument()
+    expect(screen.getByText("Completed")).toBeInTheDocument()
   })
 
   it("shows an empty state when there are no jobs", async () => {
     server.use(
       http.get(`${BASE}/job-posts`, () =>
         HttpResponse.json({ items: [], total: 0, limit: 20, offset: 0 })
-      )
+      ),
+      http.get(`${BASE}/matches`, emptyMatches)
     )
 
     renderPage()
@@ -62,7 +66,7 @@ describe("JobsPage", () => {
     ).toBeInTheDocument()
   })
 
-  it("falls back gracefully when a job post has no structured profile yet", async () => {
+  it("shows a 'paste the text instead' affordance for a failed job post", async () => {
     server.use(
       http.get(`${BASE}/job-posts`, () =>
         HttpResponse.json({
@@ -71,8 +75,8 @@ describe("JobsPage", () => {
               id: "jp-2",
               sourceType: "url",
               sourceUrl: "https://example.com/job",
-              status: "pending",
-              errorMessage: null,
+              status: "failed",
+              errorMessage: "blocked",
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
               profile: null,
@@ -82,12 +86,13 @@ describe("JobsPage", () => {
           limit: 20,
           offset: 0,
         })
-      )
+      ),
+      http.get(`${BASE}/matches`, emptyMatches)
     )
 
     renderPage()
 
-    expect(await screen.findByText("pending")).toBeInTheDocument()
-    expect(screen.getAllByText("—").length).toBeGreaterThan(0)
+    expect(await screen.findByText("Couldn't read this posting")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Paste the text instead" })).toBeInTheDocument()
   })
 })

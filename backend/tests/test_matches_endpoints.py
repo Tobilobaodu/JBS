@@ -90,7 +90,9 @@ async def test_list_matches_returns_job_title_and_employer_from_the_joined_profi
     assert item.job_title == "Senior Engineer"
     assert item.employer == "Acme Corp"
     assert item.status == "completed"
-    assert item.score == 0.5
+    # match_runs.score is stored 0.0-1.0; the API converts to the same
+    # 0-100 scale CvAnalysis.overall_score uses (see matches.py::_score_out).
+    assert item.score == 50.0
 
 
 @pytest.mark.asyncio(loop_scope="function")

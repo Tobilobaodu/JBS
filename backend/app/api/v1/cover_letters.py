@@ -192,7 +192,7 @@ async def start_workflow(
         match_run_id=body.matchId,
         status="awaiting_answers",
         current_step=1,
-        total_steps=3,
+        total_steps=4,
         question_set_version=1,
     )
     session.add(wf)
@@ -271,6 +271,7 @@ async def list_cover_letter_workflows(
             employer=profile.employer,
             status=wf.status,
             current_step=wf.current_step,
+            total_steps=wf.total_steps,
             created_at=wf.created_at,
         )
         for wf, profile in rows

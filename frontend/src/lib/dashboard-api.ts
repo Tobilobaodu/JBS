@@ -11,6 +11,10 @@ export type CvFileListItem = {
   jobStatus: string | null
   createdAt: string
   updatedAt: string
+  /** Absent until GET /cvs/{id}/analysis has run for this CV — render a
+   *  "Scoring…" state rather than treating undefined as zero. */
+  resumeScore?: number
+  issueCount?: number
 }
 
 export type CvListResponse = {
@@ -22,6 +26,10 @@ export type CvListResponse = {
 
 export function listCvs(limit = 20, offset = 0) {
   return apiFetch<CvListResponse>(`/cvs?limit=${limit}&offset=${offset}`)
+}
+
+export function deleteCv(cvId: string) {
+  return apiFetch<void>(`/cvs/${cvId}`, { method: "DELETE" })
 }
 
 export type JobPostProfileSummary = {
@@ -51,6 +59,10 @@ export function listJobPosts(limit = 20, offset = 0) {
   return apiFetch<JobPostListResponse>(`/job-posts?limit=${limit}&offset=${offset}`)
 }
 
+export function deleteJobPost(jobPostId: string) {
+  return apiFetch<void>(`/job-posts/${jobPostId}`, { method: "DELETE" })
+}
+
 export type MatchListItem = {
   id: string
   jobPostId: string
@@ -73,6 +85,10 @@ export function listMatches(limit = 20, offset = 0) {
   return apiFetch<MatchListResponse>(`/matches?limit=${limit}&offset=${offset}`)
 }
 
+export function deleteMatch(matchId: string) {
+  return apiFetch<void>(`/matches/${matchId}`, { method: "DELETE" })
+}
+
 export type CoverLetterWorkflowListItem = {
   id: string
   jobPostId: string
@@ -80,6 +96,7 @@ export type CoverLetterWorkflowListItem = {
   employer: string | null
   status: string
   currentStep: number
+  totalSteps: number
   createdAt: string
 }
 

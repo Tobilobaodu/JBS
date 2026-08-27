@@ -18,6 +18,7 @@ from app.core.job_states import ProcessingStatus, transition_job_status
 from app.workers.tasks import (
     enqueue_text_extract,
     enqueue_ats_check,
+    enqueue_cv_analyze,
 )
 from datetime import datetime, timezone
 from app.core.logging import get_logger
@@ -167,6 +168,8 @@ async def create_processing_job(
             enqueue_text_extract(str(job.id))
         elif job_type == "ats_check":
             enqueue_ats_check(str(job.id))
+        elif job_type == "cv_analyze":
+            enqueue_cv_analyze(str(job.id))
         else:
             logger.warning("unknown_job_type_not_enqueued", job_type=job_type)
             transition_job_status(job, ProcessingStatus.FAILED, error=f"Unknown job type: {job_type}")

@@ -141,8 +141,13 @@ def generate_questions(
         required=False,
         help_text="Optional — leave blank if not applicable.",
     ))
+    # ── Step 4: final catch-all clarification ───────────────────────
+    # Split out as its own step (rather than folded into step 3 with
+    # tone/availability) so it reads as a deliberate last chance to add
+    # anything material, not one more optional field alongside two
+    # unrelated preference questions.
     questions.append(GeneratedQuestion(
-        step_number=3,
+        step_number=4,
         question_text="Is there anything else the hiring manager should know?",
         question_category=CAT_CLARIFICATION,
         required=False,
