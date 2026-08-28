@@ -82,23 +82,57 @@ function jobPostHandler(body: Record<string, unknown>) {
   )
 }
 
-function rewriteHandler() {
-  return http.post(`${BASE}/resume-rewrites`, () =>
+// S1: analysis (score/gaps/tips) is now its own fast JSON call.
+function matchAnalysisHandler() {
+  return http.post(`${BASE}/match-analyses`, () =>
     HttpResponse.json({
-      tailoredResumeMarkdown: "## Professional Summary\nProduct designer.",
       matchNotes: ["Design systems evidenced at iSixty."],
       informationNeeded: ["Which WCAG level was audited?"],
       stats: {
+        cvOccupation: "Product Designer",
+        jobOccupation: "Product Designer",
+        sameOccupation: true,
         atsScore: 85,
         matchLabel: "Strong match",
         matchedSkills: ["Figma", "Design systems"],
         transferableSkills: ["Workshop facilitation"],
         missingSkills: [],
         priorityKeywords: ["WCAG 2.1"],
+        literalCoverage: { coverage: 1, present: ["WCAG 2.1"], absent: [] },
       },
-      promptVersion: "v1",
+      promptVersion: "resume-analysis-v1",
     })
   )
+}
+
+// S2: the tailored CV is now a streamed SSE response — matches
+// apiFetchStream's framing (`data: {...}\n\n`) and resume_rewrite.py's
+// RewriteStreamEvent shape.
+function sseFrame(type: string, fields: Record<string, unknown> = {}) {
+  return `data: ${JSON.stringify({ type, ...fields })}\n\n`
+}
+
+function rewriteStreamHandler() {
+  return http.post(`${BASE}/resume-rewrites`, () => {
+    const encoder = new TextEncoder()
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(sseFrame("delta", { text: "## Professional Summary\n" }))
+        )
+        controller.enqueue(
+          encoder.encode(sseFrame("delta", { text: "Product designer." }))
+        )
+        controller.enqueue(
+          encoder.encode(sseFrame("done", { text: "", informationNeeded: [] }))
+        )
+        controller.close()
+      },
+    })
+    return new HttpResponse(body, {
+      headers: { "Content-Type": "text/event-stream" },
+    })
+  })
 }
 
 describe("TailorPage (/try/upload)", () => {
@@ -180,7 +214,8 @@ describe("TailorPage (/try/upload)", () => {
       rawTextHandler,
       jobPostUrlHandler(),
       jobPostHandler({ rawText: JOB_TEXT, status: "structuring" }),
-      rewriteHandler()
+      matchAnalysisHandler(),
+      rewriteStreamHandler()
     )
     const user = userEvent.setup()
     render(<TailorPage />)
@@ -202,6 +237,16 @@ describe("TailorPage (/try/upload)", () => {
     // The fetched text is left visible and editable, on the paste tab.
     expect(screen.getByTestId("input-job-description")).toHaveValue(JOB_TEXT)
     expect(screen.getByTestId("status-job-fetched")).toBeInTheDocument()
+
+    // S2: the tailored CV streams in as a separate, later step — the score
+    // above doesn't wait for it.
+    await waitFor(
+      () =>
+        expect(screen.getByTestId("text-tailored-cv")).toHaveTextContent(
+          "Product designer."
+        ),
+      { timeout: 10000 }
+    )
   }, 20000)
 
   it("shows the backend's own reason when a URL is refused, and does not analyse", async () => {

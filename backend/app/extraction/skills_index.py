@@ -160,3 +160,26 @@ def match_terms(text: str, min_words: int = 2) -> list[SkillMatch]:
             start = idx + 1
 
     return results
+
+
+def literal_coverage(cv_text: str, priority_keywords: list[str]) -> dict:
+    """What fraction of a job's priority keywords appear, literally, in
+    the CV text — jbs-solution-sheet.md Q1.
+
+    Deliberately dumb relative to match_terms() above: a straight
+    normalized-substring test against normalize_skill(cv_text), not an
+    ESCO lookup or synonym match. That's the point — this is the strict-
+    parser's own bar (Taleo/Lever-class ATS keyword matching has no
+    synonym handling either), reported *alongside* the LLM's semantic
+    score, not instead of it. Deterministic, no model call: runs in
+    single-digit milliseconds, so it costs nothing on the 30-second-
+    target clock (jbs-solution-sheet.md Workstream 1).
+    """
+    cv_norm = normalize_skill(cv_text)
+    present = [k for k in priority_keywords if normalize_skill(k) and normalize_skill(k) in cv_norm]
+    present_set = set(present)
+    return {
+        "coverage": round(len(present) / len(priority_keywords), 2) if priority_keywords else 0.0,
+        "present": present,
+        "absent": [k for k in priority_keywords if k not in present_set],
+    }

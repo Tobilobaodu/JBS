@@ -165,6 +165,25 @@ def process_text_extract(self, job_id: str) -> None:
             raise ValueError(f"CV file {job.source_entity_id} not found")
 
         file_content = download_file_sync(cv_file.storage_key)
+
+        # Malware scan (jbs-solution-sheet.md S6) — moved here from the
+        # upload request path. Must run before extraction is handed these
+        # bytes; nothing before this point has read file_content for
+        # anything but the scan itself.
+        from app.services.malware_scan import scan_file_sync
+
+        try:
+            scan_file_sync(file_content)
+        except ValueError as e:
+            # Malware detected — permanent, and the quarantined object
+            # must not linger.
+            delete_file_sync(cv_file.storage_key)
+            raise PermanentWorkerError(str(e)) from e
+        except RuntimeError as e:
+            # Scanner unavailable — an infra hiccup, not a verdict on the
+            # file. Leave it in quarantine and retry.
+            raise RetryableWorkerError(str(e)) from e
+
         cv_file.status = "extracting"
         session.commit()
 
@@ -739,6 +758,35 @@ def download_file_sync(storage_key: str) -> bytes:
 
     response = s3.get_object(Bucket=settings.s3_bucket_name, Key=storage_key)
     return response["Body"].read()
+
+
+def delete_file_sync(storage_key: str) -> None:
+    """Synchronous wrapper for storage delete (Celery tasks are sync) —
+    used to remove a quarantined upload that fails its malware scan
+    (jbs-solution-sheet.md S6). A quarantined file that lingers after a
+    failed scan is worse than one that was never stored."""
+    import boto3
+    from botocore.config import Config as BotoConfig
+
+    if settings.minio_endpoint and "minio" in settings.minio_endpoint:
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=settings.minio_endpoint,
+            aws_access_key_id=settings.minio_root_user,
+            aws_secret_access_key=settings.minio_root_password,
+            region_name=settings.aws_region,
+            config=BotoConfig(signature_version="s3v4", connect_timeout=10, read_timeout=30),
+        )
+    else:
+        s3 = boto3.client(
+            "s3",
+            region_name=settings.aws_region,
+            aws_access_key_id=settings.aws_access_key_id,
+            aws_secret_access_key=settings.aws_secret_access_key,
+            config=BotoConfig(connect_timeout=10, read_timeout=30),
+        )
+
+    s3.delete_object(Bucket=settings.s3_bucket_name, Key=storage_key)
 
 
 def upload_file_sync(file_content: bytes, storage_key: str, content_type: str) -> None:

@@ -117,6 +117,66 @@ export async function apiFetchBlob(
   return await response.blob()
 }
 
+/** Like apiFetch, but for a streamed (text/event-stream) response — yields
+ *  each SSE `data:` frame's raw text as it arrives, parsed as JSON by the
+ *  caller (this function doesn't know the event shape, only the SSE
+ *  framing: `data: <text>` lines separated by a blank line).
+ *
+ *  A generator rather than a callback list — `for await` at the call site
+ *  reads naturally and composes with try/catch for the error path, where
+ *  a callback-based API would need its own onError plumbing. */
+export async function* apiFetchStream(
+  path: string,
+  options: ApiFetchOptions = {}
+): AsyncGenerator<string> {
+  const { body, headers, ...rest } = options
+
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...rest,
+    headers: {
+      "Content-Type": "application/json",
+      ...buildIdentityHeaders(),
+      ...headers,
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  })
+
+  if (response.status === 401) {
+    useAuthStore.getState().clearAuth()
+  }
+
+  if (!response.ok || !response.body) {
+    let parsedBody: unknown = null
+    try {
+      parsedBody = await response.json()
+    } catch {
+      // response had no JSON body
+    }
+    throw new ApiError(response.status, parsedBody)
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      let frameEnd: number
+      // eslint-disable-next-line no-cond-assign
+      while ((frameEnd = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, frameEnd)
+        buffer = buffer.slice(frameEnd + 2)
+        const line = frame.split("\n").find((l) => l.startsWith("data: "))
+        if (line) yield line.slice("data: ".length)
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 /** FastAPI puts an *array* of issue objects in `detail` for a 422 validation
  *  error, not a string:
  *    { detail: [{ loc: ["body","password"], msg: "String should have at

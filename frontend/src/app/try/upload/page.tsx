@@ -5,14 +5,16 @@ import { toast } from "sonner"
 
 import { ApiError, errorMessage } from "@/lib/api"
 import {
-  createResumeRewrite,
+  createMatchAnalysis,
   createTrialSession,
   downloadResumePdf,
   getCvRawText,
   getJobPost,
+  recordJourney,
+  streamResumeRewrite,
   submitJobPostUrl,
   uploadCv,
-  type ResumeRewriteResult,
+  type MatchAnalysisResult,
 } from "@/lib/trial-api"
 import { useAuthStore } from "@/store/auth-store"
 import { useTrialStore } from "@/store/trial-store"
@@ -47,6 +49,22 @@ function failureMessage(
 type JobFetchState =
   | { phase: "idle" }
   | { phase: "fetched"; url: string }
+  | { phase: "failed"; message: string }
+
+/** Score/gaps/tips — small, fast, shown as soon as it lands (S1). */
+type AnalysisState =
+  | { phase: "idle" }
+  | { phase: "analysing" }
+  | { phase: "ready"; result: MatchAnalysisResult }
+  | { phase: "failed"; message: string }
+
+/** The tailored CV, streamed in below the analysis once it's on screen
+ *  (S2) — a separate, later-arriving piece, not the same "busy" spinner
+ *  that gates the button. */
+type RewriteState =
+  | { phase: "idle" }
+  | { phase: "streaming"; markdown: string }
+  | { phase: "done"; markdown: string; informationNeeded: string[] }
   | { phase: "failed"; message: string }
 
 const EXTRACT_POLL_MS = 2000
@@ -109,14 +127,22 @@ export default function TailorPage() {
   const [jobUrl, setJobUrl] = useState("")
   const [jobFetch, setJobFetch] = useState<JobFetchState>({ phase: "idle" })
   const [targetTitle, setTargetTitle] = useState("")
-  const [result, setResult] = useState<ResumeRewriteResult | null>(null)
+  const [analysis, setAnalysis] = useState<AnalysisState>({ phase: "idle" })
+  const [rewrite, setRewrite] = useState<RewriteState>({ phase: "idle" })
   // null when idle. "fetching" only occurs on the URL tab, where one
-  // click covers both steps.
+  // click covers both steps. Gates only the button/score wait — the
+  // tailored-CV stream runs after this clears (see onAnalyse).
   const [busy, setBusy] = useState<null | "fetching" | "analysing">(null)
   const [cvPanelOpen, setCvPanelOpen] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
   const pollRef = useRef<number | null>(null)
   const jobPollRef = useRef<number | null>(null)
+  // O4: wall clock from "upload accepted" to "analysis rendered" — the
+  // journey jbs-solution-sheet.md's 30s target is measured against.
+  // Cleared to null once recorded, so a second analyse on the same
+  // upload (a different job description) doesn't get timed against the
+  // original upload moment.
+  const journeyStartRef = useRef<number | null>(null)
 
   // A trial session is needed before the very first upload, since upload
   // now fires on file selection rather than on a submit the user reaches
@@ -190,7 +216,8 @@ export default function TailorPage() {
     event.target.value = ""
     if (!file) return
 
-    setResult(null)
+    setAnalysis({ phase: "idle" })
+    setRewrite({ phase: "idle" })
     setUpload({ phase: "uploading", fileName: file.name })
 
     try {
@@ -208,6 +235,7 @@ export default function TailorPage() {
       return
     }
 
+    journeyStartRef.current = performance.now()
     let uploaded
     try {
       uploaded = await uploadCv(file)
@@ -291,9 +319,32 @@ export default function TailorPage() {
     })
   }
 
+  // ── S7: start the JD fetch on blur/idle rather than on the analyse
+  // click, so it's already in flight by the time the user presses the
+  // button — CV extraction and the JD fetch are independent, but used to
+  // run strictly sequentially because the fetch only started on click.
+  // Keyed by URL string: if the user edits the field after priming,
+  // jobFetchUrlRef won't match jobUrl.trim() at click-time, and onAnalyse
+  // falls back to a fresh fetch rather than resolving against stale text —
+  // silently analysing the previous URL would be a wrong-answer bug, not
+  // just a slow one.
+  const jobFetchPromiseRef = useRef<Promise<string> | null>(null)
+  const jobFetchUrlRef = useRef<string>("")
+
+  function primeJobFetch(url: string) {
+    const trimmed = url.trim()
+    if (!trimmed || trimmed === jobFetchUrlRef.current) return
+    jobFetchUrlRef.current = trimmed
+    jobFetchPromiseRef.current = fetchJobPostText(trimmed).catch((error) => {
+      if (jobFetchUrlRef.current === trimmed) jobFetchPromiseRef.current = null
+      throw error
+    })
+  }
+
   async function onAnalyse() {
     if (upload.phase !== "ready") return
-    setResult(null)
+    setAnalysis({ phase: "idle" })
+    setRewrite({ phase: "idle" })
     setJobFetch({ phase: "idle" })
 
     // On the URL tab this is the only button: fetch first, then analyse,
@@ -304,7 +355,8 @@ export default function TailorPage() {
       if (!url) return
       setBusy("fetching")
       try {
-        jobText = (await fetchJobPostText(url)).trim()
+        const primed = jobFetchUrlRef.current === url ? jobFetchPromiseRef.current : null
+        jobText = (await (primed ?? fetchJobPostText(url))).trim()
       } catch (error) {
         setJobFetch({
           phase: "failed",
@@ -334,24 +386,74 @@ export default function TailorPage() {
     }
 
     setBusy("analysing")
+    setAnalysis({ phase: "analysing" })
+    let analysisResult: MatchAnalysisResult
     try {
-      const rewrite = await createResumeRewrite({
+      analysisResult = await createMatchAnalysis({
         cvId: upload.cvId,
         jobDescription: jobText,
         targetTitle: targetTitle.trim() || undefined,
       })
-      setResult(rewrite)
-      setCvPanelOpen(false)
     } catch (error) {
-      toast.error(
-        failureMessage(
+      setAnalysis({
+        phase: "failed",
+        message: failureMessage(
+          error,
+          "Analysis limit reached for the hour. Try again later.",
+          "The analysis could not be completed."
+        ),
+      })
+      setBusy(null)
+      return
+    }
+    setAnalysis({ phase: "ready", result: analysisResult })
+    setBusy(null)
+    setCvPanelOpen(false)
+    if (journeyStartRef.current != null) {
+      recordJourney("cv_upload_to_analysis", (performance.now() - journeyStartRef.current) / 1000)
+      journeyStartRef.current = null
+    }
+
+    // The tailored CV streams in separately, below the analysis that's
+    // already on screen — not gated by `busy`, so the button and the rest
+    // of the page are usable again while it writes.
+    setRewrite({ phase: "streaming", markdown: "" })
+    try {
+      for await (const event of streamResumeRewrite({
+        cvId: upload.cvId,
+        jobDescription: jobText,
+        targetTitle: targetTitle.trim() || undefined,
+        analysis: analysisResult,
+      })) {
+        if (event.type === "delta") {
+          setRewrite((prev) =>
+            prev.phase === "streaming"
+              ? { phase: "streaming", markdown: prev.markdown + event.text }
+              : prev
+          )
+        } else if (event.type === "corrected") {
+          setRewrite({
+            phase: "done", markdown: event.text, informationNeeded: event.informationNeeded,
+          })
+        } else if (event.type === "done") {
+          setRewrite((prev) => ({
+            phase: "done",
+            markdown: prev.phase === "streaming" ? prev.markdown : "",
+            informationNeeded: event.informationNeeded,
+          }))
+        } else if (event.type === "error") {
+          setRewrite({ phase: "failed", message: event.detail })
+        }
+      }
+    } catch (error) {
+      setRewrite({
+        phase: "failed",
+        message: failureMessage(
           error,
           "Rewrite limit reached for the hour. Try again later.",
           "The rewrite could not be completed."
-        )
-      )
-    } finally {
-      setBusy(null)
+        ),
+      })
     }
   }
 
@@ -362,11 +464,11 @@ export default function TailorPage() {
       ? jobUrl.trim().length > 0
       : jobDescription.trim().length >= MIN_JOB_TEXT_CHARS
   async function onDownloadPdf() {
-    if (!result) return
+    if (rewrite.phase !== "done") return
     setIsExporting(true)
     try {
       const blob = await downloadResumePdf({
-        tailoredResumeMarkdown: result.tailoredResumeMarkdown,
+        tailoredResumeMarkdown: rewrite.markdown,
         fileName: targetTitle.trim()
           ? `Tailored CV - ${targetTitle.trim()}`
           : "Tailored CV",
@@ -537,6 +639,7 @@ export default function TailorPage() {
                   placeholder="https://example.com/careers/role"
                   value={jobUrl}
                   onChange={(e) => setJobUrl(e.target.value)}
+                  onBlur={(e) => primeJobFetch(e.target.value)}
                 />
                 {jobFetch.phase === "failed" && (
                   <p data-testid="status-job-fetch-failed" style={{ margin: "6px 0 0", fontSize: 13, color: "var(--color-accent-700)" }}>
@@ -582,7 +685,7 @@ export default function TailorPage() {
             </div>
           )}
 
-          {!busy && !result && (
+          {!busy && analysis.phase === "idle" && (
             <div
               className="card"
               data-testid="state-empty"
@@ -596,31 +699,50 @@ export default function TailorPage() {
             </div>
           )}
 
-          {!busy && result && (
+          {!busy && analysis.phase === "failed" && (
+            <div className="card" data-testid="state-analysis-failed">
+              <p style={{ margin: 0, fontSize: 13, color: "var(--color-accent-700)" }}>
+                {analysis.message}
+              </p>
+            </div>
+          )}
+
+          {!busy && analysis.phase === "ready" && (
             <div data-testid="state-complete" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
               <div className="card" style={{ flexDirection: "row", alignItems: "center", gap: 24, flexWrap: "wrap" }}>
                 <div style={{ width: 140 }} data-testid="metric-ats-score">
-                  <ScoreBar score={result.stats.atsScore} />
+                  <ScoreBar score={analysis.result.stats.atsScore} />
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <Tag variant="accent" data-testid="text-match-label" >
-                    {result.stats.matchLabel}
+                    {analysis.result.stats.matchLabel}
                   </Tag>
                   <p style={{ margin: "10px 0 0", fontSize: 13, color: "var(--color-neutral-700)" }}>
-                    {result.stats.matchedSkills.length} matched ·{" "}
-                    {result.stats.transferableSkills.length} transferable ·{" "}
-                    {result.stats.missingSkills.length} missing
+                    {analysis.result.stats.matchedSkills.length} matched ·{" "}
+                    {analysis.result.stats.transferableSkills.length} transferable ·{" "}
+                    {analysis.result.stats.missingSkills.length} missing
                   </p>
-                  {result.stats.sameOccupation === false &&
-                    result.stats.cvOccupation &&
-                    result.stats.jobOccupation && (
+                  {analysis.result.stats.literalCoverage.present.length +
+                    analysis.result.stats.literalCoverage.absent.length >
+                    0 && (
+                    <p
+                      data-testid="text-literal-coverage"
+                      style={{ margin: "4px 0 0", fontSize: 12, color: "var(--color-neutral-600)" }}
+                    >
+                      {Math.round(analysis.result.stats.literalCoverage.coverage * 100)}% keyword match —
+                      what a plain ATS keyword filter (no synonym handling) would see
+                    </p>
+                  )}
+                  {analysis.result.stats.sameOccupation === false &&
+                    analysis.result.stats.cvOccupation &&
+                    analysis.result.stats.jobOccupation && (
                       <p
                         data-testid="text-occupation-gap"
                         style={{ margin: "8px 0 0", fontSize: 13, fontWeight: 600, color: "var(--color-accent-700)" }}
                       >
                         Career change: your CV evidences{" "}
-                        {result.stats.cvOccupation}, this role is{" "}
-                        {result.stats.jobOccupation}. The score is capped
+                        {analysis.result.stats.cvOccupation}, this role is{" "}
+                        {analysis.result.stats.jobOccupation}. The score is capped
                         for a different profession.
                       </p>
                     )}
@@ -631,33 +753,39 @@ export default function TailorPage() {
                 <div className="card-title">Matching criteria</div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
                   <SkillList title="Matched" tone="matched" testId="list-matched"
-                             items={result.stats.matchedSkills} />
+                             items={analysis.result.stats.matchedSkills} />
                   <SkillList title="Transferable" tone="transferable" testId="list-transferable"
-                             items={result.stats.transferableSkills} />
+                             items={analysis.result.stats.transferableSkills} />
                   <SkillList title="Not evidenced" tone="missing" testId="list-missing"
-                             items={result.stats.missingSkills} />
+                             items={analysis.result.stats.missingSkills} />
                   <SkillList title="Priority keywords" tone="keyword" testId="list-keywords"
-                             items={result.stats.priorityKeywords} />
+                             items={analysis.result.stats.priorityKeywords} />
                 </div>
               </div>
 
-              {result.matchNotes.length > 0 && (
+              {analysis.result.matchNotes.length > 0 && (
                 <div className="card">
                   <div className="card-title">Evidence-based match notes</div>
                   <ul data-testid="list-match-notes" style={{ margin: 0, paddingLeft: 20, fontSize: 13, display: "flex", flexDirection: "column", gap: 8 }}>
-                    {result.matchNotes.map((note) => <li key={note}>{note}</li>)}
+                    {analysis.result.matchNotes.map((note) => <li key={note}>{note}</li>)}
                   </ul>
                 </div>
               )}
 
-              {result.informationNeeded.length > 0 && (
-                <div className="card">
-                  <div className="card-title">Information that would strengthen this</div>
-                  <ul data-testid="list-information-needed" style={{ margin: 0, paddingLeft: 20, fontSize: 13, display: "flex", flexDirection: "column", gap: 8 }}>
-                    {result.informationNeeded.map((q) => <li key={q}>{q}</li>)}
-                  </ul>
-                </div>
-              )}
+              {(() => {
+                const informationNeeded = [
+                  ...analysis.result.informationNeeded,
+                  ...(rewrite.phase === "done" ? rewrite.informationNeeded : []),
+                ]
+                return informationNeeded.length > 0 && (
+                  <div className="card">
+                    <div className="card-title">Information that would strengthen this</div>
+                    <ul data-testid="list-information-needed" style={{ margin: 0, paddingLeft: 20, fontSize: 13, display: "flex", flexDirection: "column", gap: 8 }}>
+                      {informationNeeded.map((q) => <li key={q}>{q}</li>)}
+                    </ul>
+                  </div>
+                )
+              })()}
 
               <div className="card">
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
@@ -666,27 +794,40 @@ export default function TailorPage() {
                     type="button"
                     className="btn btn-primary"
                     data-testid="button-download-pdf"
-                    disabled={isExporting}
+                    disabled={isExporting || rewrite.phase !== "done"}
                     onClick={onDownloadPdf}
                   >
                     {isExporting ? "Building PDF…" : "Download PDF"}
                   </button>
                 </div>
-                <pre
-                  data-testid="text-tailored-cv"
-                  style={{
-                    maxHeight: 520,
-                    overflow: "auto",
-                    whiteSpace: "pre-wrap",
-                    background: "var(--color-bg)",
-                    border: "1px solid var(--color-divider)",
-                    padding: 16,
-                    fontSize: 13,
-                    margin: 0,
-                  }}
-                >
-                  {result.tailoredResumeMarkdown}
-                </pre>
+                {rewrite.phase === "failed" ? (
+                  <p data-testid="status-rewrite-failed" style={{ margin: 0, fontSize: 13, color: "var(--color-accent-700)" }}>
+                    {rewrite.message}
+                  </p>
+                ) : (
+                  <pre
+                    data-testid="text-tailored-cv"
+                    style={{
+                      maxHeight: 520,
+                      overflow: "auto",
+                      whiteSpace: "pre-wrap",
+                      background: "var(--color-bg)",
+                      border: "1px solid var(--color-divider)",
+                      padding: 16,
+                      fontSize: 13,
+                      margin: 0,
+                    }}
+                  >
+                    {rewrite.phase === "idle"
+                      ? ""
+                      : rewrite.phase === "streaming" || rewrite.phase === "done"
+                        ? rewrite.markdown
+                        : ""}
+                    {rewrite.phase === "streaming" && (
+                      <span data-testid="text-tailored-cv-cursor" aria-hidden style={{ opacity: 0.4 }}>▍</span>
+                    )}
+                  </pre>
+                )}
               </div>
             </div>
           )}

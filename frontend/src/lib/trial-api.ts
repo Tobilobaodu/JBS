@@ -1,4 +1,4 @@
-import { apiFetch, apiFetchBlob } from "@/lib/api"
+import { apiFetch, apiFetchBlob, apiFetchStream } from "@/lib/api"
 
 export type TrialSessionCreated = {
   trialSessionId: string
@@ -376,7 +376,17 @@ export function getCvRawText(cvId: string) {
   return apiFetch<CvRawText>(`/cvs/${cvId}/raw-text`)
 }
 
-export type ResumeRewriteStats = {
+/** Deterministic, synonym-blind keyword-in-text check (jbs-solution-
+ *  sheet.md Q1) — the strict bar a Taleo/Lever-class ATS keyword filter
+ *  applies, shown alongside atsScore's semantic judgement rather than
+ *  instead of it. */
+export type LiteralCoverage = {
+  coverage: number
+  present: string[]
+  absent: string[]
+}
+
+export type MatchAnalysisStats = {
   /** What the CV evidences vs what the role is, so a capped score can
    *  explain itself rather than looking arbitrary. */
   cvOccupation: string
@@ -388,14 +398,30 @@ export type ResumeRewriteStats = {
   transferableSkills: string[]
   missingSkills: string[]
   priorityKeywords: string[]
+  literalCoverage: LiteralCoverage
 }
 
-export type ResumeRewriteResult = {
-  tailoredResumeMarkdown: string
+export type MatchAnalysisResult = {
   matchNotes: string[]
   informationNeeded: string[]
-  stats: ResumeRewriteStats
+  stats: MatchAnalysisStats
   promptVersion: string
+}
+
+/** Score, gaps and tips — small and fast, returned well before the
+ *  tailored CV finishes streaming (see streamResumeRewrite below). Split
+ *  from the old single /resume-rewrites call per jbs-solution-sheet.md S1:
+ *  this payload is useless-until-complete JSON, so it's a plain POST, not
+ *  streamed. */
+export function createMatchAnalysis(input: {
+  cvId: string
+  jobDescription: string
+  targetTitle?: string
+}) {
+  return apiFetch<MatchAnalysisResult>("/match-analyses", {
+    method: "POST",
+    body: input,
+  })
 }
 
 /** Renders the tailored CV Markdown to a PDF. The rewrite is stateless, so
@@ -410,14 +436,50 @@ export function downloadResumePdf(input: {
   })
 }
 
-export function createResumeRewrite(input: {
+/** One item from streamResumeRewrite's async generator — mirrors the
+ *  backend's RewriteStreamEvent (see resume_rewrite.py). "delta": append
+ *  `text`. "corrected": *replace* everything rendered so far with `text`
+ *  — rare, only fires if a truthfulness safety net caught something after
+ *  it had already streamed (see that file's docstring). "done"/"error"
+ *  end the stream. */
+export type RewriteStreamEvent =
+  | { type: "delta"; text: string }
+  | { type: "corrected"; text: string; informationNeeded: string[] }
+  | { type: "done"; text: string; informationNeeded: string[] }
+  | { type: "error"; detail: string }
+
+/** Streams the tailored CV as markdown (jbs-solution-sheet.md S2) —
+ *  readable as it arrives, unlike the analysis half's JSON. Pass the
+ *  MatchAnalysisResult from createMatchAnalysis as `analysis` so the
+ *  rewrite is grounded in the same assessment already on screen; the
+ *  backend only reads its `.stats`, so passing the whole result through
+ *  as-is is fine. */
+export async function* streamResumeRewrite(input: {
   cvId: string
   jobDescription: string
   targetTitle?: string
-}) {
-  return apiFetch<ResumeRewriteResult>("/resume-rewrites", {
+  candidateNotes?: string
+  analysis?: MatchAnalysisResult | null
+}): AsyncGenerator<RewriteStreamEvent> {
+  for await (const raw of apiFetchStream("/resume-rewrites", {
     method: "POST",
     body: input,
+  })) {
+    yield JSON.parse(raw) as RewriteStreamEvent
+  }
+}
+
+// ── Journey latency beacon (jbs-solution-sheet.md O4) ──
+// The server can't see poll lag or render time on its own — S5's 14s of
+// dead time lived entirely there. Fire-and-forget: never awaited by the
+// caller, never surfaces an error to the user — losing a metrics beacon
+// must not affect the product.
+export function recordJourney(journey: string, durationSeconds: number) {
+  void apiFetch("/client-metrics/journey", {
+    method: "POST",
+    body: { journey, durationSeconds },
+  }).catch(() => {
+    // best-effort telemetry only
   })
 }
 

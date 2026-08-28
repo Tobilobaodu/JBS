@@ -13,10 +13,15 @@ Prometheus only scrapes the API process (prometheus.yml has one target,
 api:8000) — counters incremented inside Celery worker processes were
 provably never reaching Prometheus (confirmed via a genuine SSRF rejection
 that never showed up as a nonzero rate()). SSRF_REJECTED_COUNTER,
-GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER, and COST_USD_COUNTER only
-increment in worker code, so those three are also pushed to a Pushgateway
-(app/core/metrics_push.py) right after the local .inc() — see PUSH_REGISTRY
-below. QUEUE_DEPTH_GAUGE avoids the problem entirely by living in and being
+GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER, COST_USD_COUNTER, and
+EVIDENCE_VERIFICATION_COUNTER only increment in worker code, so those four
+are also pushed to a Pushgateway (app/core/metrics_push.py) right after
+the local .inc() — see PUSH_REGISTRY below: a counter's own .inc() call
+being present is not sufficient, it must also be registered there, or the
+push silently omits it (found live while adding
+EVIDENCE_VERIFICATION_COUNTER — same failure mode this whole mechanism
+exists to fix, one register() call away from repeating it).
+QUEUE_DEPTH_GAUGE avoids the problem entirely by living in and being
 updated from the API process itself (app/main.py's lifespan), since queue
 depth is a property of the database, not of any one worker.
 """
@@ -93,6 +98,64 @@ GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER = Counter(
     "Generation schema-validation failures (possible prompt-injection attempts)",
 )
 
+# jbs-solution-sheet.md O1: the anti-fabrication gate in generation_core.py
+# (generate_and_verify_section's evidence_binder.verify_claim_against_
+# evidence call) previously incremented nothing of its own — only schema
+# failures were visible, which is a different event with a different
+# cause. This is the metric FabricationRateSpike (alert_rules.yml) alerts
+# on: a rising "omitted" rate means the model is fabricating, or a prompt
+# change broke grounding — no infrastructure metric shows either.
+EVIDENCE_VERIFICATION_COUNTER = Counter(
+    "evidence_verification_total",
+    "Evidence verification outcomes for generated sections.",
+    ["section_type", "outcome"],  # outcome: passed | rejected_retry | omitted
+)
+
+# jbs-solution-sheet.md O4: nothing else measures the thing actually cared
+# about — HTTP_REQUEST_DURATION_SECONDS is per-route, but the 30-second-
+# target journey spans several routes plus client-side poll lag (S5's 14s
+# of dead time lived entirely there) and render time, neither visible to
+# the server on its own. Recorded client-side and posted to
+# POST /client-metrics/journey (app/api/v1/client_metrics.py) — this
+# Histogram lives in the api process and is scraped normally, no push
+# needed, since the beacon endpoint runs in-process, not in a worker.
+JOURNEY_DURATION_SECONDS = Histogram(
+    "journey_duration_seconds",
+    "Wall clock from CV upload accepted to analysis rendered, measured client-side.",
+    ["journey"],
+    buckets=(3, 5, 7.5, 10, 15, 20, 30, 45, 60),
+)
+
+# jbs-solution-sheet.md O2: published work on LLM resume graders shows a
+# bias toward scoring longer CVs higher, never validated against hiring
+# outcomes. If median atsScore climbs monotonically across length_bucket,
+# that bias is present here and the analysis prompt needs an explicit
+# instruction that length is not evidence of fit — a question this metric
+# answers and nothing else currently can. `le` buckets on the score
+# itself (not a separate length histogram) so the length/score
+# relationship reads directly off one panel: sum by (length_bucket) of
+# each score bucket's count.
+ANALYSIS_SCORE_BY_LENGTH = Histogram(
+    "analysis_score_by_cv_length",
+    "ats_score bucketed by CV character count.",
+    ["length_bucket"],  # <2k | 2-4k | 4-8k | 8k+
+    buckets=(10, 25, 40, 55, 70, 85, 100),
+)
+
+
+def length_bucket(char_count: int) -> str:
+    """Shared by every ANALYSIS_SCORE_BY_LENGTH caller (resume_analysis.py,
+    cv_analysis.py) so the bucket boundaries can't drift between them —
+    two independently-tuned bucketings would make the O2 panel compare
+    apples to oranges across the two scoring paths."""
+    if char_count < 2000:
+        return "<2k"
+    if char_count < 4000:
+        return "2-4k"
+    if char_count < 8000:
+        return "4-8k"
+    return "8k+"
+
 # ── Queue depth (fixes QueueDepthSpike, which referenced a label value —
 # status="queued" — that processing_jobs_total never actually emits; the
 # counter is only ever incremented with status="completed"/"failed", and
@@ -161,3 +224,12 @@ PUSH_REGISTRY = CollectorRegistry()
 PUSH_REGISTRY.register(SSRF_REJECTED_COUNTER)
 PUSH_REGISTRY.register(GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER)
 PUSH_REGISTRY.register(COST_USD_COUNTER)
+# O1: generate_and_verify_section runs in worker_cv_generate/
+# worker_cover_letter_generate, so this needs the same Pushgateway path —
+# registering it here is what actually makes push_worker_metrics's calls
+# at each _record_verification site (generation_core.py) reach Prometheus,
+# not just increment a value local to that worker process.
+PUSH_REGISTRY.register(EVIDENCE_VERIFICATION_COUNTER)
+# O2: cv_analysis.py's analyze_cv runs in worker_cv_analyze, not the api
+# process — same reason as the three above.
+PUSH_REGISTRY.register(ANALYSIS_SCORE_BY_LENGTH)

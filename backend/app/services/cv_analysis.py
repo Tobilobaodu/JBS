@@ -22,7 +22,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from app.core.logging import get_logger
-from app.core.metrics import LLM_GENERATION_COUNTER, LLM_TOKENS_COUNTER
+from app.core.metrics import (
+    ANALYSIS_SCORE_BY_LENGTH,
+    LLM_GENERATION_COUNTER,
+    LLM_TOKENS_COUNTER,
+    length_bucket,
+)
+from app.core.metrics_push import push_worker_metrics
 from app.prompts import cv_analysis_prompts as prompts
 from app.services.llm_client import (
     LlmCallError,
@@ -79,6 +85,7 @@ def analyze_cv(cv_text: str, *, client=None) -> CvAnalysisResult:
             user_payload=payload,
             json_schema=prompts.CV_ANALYSIS_JSON_SCHEMA,
             schema_name=prompts.CV_ANALYSIS_TASK,
+            max_tokens=1200,  # scores plus issue lists
             client=client,
         )
     except (LlmCallError, LlmSchemaValidationError) as e:
@@ -105,6 +112,12 @@ def analyze_cv(cv_text: str, *, client=None) -> CvAnalysisResult:
 
     basics = dict(data.get("basics") or {})
     skills = [s for s in (data.get("skills") or []) if s]
+    overall_score = _clamp_score(data.get("overallScore"))
+
+    # O2: length-bias check — this runs in worker_cv_analyze, so it needs
+    # the same Pushgateway path as EVIDENCE_VERIFICATION_COUNTER above.
+    ANALYSIS_SCORE_BY_LENGTH.labels(length_bucket=length_bucket(len(cv_text))).observe(overall_score)
+    push_worker_metrics("worker_cv_analyze")
 
     logger.info(
         "cv_analysis_complete",
@@ -116,7 +129,7 @@ def analyze_cv(cv_text: str, *, client=None) -> CvAnalysisResult:
     )
 
     return CvAnalysisResult(
-        overall_score=_clamp_score(data.get("overallScore")),
+        overall_score=overall_score,
         skillset_score=_clamp_score(data.get("skillsetScore")),
         formatting_score=_clamp_score(data.get("formattingScore")),
         ats_issues=list(data.get("atsIssues") or []),

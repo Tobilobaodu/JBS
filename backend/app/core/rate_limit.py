@@ -16,8 +16,15 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Tuple, Set
+
+import redis
+
 from app.core.config import settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 # ── Configuration ────────────────────────────────────────────────────
@@ -214,6 +221,86 @@ def check_trial_session_rate_limit(key: str) -> bool:
     return check_tier_rate_limit(
         "trial_session", key, settings.rate_limit_trial_session_requests, settings.rate_limit_trial_session_window,
     )
+
+
+# ── Per-identity daily LLM spend budget (jbs-solution-sheet.md C1) ────
+#
+# check_generation_rate_limit above caps *request count* per client IP,
+# not cost — a user with large CVs and long job posts can cost several
+# times a normal user's spend at the same request rate, since
+# _CV_TEXT_MAX_CHARS/_JOB_POST_MAX_CHARS (resume_rewrite_prompts.py)
+# explicitly permit large inputs. Rate limits protect the service; this
+# protects the business — a trial abuser doesn't need to exceed the
+# request rate to cost money, just upload consistently large input.
+#
+# Redis-backed (not the in-memory tiers above) because spend has to
+# survive across API worker processes and Celery workers, both of which
+# can record spend for the same identity within one day.
+
+DAILY_BUDGET_USD = {
+    # No paid/subscription tier exists in the schema yet (User has no
+    # plan/tier column) — "user" covers every authenticated account today.
+    # Revisit once a real paid tier exists; this is deliberately generous
+    # for now so no real signed-in user is throttled by a placeholder.
+    "trial": 0.15,
+    "user": 1.00,
+}
+_DEFAULT_BUDGET_TIER = "trial"
+
+_redis_client: "redis.Redis | None" = None
+
+
+def _get_redis() -> "redis.Redis":
+    global _redis_client
+    if _redis_client is None:
+        _redis_client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
+    return _redis_client
+
+
+def _llm_spend_key(identity_key: str) -> str:
+    return f"llm_spend:{identity_key}:{_utc_today_iso()}"
+
+
+def _utc_today_iso() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def check_llm_budget(identity_key: str, tier: str) -> bool:
+    """Return True if identity_key is within its daily LLM spend budget.
+
+    Checked before a call, incremented after via record_llm_spend — racy
+    by one call, which is the right trade: a blocking pre-reservation
+    would cost a round trip on every single generation request to prevent
+    an overage of, at most, one call's worth of pennies.
+
+    Fails open on a Redis outage (returns True), the same trade the
+    in-memory tier limiters above make implicitly by being best-effort —
+    a metering outage must not take down generation entirely.
+    """
+    budget = DAILY_BUDGET_USD.get(tier, DAILY_BUDGET_USD[_DEFAULT_BUDGET_TIER])
+    try:
+        spent = float(_get_redis().get(_llm_spend_key(identity_key)) or 0)
+    except Exception as e:
+        logger.warning("llm_budget_check_failed", error=str(e))
+        return True
+    return spent < budget
+
+
+def record_llm_spend(identity_key: str, usd_amount: float) -> None:
+    """Add usd_amount to identity_key's running total for today. Best-
+    effort — a lost spend record under-counts by one call, which is a far
+    smaller failure than a Redis outage blocking every generation."""
+    if usd_amount <= 0:
+        return
+    try:
+        client = _get_redis()
+        key = _llm_spend_key(identity_key)
+        client.incrbyfloat(key, usd_amount)
+        # 2 days: generous past the daily key's relevance, just enough to
+        # survive a slow midnight-boundary read without growing forever.
+        client.expire(key, 172_800)
+    except Exception as e:
+        logger.warning("llm_spend_record_failed", error=str(e))
 
 
 def get_client_key(request) -> str:

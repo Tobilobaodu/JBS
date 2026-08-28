@@ -19,7 +19,10 @@ from dataclasses import dataclass, field
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.core.metrics import GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER
+from app.core.metrics import (
+    EVIDENCE_VERIFICATION_COUNTER,
+    GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER,
+)
 from app.core.metrics_push import push_worker_metrics
 from app.extraction import evidence_binder
 from app.services.llm_client import LlmCallError, LlmSchemaValidationError, generate_structured
@@ -76,6 +79,7 @@ def generate_and_verify_section(
     outcome: GenerationOutcome,
     overlap_threshold: float | None = None,
     max_attempts: int | None = None,
+    max_tokens: int = 900,
     extra_verification_context: str = "",
     source_item_id: str | None = None,
     llm_client_override=None,
@@ -127,6 +131,16 @@ def generate_and_verify_section(
 
     base_payload = user_payload
 
+    def _record_verification(outcome: str) -> None:
+        # Runs in a worker, same reasoning as GENERATION_SCHEMA_VALIDATION_
+        # FAILED_COUNTER above it — Prometheus only scrapes the api
+        # process, so this needs its own push (see metrics.py's module
+        # docstring).
+        EVIDENCE_VERIFICATION_COUNTER.labels(
+            section_type=section_type, outcome=outcome,
+        ).inc()
+        push_worker_metrics("worker_generation")
+
     correction: str | None = None
     for attempt in range(max_attempts):
         payload = base_payload
@@ -142,6 +156,7 @@ def generate_and_verify_section(
                 user_payload=payload,
                 json_schema=schema,
                 schema_name=schema_name,
+                max_tokens=max_tokens,
                 client=llm_client_override,
             )
         except (LlmCallError, LlmSchemaValidationError) as e:
@@ -150,6 +165,7 @@ def generate_and_verify_section(
                 "generation_call_failed",
                 section_type=section_type, attempt=attempt, error=str(e),
             )
+            _record_verification("rejected_retry")
             continue
 
         outcome.total_prompt_tokens += result.prompt_tokens
@@ -199,8 +215,10 @@ def generate_and_verify_section(
                 correction = "no bullet passed verification" + (
                     f": {'; '.join(rejection_reasons[:3])}" if rejection_reasons else ""
                 )
+                _record_verification("rejected_retry")
                 continue
 
+            _record_verification("passed")
             return SectionResult(
                 section_type=section_type,
                 content_text="\n".join(kept_texts),
@@ -221,6 +239,7 @@ def generate_and_verify_section(
                 "contentText was empty or evidenceIndexes was empty — every "
                 "generated section must cite at least one evidence index."
             )
+            _record_verification("rejected_retry")
             continue
 
         cited_candidates = [
@@ -232,6 +251,7 @@ def generate_and_verify_section(
                 "evidenceIndexes did not reference any valid index from the "
                 "evidence pool you were given."
             )
+            _record_verification("rejected_retry")
             continue
 
         evidence_texts = [c.searchable_text for c in cited_candidates]
@@ -244,8 +264,10 @@ def generate_and_verify_section(
         )
         if not verification.passed:
             correction = verification.reason
+            _record_verification("rejected_retry")
             continue
 
+        _record_verification("passed")
         return SectionResult(
             section_type=section_type,
             content_text=content_text,
@@ -265,5 +287,5 @@ def generate_and_verify_section(
     # Schema/evidence validation failed — a possible injection attempt (§10
     # alerts on a spike in these).
     GENERATION_SCHEMA_VALIDATION_FAILED_COUNTER.inc()
-    push_worker_metrics("worker_generation")
+    _record_verification("omitted")
     return None

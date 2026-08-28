@@ -110,6 +110,14 @@ services:
       timeout: 10s
       retries: 10
       start_period: 60s
+    # Also on no_internet: the malware scan moved from the API request path
+    # into worker_text_extract (jbs-solution-sheet.md S6), which is
+    # no_internet-ONLY by design. Multi-homing clamav grants that worker
+    # nothing new — clamav still needs `default` itself, for freshclam's
+    # virus-database updates.
+    networks:
+      - default
+      - no_internet
 
   # ──────────────────────────────────────────────────────────────────
   # DECOMMISSIONED — pipeline steps 3-6 (Docling / Textract / merge /
@@ -301,12 +309,16 @@ services:
         condition: service_started
       extraction:
         condition: service_started
+      clamav:
+        condition: service_healthy
     volumes:
       - ./app:/app/app:ro
     restart: unless-stopped
-    # no_internet only: reaches postgres, redis, minio and the extraction
-    # service, all of which are reachable on that network. Same posture the
-    # decommissioned Docling worker had.
+    # no_internet only: reaches postgres, redis, minio, the extraction
+    # service, and clamav (also multi-homed onto no_internet — see its own
+    # service definition), all reachable on that network. Same posture the
+    # decommissioned Docling worker had. The malware scan runs here now
+    # (jbs-solution-sheet.md S6), not in the api process.
     networks:
       - no_internet
 

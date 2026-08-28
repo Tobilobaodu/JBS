@@ -119,3 +119,29 @@ groups:
         annotations:
           summary: "Unusual spend rate on paid external APIs"
           description: "cost_usd_total rising at ${{ $value }}/s — possible cost abuse or a runaway generation loop."
+
+  # jbs-solution-sheet.md O1: not an attack pattern like the group above —
+  # a content-safety signal. evidence_verification_total is emitted from
+  # generation_core.py's generate_and_verify_section (the anti-fabrication
+  # gate shared by tailored-CV and cover-letter generation), pushed via
+  # Pushgateway same as the worker-only counters above.
+  - name: quality
+    rules:
+      # A rising "omitted" share means either a prompt/model change broke
+      # grounding (sections are quietly missing from users' documents) or
+      # the model has started fabricating and the verification gate is
+      # catching it — both are the product silently failing, not a ticket.
+      - alert: FabricationRateSpike
+        expr: |
+          sum(rate(evidence_verification_total{outcome="omitted"}[15m]))
+            / sum(rate(evidence_verification_total[15m])) > 0.15
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Generated content is being rejected as unverifiable at an unusual rate"
+          description: >
+            Over 15% of generated sections failed evidence verification in
+            the last 15m. Either a prompt change has degraded grounding, or
+            the model has started fabricating. No infrastructure metric
+            will show this.

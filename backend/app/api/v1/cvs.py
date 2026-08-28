@@ -42,7 +42,6 @@ from app.schemas.cv import (
 )
 from app.schemas.jobs import ProcessingJobResponse
 from app.services.file_validation import validate_file_type, validate_file_size
-from app.services.malware_scan import scan_file
 from app.services.orchestration import start_extraction_pipeline, create_processing_job
 from app.core.security import (
     RequestIdentity,
@@ -138,22 +137,12 @@ async def upload_cv(
             detail=str(e),
         )
 
-    # Malware scan — blocking, must pass before storage
-    try:
-        await scan_file(file_content)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Uploaded file failed security scan.",
-        )
-    except RuntimeError as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(e),
-        )
-
-    # Generate non-guessable storage key
-    storage_key = generate_storage_key(file.filename or "unnamed.pdf")
+    # Malware scan moved off the response path (jbs-solution-sheet.md S6):
+    # store to quarantine/ now, scan as the text_extract worker's first
+    # step before extraction ever sees the bytes. A failed scan there
+    # deletes the object and fails the CV with an explanatory
+    # error_message — same user-facing outcome, off the upload's clock.
+    storage_key = generate_storage_key(file.filename or "unnamed.pdf", prefix="quarantine/")
 
     # Store file
     await upload_file(file_content, storage_key, mime_type)

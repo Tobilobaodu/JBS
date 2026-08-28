@@ -125,6 +125,7 @@ def run_match_llm(
             user_payload=payload,
             json_schema=prompts.MATCH_ANALYSIS_JSON_SCHEMA,
             schema_name=prompts.MATCH_ANALYSIS_TASK,
+            max_tokens=2000,  # evidence items scale with requirement count
             client=client,
         )
     except (LlmCallError, LlmSchemaValidationError) as e:

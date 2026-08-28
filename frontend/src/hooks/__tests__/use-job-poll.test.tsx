@@ -48,6 +48,28 @@ describe("useJobPoll", () => {
     expect(callCount).toBeGreaterThanOrEqual(2)
   })
 
+  it("polls fast enough that a job needing 4 polls completes well under the old 2/4/8/15s backoff's 14s", async () => {
+    // Not asserting an exact interval (flaky against real timers/MSW) —
+    // asserting the old backoff's math would have blown this budget while
+    // the new POLL_FAST_MS=1000 cadence (jbs-solution-sheet.md S5) clears
+    // it comfortably: old cost for 4 polls is 2+4+8=14s before the 4th
+    // request even fires; new cost is ~3s.
+    let callCount = 0
+    server.use(
+      http.get(`${BASE}/jobs/job-fast`, () => {
+        callCount += 1
+        return HttpResponse.json(jobResponse(callCount < 4 ? "processing" : "completed"))
+      })
+    )
+
+    const { result } = renderHook(() => useJobPoll("job-fast"), {
+      wrapper: createQueryWrapper(),
+    })
+
+    await waitFor(() => expect(result.current.isCompleted).toBe(true), { timeout: 8000 })
+    expect(callCount).toBe(4)
+  })
+
   it("reports isFailed and stops polling when the job fails", async () => {
     server.use(
       http.get(`${BASE}/jobs/job-2`, () => HttpResponse.json(jobResponse("failed")))

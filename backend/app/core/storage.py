@@ -43,11 +43,16 @@ def _get_s3_client():
     )
 
 
-def generate_storage_key(filename: str) -> str:
+def generate_storage_key(filename: str, prefix: str = "cvs/") -> str:
     """Generate a non-guessable storage key. Never includes the client filename.
 
-    Format: cvs/{uuid}.{original_extension_lower}
+    Format: {prefix}{uuid}.{original_extension_lower}
     This prevents path traversal and key collisions across users.
+
+    `prefix` defaults to the existing "cvs/" for backward compatibility;
+    cvs.py's upload endpoint passes "quarantine/" so an unscanned upload
+    lands somewhere nothing but the scanning step ever reads from (see
+    jbs-solution-sheet.md S6).
     """
     ext = ""
     if "." in filename:
@@ -56,7 +61,7 @@ def generate_storage_key(filename: str) -> str:
         ext = "".join(c for c in ext if c.isalnum())[:10]
         if ext:
             ext = f".{ext}"
-    return f"cvs/{uuid.uuid4().hex}{ext}"
+    return f"{prefix}{uuid.uuid4().hex}{ext}"
 
 
 async def upload_file(file_content: bytes, storage_key: str, content_type: str) -> None:

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from typing import Callable, Iterator
 
 from openai import (
     APIConnectionError,
@@ -29,6 +30,7 @@ from openai import (
 from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.circuit_breaker import OPENAI_CIRCUIT
+from app.core.metrics import LLM_TOKENS_COUNTER
 
 logger = get_logger(__name__)
 
@@ -57,10 +59,10 @@ class StructuredGenerationResult:
 _TRANSIENT_EXCEPTIONS = (APIConnectionError, APITimeoutError, RateLimitError)
 
 
-def _get_client() -> OpenAI:
+def _get_client(timeout: float | None = None) -> OpenAI:
     return OpenAI(
         api_key=settings.openai_api_key,
-        timeout=settings.openai_request_timeout_seconds,
+        timeout=timeout if timeout is not None else settings.openai_request_timeout_seconds,
     )
 
 
@@ -71,6 +73,8 @@ def generate_structured(
     json_schema: dict,
     schema_name: str,
     model: str | None = None,
+    max_tokens: int = 1500,
+    timeout: float | None = None,
     max_api_retries: int = 2,
     client: OpenAI | None = None,
 ) -> StructuredGenerationResult:
@@ -87,7 +91,7 @@ def generate_structured(
     (which would fail immediately without an API key) — pass a fake with
     a matching `.chat.completions.create` surface instead.
     """
-    client = client or _get_client()
+    client = client or _get_client(timeout)
     model = model or settings.openai_model
 
     # Circuit breaker (§6): fail fast rather than queuing a call that will
@@ -108,6 +112,7 @@ def generate_structured(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_payload},
                 ],
+                max_tokens=max_tokens,
                 response_format={
                     "type": "json_schema",
                     "json_schema": {
@@ -138,13 +143,26 @@ def generate_structured(
     # content-level validation below decides about the payload.
     OPENAI_CIRCUIT.record_success()
 
-    message = response.choices[0].message
+    choice = response.choices[0]
+    message = choice.message
 
     if message.refusal:
         raise LlmSchemaValidationError(f"Model refused to generate: {message.refusal}")
 
     if not message.content:
         raise LlmSchemaValidationError("Model returned empty content")
+
+    # With strict:true, hitting max_tokens truncates mid-JSON and json.loads
+    # below raises a generic "not valid JSON" — which sends you looking for
+    # a model problem that is really a config problem (the cap set too low
+    # for this schema/input). Name it explicitly instead.
+    if getattr(choice, "finish_reason", None) == "length":
+        logger.warning(
+            "llm_output_truncated", schema_name=schema_name, max_tokens=max_tokens,
+        )
+        raise LlmSchemaValidationError(
+            "Response hit the token cap before completing."
+        )
 
     try:
         data = json.loads(message.content)
@@ -158,3 +176,84 @@ def generate_structured(
         completion_tokens=usage.completion_tokens if usage else 0,
         model=response.model,
     )
+
+
+def stream_text(
+    *,
+    system_prompt: str,
+    user_payload: str,
+    model: str | None = None,
+    max_tokens: int = 3000,
+    timeout: float | None = None,
+    generation_task: str = "resume_rewrite",
+    client: OpenAI | None = None,
+    usage_callback: "Callable[[int, int], None] | None" = None,
+) -> Iterator[str]:
+    """Stream a plain-text/markdown completion. No JSON schema — the
+    caller wants readable output as it arrives, which a strict-schema
+    response cannot give (it is unparseable until the closing brace). Do
+    not use this for anything the caller needs to parse as structured
+    data; use generate_structured for that.
+
+    A sibling to generate_structured, not a modification of it: six
+    callers depend on that function's retry/circuit-breaker contract, and
+    a stream can't retry transparently anyway (see below).
+
+    Deliberately no retry: a stream that fails mid-flight has already
+    sent bytes to the client, so a silent retry would duplicate content.
+    The caller surfaces the break (LlmCallError) and offers a re-run.
+
+    `generation_task` labels the token-usage metric — passed explicitly
+    rather than inferred, since (unlike generate_structured, which infers
+    it from schema_name) there's no schema here to name the task.
+
+    `usage_callback(prompt_tokens, completion_tokens)`, if given, is
+    called once when the final usage-bearing chunk arrives — for a caller
+    that needs real token counts for something beyond the metric here
+    (e.g. per-identity spend tracking, jbs-solution-sheet.md C1), since a
+    generator's yielded values are text chunks, not a place to also
+    return usage.
+    """
+    client = client or _get_client(timeout)
+    model = model or settings.openai_model
+
+    if not OPENAI_CIRCUIT.allow():
+        raise LlmCallError(
+            "LLM circuit open — failing fast rather than attempting a call "
+            "that will only time out."
+        )
+
+    try:
+        stream = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_payload},
+            ],
+            max_tokens=max_tokens,
+            stream=True,
+            # Without this the final chunk carrying usage never arrives,
+            # and LLM_TOKENS_COUNTER silently stops counting generation
+            # tokens — easy to miss, and it breaks cost tracking without
+            # breaking the feature itself.
+            stream_options={"include_usage": True},
+        )
+        for chunk in stream:
+            if chunk.usage:
+                LLM_TOKENS_COUNTER.labels(
+                    generation_task=generation_task, token_type="completion",
+                ).inc(chunk.usage.completion_tokens)
+                LLM_TOKENS_COUNTER.labels(
+                    generation_task=generation_task, token_type="prompt",
+                ).inc(chunk.usage.prompt_tokens)
+                if usage_callback:
+                    usage_callback(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+        OPENAI_CIRCUIT.record_success()
+    except _TRANSIENT_EXCEPTIONS as e:
+        OPENAI_CIRCUIT.record_failure()
+        raise LlmCallError(f"Stream failed: {e}") from e
+    except APIError as e:
+        OPENAI_CIRCUIT.record_failure()
+        raise LlmCallError(f"OpenAI API error: {e}") from e

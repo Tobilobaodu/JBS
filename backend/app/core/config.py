@@ -44,8 +44,31 @@ class Settings(BaseSettings):
 
     # LLM (Phase 3)
     openai_api_key: str = ""
+    # Default for structured/judgement tasks (analysis, classification,
+    # extraction). Prose-quality generation (resume rewrite, cover letters)
+    # opts into openai_model_generation instead — see llm_client.py callers.
+    # These two used to disagree between here and .env.example; keep them
+    # in sync if you change either.
     openai_model: str = "gpt-4o-mini"
+    openai_model_generation: str = "gpt-4o"
     openai_request_timeout_seconds: int = 30
+    # Per-task timeouts: tight on the critical (synchronous, user-waiting)
+    # path, looser on generation now that it runs off-path (streamed or
+    # backgrounded). generate_structured()'s default max_api_retries=2
+    # means analysis's worst case is timeout * 2, not * 3 - one retry only
+    # (see analysis call sites, which pass max_api_retries=1).
+    openai_timeout_analysis_seconds: int = 15
+    openai_timeout_generation_seconds: int = 45
+
+    # Kill switches (jbs-solution-sheet.md C2) — mirrors
+    # cover_letter_llm_generation_enabled below, but these two have no
+    # template fallback to drop to (there's no deterministic "resume
+    # analysis" or "resume rewrite" absent the model), so disabling one
+    # means the endpoint returns an honest 503 rather than degrading.
+    # During a provider outage this is the difference between a
+    # maintenance banner and a support queue.
+    resume_analysis_enabled: bool = True
+    resume_rewrite_enabled: bool = True
 
     # Tailored CV generation (Sprint 3)
     tailored_cv_evidence_overlap_threshold: float = 0.35

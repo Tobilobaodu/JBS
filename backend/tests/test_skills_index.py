@@ -125,3 +125,51 @@ class TestMatchTerms:
 
     def test_empty_text_returns_empty_list(self):
         assert skills_index.match_terms("") == []
+
+
+class TestLiteralCoverage:
+    """Q1 — deterministic, synonym-blind keyword-in-text check. Does not
+    touch the ESCO index at all (pure normalize_skill substring test), so
+    the synthetic-index fixture above is incidental here, not exercised."""
+
+    def test_all_keywords_present(self):
+        result = skills_index.literal_coverage(
+            "Built APIs in Python and Go, deployed with Docker.",
+            ["Python", "Docker"],
+        )
+        assert result["coverage"] == 1.0
+        assert result["present"] == ["Python", "Docker"]
+        assert result["absent"] == []
+
+    def test_partial_coverage(self):
+        result = skills_index.literal_coverage(
+            "Built APIs in Python.", ["Python", "Kubernetes"]
+        )
+        assert result["coverage"] == 0.5
+        assert result["present"] == ["Python"]
+        assert result["absent"] == ["Kubernetes"]
+
+    def test_no_keywords_present(self):
+        result = skills_index.literal_coverage("Unrelated CV text.", ["Rust", "Go"])
+        assert result["coverage"] == 0.0
+        assert result["present"] == []
+        assert result["absent"] == ["Rust", "Go"]
+
+    def test_no_priority_keywords_is_zero_not_a_crash(self):
+        result = skills_index.literal_coverage("Some CV text.", [])
+        assert result == {"coverage": 0.0, "present": [], "absent": []}
+
+    def test_case_and_whitespace_insensitive(self):
+        result = skills_index.literal_coverage(
+            "Experience with  POSTGRESQL  databases.", ["PostgreSQL"]
+        )
+        assert result["coverage"] == 1.0
+
+    def test_synonym_is_not_credited_unlike_the_llm_score(self):
+        # The whole point of this check vs atsScore: no synonym handling.
+        # "JS" is a common alias for JavaScript, but this is a literal
+        # substring test, not a taxonomy lookup.
+        result = skills_index.literal_coverage(
+            "Five years of JavaScript development.", ["JS"]
+        )
+        assert result["coverage"] == 0.0

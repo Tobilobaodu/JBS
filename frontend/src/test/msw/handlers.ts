@@ -38,4 +38,13 @@ export const registerConflictHandler = http.post(`${API_BASE_URL}/auth/register`
   )
 })
 
-export const handlers = [registerHandler, loginHandler]
+// Fire-and-forget journey-latency beacon (jbs-solution-sheet.md O4) —
+// hit from any page that instruments a journey (currently /try/upload).
+// A default handler here means individual page tests don't need to mock
+// it just to silence MSW's unhandled-request warning.
+export const journeyBeaconHandler = http.post(
+  `${API_BASE_URL}/client-metrics/journey`,
+  () => new HttpResponse(null, { status: 204 })
+)
+
+export const handlers = [registerHandler, loginHandler, journeyBeaconHandler]

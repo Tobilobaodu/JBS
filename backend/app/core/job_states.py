@@ -95,7 +95,19 @@ def classify_error(error: BaseException) -> type[Exception]:
     permanent, for worker tasks that want to distinguish them (e.g. to
     avoid burning retry attempts on a permanent failure). Purely advisory —
     it returns a type, it doesn't raise or re-wrap; the caller decides what
-    to do with the classification."""
+    to do with the classification.
+
+    A caller that already raised RetryableWorkerError/PermanentWorkerError
+    directly (rather than some other exception this function has to guess
+    about) gets that exact classification back unchanged — checked first,
+    before the heuristics below, so a worker's own explicit judgement about
+    its own failure is never second-guessed into the wrong bucket. Found
+    live: a bare `raise RetryableWorkerError(...)` was silently reclassified
+    as permanent here, since neither heuristic below recognises either
+    custom type — this function's actual behaviour for its own inputs,
+    not merely underspecified."""
+    if isinstance(error, (RetryableWorkerError, PermanentWorkerError)):
+        return type(error)
     if isinstance(error, (TimeoutError, ConnectionError)):
         return RetryableWorkerError
     status_code = getattr(error, "status_code", None) or getattr(error, "http_status", None)

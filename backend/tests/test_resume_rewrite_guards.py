@@ -26,22 +26,6 @@ CV_WITH_LOCATION = CV_NO_LOCATION.replace(
 )
 
 
-class TestLabelDerivation:
-    @pytest.mark.parametrize(
-        "score,expected",
-        [
-            (100.0, "Strong match"),
-            (75.0, "Strong match"),
-            (74.9, "Good match"),
-            (50.0, "Good match"),
-            (49.9, "Needs work"),
-            (0.0, "Needs work"),
-        ],
-    )
-    def test_thresholds(self, score, expected):
-        assert rr._label_for(score) == expected
-
-
 class TestStripInventedLocations:
     def test_removes_the_jobs_city_when_the_cv_has_none(self):
         md = "# TOBILOBA ODU\nDublin, Ireland\n\n## Professional Summary\nCopy."
@@ -96,82 +80,28 @@ class TestStripInventedLocations:
         assert out == "" and removed == []
 
 
-class TestCrossOccupationCap:
-    def _run(self, monkeypatch, stats: dict, markdown: str = "# NAME\nCopy."):
+class TestInventedLocationRemovedFromRewrite:
+    """The cross-occupation-cap/score guards moved to resume_analysis.py
+    with the rest of the stats (see test_resume_analysis_guards.py) — v4
+    (jbs-solution-sheet.md S1) split generation from analysis, and
+    generation no longer produces or receives a score. This is what's left
+    of the old TestCrossOccupationCap that's still resume_rewrite.py's own
+    concern: the location safety net operating on an actual rewrite call."""
+
+    def test_invented_location_is_removed_and_asked_about(self, monkeypatch):
         class _Result:
             data = {
-                "tailoredResumeMarkdown": markdown,
-                "matchNotes": ["A note."],
-                "informationNeeded": [],
-                "stats": stats,
+                "tailoredResumeMarkdown": (
+                    "# TOBILOBA ODU\nDublin, Ireland\n\n## Summary\nCopy."
+                ),
             }
             prompt_tokens = 10
             completion_tokens = 10
             model = "test-model"
 
-        monkeypatch.setattr(
-            rr, "generate_structured", lambda **kwargs: _Result()
-        )
-        return rr.rewrite_resume(
+        monkeypatch.setattr(rr, "generate_structured", lambda **kwargs: _Result())
+        out = rr.rewrite_resume(
             cv_text=CV_NO_LOCATION, job_post_text="People Experience Lead. " * 10
-        )
-
-    def _stats(self, **over):
-        base = {
-            "cvOccupation": "Product Designer",
-            "jobOccupation": "People / HR",
-            "sameOccupation": False,
-            "atsScore": 85,
-            "matchLabel": "Good match",
-            "matchedSkills": [],
-            "transferableSkills": [],
-            "missingSkills": [],
-            "priorityKeywords": [],
-        }
-        base.update(over)
-        return base
-
-    def test_a_different_profession_is_capped(self, monkeypatch):
-        # The exact reported case: 85/100 for a product designer against an
-        # HR role. The model's own number is not trusted.
-        out = self._run(monkeypatch, self._stats())
-        assert out.stats["atsScore"] == 40.0
-        assert out.stats["matchLabel"] == "Needs work"
-
-    def test_the_cap_is_explained_in_the_notes(self, monkeypatch):
-        out = self._run(monkeypatch, self._stats())
-        assert "Different profession" in out.match_notes[0]
-        assert "Product Designer" in out.match_notes[0]
-        assert "People / HR" in out.match_notes[0]
-
-    def test_a_low_cross_occupation_score_is_not_raised(self, monkeypatch):
-        out = self._run(monkeypatch, self._stats(atsScore=12))
-        assert out.stats["atsScore"] == 12.0
-
-    def test_same_occupation_is_untouched(self, monkeypatch):
-        out = self._run(
-            monkeypatch,
-            self._stats(
-                sameOccupation=True,
-                jobOccupation="Senior Product Designer",
-                atsScore=88,
-                matchLabel="Needs work",
-            ),
-        )
-        assert out.stats["atsScore"] == 88.0
-        # Label is re-derived, so it can never contradict the score.
-        assert out.stats["matchLabel"] == "Strong match"
-        assert not out.match_notes[0].startswith("Different profession")
-
-    def test_out_of_range_scores_are_clamped(self, monkeypatch):
-        out = self._run(monkeypatch, self._stats(sameOccupation=True, atsScore=140))
-        assert out.stats["atsScore"] == 100.0
-
-    def test_invented_location_is_removed_and_asked_about(self, monkeypatch):
-        out = self._run(
-            monkeypatch,
-            self._stats(),
-            markdown="# TOBILOBA ODU\nDublin, Ireland\n\n## Summary\nCopy.",
         )
         assert "Dublin" not in out.tailored_resume_markdown
         assert "Where are you based" in out.information_needed[0]
@@ -275,19 +205,6 @@ class TestLiftedRequirementsSurfaceAsQuestions:
                 "tailoredResumeMarkdown": (
                     "# ADEOLA ODU\n\n## Additional Information\n- " + TRAVEL_CLAIM
                 ),
-                "matchNotes": [],
-                "informationNeeded": [],
-                "stats": {
-                    "cvOccupation": "HR",
-                    "jobOccupation": "HR",
-                    "sameOccupation": True,
-                    "atsScore": 80,
-                    "matchLabel": "Strong match",
-                    "matchedSkills": [],
-                    "transferableSkills": [],
-                    "missingSkills": [],
-                    "priorityKeywords": [],
-                },
             }
             prompt_tokens = 1
             completion_tokens = 1

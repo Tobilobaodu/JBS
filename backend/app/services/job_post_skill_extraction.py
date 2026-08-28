@@ -81,6 +81,7 @@ def extract_skills_via_llm(
             user_payload=build_user_payload(raw_text),
             json_schema=JOB_POST_SKILL_EXTRACTION_JSON_SCHEMA,
             schema_name=JOB_POST_SKILL_EXTRACTION_TASK,
+            max_tokens=600,  # short phrases only
             client=llm_client_override,
         )
     except (LlmCallError, LlmSchemaValidationError) as e:
