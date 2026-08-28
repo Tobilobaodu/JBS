@@ -35,10 +35,10 @@ from app.core.rate_limit import (
 from app.core.security import (
     RequestIdentity,
     get_current_user_or_trial_session,
+    get_scoped_session,
     identity_owner_filter,
     ownership_denied,
 )
-from app.db import get_session
 from app.db.models import CvFile, CvRawText
 from app.services.resume_analysis import ResumeAnalysisError, analyze_resume
 from app.services.resume_pdf import (
@@ -167,7 +167,7 @@ async def create_match_analysis(
     request: Request,
     body: MatchAnalysisRequest,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Score a CV against a job post — small, fast, no tailored CV.
 
@@ -246,7 +246,7 @@ async def create_resume_rewrite(
     request: Request,
     body: ResumeRewriteRequest,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Rewrite a CV for a job post, streamed as markdown (jbs-solution-
     sheet.md S2). Each SSE `data:` line is JSON: {"type": "delta", "text":

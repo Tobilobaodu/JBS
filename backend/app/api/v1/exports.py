@@ -41,11 +41,12 @@ from app.core.security import (
     RequestIdentity,
     get_current_user,
     get_current_user_or_trial_session,
+    get_scoped_session,
+    get_scoped_session_for_user,
     identity_owner_filter,
     ownership_denied,
 )
 from app.core.storage import download_file
-from app.db import get_session
 from app.db.models import (
     AuditEvent,
     CoverLetterDraft,
@@ -182,7 +183,7 @@ async def export_cv(
     request: Request,
     body: CreateExportRequest,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     client_key = get_client_key(request)
     if not check_generation_rate_limit(client_key):
@@ -229,7 +230,7 @@ async def export_cover_letter(
     request: Request,
     body: CreateExportRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     client_key = get_client_key(request)
     if not check_generation_rate_limit(client_key):
@@ -284,7 +285,7 @@ async def export_application_pack(
     request: Request,
     body: ApplicationPackExportRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     client_key = get_client_key(request)
     if not check_generation_rate_limit(client_key):
@@ -348,7 +349,7 @@ async def export_application_pack(
 async def get_export(
     exportId: str,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     result = await session.execute(
         select(Export).where(Export.id == exportId, identity_owner_filter(Export, identity))
@@ -371,7 +372,7 @@ async def get_export(
 async def download_export(
     exportId: str,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Proxied download, ownership-checked on every request — sets
     downloaded_at the first time only, which is what gates PDF
@@ -415,7 +416,7 @@ async def export_pdf(
     exportId: str,
     request: Request,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """PDF is always a conversion of an already-downloaded docx export —
     never an independent render. Every precondition below 409s with its

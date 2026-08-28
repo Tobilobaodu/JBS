@@ -18,7 +18,6 @@ from app.core.rate_limit import (
     get_client_key,
 )
 from app.services.orchestration import enforce_concurrent_job_limit, mark_job_publish_failed
-from app.db import get_session
 from app.db.models import (
     AuditEvent,
     JobPost,
@@ -30,6 +29,8 @@ from app.core.security import (
     RequestIdentity,
     get_current_user,
     get_current_user_or_trial_session,
+    get_scoped_session,
+    get_scoped_session_for_user,
     identity_owner_filter,
     ownership_denied,
 )
@@ -117,7 +118,7 @@ async def submit_job_post_url(
     request: Request,
     body: JobPostUrlRequest,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Submit a job post URL for SSRF-safe fetching and structuring.
 
@@ -211,7 +212,7 @@ async def submit_job_post_text(
     request: Request,
     body: JobPostTextRequest,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Submit pasted job post text for structuring.
 
@@ -291,7 +292,7 @@ async def list_job_posts(
     offset: int = Query(0, ge=0),
     status: str | None = Query(None),
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """List job posts for the current user, with pagination."""
     query = select(JobPost).where(
@@ -335,7 +336,7 @@ async def list_job_posts(
 async def get_job_post(
     jobPostId: str,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Get a single job post with its structured profile (IDOR-safe).
 
@@ -370,7 +371,7 @@ async def get_job_post(
 async def delete_job_post(
     jobPostId: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Delete a job post. Returns 404 if not owned by current user or already deleted."""
     result = await session.execute(
@@ -414,7 +415,7 @@ async def reprocess_job_post(
     request: Request,
     jobPostId: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Re-run the structuring logic for an already-fetched job post.
 

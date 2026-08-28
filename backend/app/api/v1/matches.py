@@ -14,7 +14,6 @@ from sqlalchemy.orm import selectinload
 from app.core.logging import get_logger
 from app.core.rate_limit import check_generation_rate_limit, get_client_key
 from app.services.orchestration import enforce_concurrent_job_limit, mark_job_publish_failed
-from app.db import get_session
 from app.db.models import (
     AuditEvent,
     CvProfile,
@@ -31,6 +30,8 @@ from app.core.security import (
     RequestIdentity,
     get_current_user,
     get_current_user_or_trial_session,
+    get_scoped_session,
+    get_scoped_session_for_user,
     identity_owner_filter,
     ownership_denied,
 )
@@ -165,7 +166,7 @@ async def create_match(
     request: Request,
     body: MatchRequest,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Create a match analysis between a CV profile and a job post.
 
@@ -277,7 +278,7 @@ async def list_matches(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """List match runs for the current user, with pagination.
 
@@ -333,7 +334,7 @@ async def list_matches(
 async def get_match(
     matchId: str,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Get a match analysis with its evidence items (IDOR-safe).
 
@@ -420,7 +421,7 @@ async def get_match(
 async def delete_match(
     matchId: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Delete a match report. Returns 404 if not owned by current user or already deleted."""
     result = await session.execute(

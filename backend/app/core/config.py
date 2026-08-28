@@ -17,6 +17,13 @@ class Settings(BaseSettings):
     # Database
     database_url: str = ""
     database_url_async: str = ""
+    # Runtime connection for the API process only — a non-superuser,
+    # non-owner role so Postgres RLS policies (migration 018) actually
+    # apply to the app's own queries instead of being silently bypassed.
+    # Falls back to database_url_async when unset (see app/db/session.py),
+    # so this is opt-in: nothing changes until the app_runtime role has
+    # been provisioned (migration 017) and this is deliberately set.
+    database_url_runtime_async: str = ""
 
     # Redis
     redis_url: str = "redis://localhost:6379/0"

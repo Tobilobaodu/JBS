@@ -18,7 +18,7 @@ import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -298,3 +298,77 @@ async def get_current_user_or_trial_session(
         )
 
     return RequestIdentity(user=None, trial_session=trial_session)
+
+
+# ── Row-Level Security session scoping ──────────────────────────────────
+#
+# Postgres RLS policies (alembic migration 018) read a transaction-local
+# GUC, app.user_id, to decide which rows a query may see. Nothing sets
+# that GUC anywhere else — every route touching an RLS-covered table
+# depends on one of the two functions below instead of the bare
+# get_session (see 018's docstring for the exact table list).
+#
+# _set_rls_scope uses set_config('app.user_id', value, true) rather than
+# `SET LOCAL app.user_id = :value` — Postgres's SET statements don't
+# accept bind parameters at all, so the literal-SET-LOCAL spelling can
+# only take a hardcoded/string-formatted value, not a safely parameterized
+# one. set_config()'s third argument (is_local=true) is otherwise
+# identical: scoped to the current transaction, not the session, and it
+# clears the instant that transaction ends. Across the routers, ~34 call
+# sites call session.commit() mid-request, and SQLAlchemy auto-begins a
+# new transaction on the next statement after a commit — so a GUC set
+# once, before the route body runs, would silently stop applying after
+# that route's first commit, re-opening exactly the gap RLS exists to
+# close, but only on requests that happen to commit more than once.
+# Wrapping session.commit() to re-issue it closes that without touching
+# any of those 34 call sites individually.
+
+
+async def _set_rls_scope(session: AsyncSession, guc_value: str) -> None:
+    # set_config(), not `SET LOCAL app.user_id = :uid` — Postgres's SET
+    # statements don't accept bind parameters at all (a hard syntax
+    # limitation, not an asyncpg quirk: `SET LOCAL x = $1` is invalid SQL
+    # regardless of driver). set_config()'s third argument (is_local=true)
+    # gives the identical transaction-scoped-GUC behavior through an
+    # ordinary, safely parameterized function call instead.
+    await session.execute(
+        text("SELECT set_config('app.user_id', :uid, true)"), {"uid": guc_value}
+    )
+
+
+def _rescope_after_commit(session: AsyncSession, guc_value: str) -> None:
+    original_commit = session.commit
+
+    async def _commit_and_rescope(*args, **kwargs):
+        await original_commit(*args, **kwargs)
+        await _set_rls_scope(session, guc_value)
+
+    session.commit = _commit_and_rescope
+
+
+async def get_scoped_session(
+    session: AsyncSession = Depends(get_session),
+    identity: RequestIdentity = Depends(get_current_user_or_trial_session),
+) -> AsyncSession:
+    """RLS-scoped session for the trial-eligible routes. Depend on this
+    instead of get_session for any route reachable via
+    get_current_user_or_trial_session that touches an RLS-covered table.
+    """
+    guc_value = str(identity.user_id or identity.trial_session_id)
+    await _set_rls_scope(session, guc_value)
+    _rescope_after_commit(session, guc_value)
+    return session
+
+
+async def get_scoped_session_for_user(
+    session: AsyncSession = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> AsyncSession:
+    """RLS-scoped session for the account-only routes (cover letters,
+    coverage reports, job post collections) that use get_current_user
+    directly rather than the trial-eligible dependency above.
+    """
+    guc_value = str(current_user.id)
+    await _set_rls_scope(session, guc_value)
+    _rescope_after_commit(session, guc_value)
+    return session

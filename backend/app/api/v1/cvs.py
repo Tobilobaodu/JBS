@@ -15,7 +15,6 @@ from app.core.rate_limit import (
     get_client_key,
 )
 from app.core.storage import generate_storage_key, upload_file
-from app.db import get_session
 from app.db.models import (
     AtsReadinessCheck,
     AuditEvent,
@@ -47,6 +46,8 @@ from app.core.security import (
     RequestIdentity,
     get_current_user,
     get_current_user_or_trial_session,
+    get_scoped_session,
+    get_scoped_session_for_user,
     identity_owner_filter,
     ownership_denied,
 )
@@ -106,7 +107,7 @@ async def upload_cv(
     request: Request,
     file: UploadFile,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Upload a CV file (PDF or DOCX). Validates, scans, stores, then enqueues extraction.
 
@@ -211,7 +212,7 @@ async def list_cvs(
     offset: int = Query(0, ge=0),
     status_filter: str | None = Query(None, alias="status"),
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """List uploaded CVs for the current user. Scoped by user_id (IDOR-safe)."""
     query = _active_cv_query(current_user.id)
@@ -287,7 +288,7 @@ async def list_cvs(
 async def get_cv(
     cv_id: str,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Get CV metadata. Returns 404 if not found, not owned by current identity, or soft-deleted.
 
@@ -354,7 +355,7 @@ async def get_cv(
 async def delete_cv(
     cv_id: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Delete a CV and derived records. Returns 404 if not owned by current user or already deleted."""
     result = await session.execute(
@@ -399,7 +400,7 @@ async def reprocess_cv(
     request: Request,
     cv_id: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Re-trigger the extraction pipeline. Creates new extraction passes.
 
@@ -449,7 +450,7 @@ async def reprocess_cv(
 async def get_cv_raw_text(
     cv_id: str,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Get canonical merged extracted text.
 
@@ -498,7 +499,7 @@ async def get_cv_raw_text(
 async def get_cv_extraction_detail(
     cv_id: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Get Docling and Textract pass outputs with completeness metadata."""
     result = await session.execute(
@@ -555,7 +556,7 @@ async def get_cv_extraction_detail(
 async def get_cv_parsed_profile(
     cv_id: str,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Return the current structured candidate profile (Phase 2).
 
@@ -623,7 +624,7 @@ async def run_ats_check_for_cv(
     request: Request,
     cv_id: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Run an ATS structural-readability check against this CV.
 
@@ -678,7 +679,7 @@ async def run_ats_check_for_cv(
 async def get_ats_check(
     cv_id: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Retrieve the latest ATS readiness result for this CV.
 
@@ -729,7 +730,7 @@ async def run_cv_analysis(
     request: Request,
     cv_id: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Run (or re-run) the LLM-based CV analysis for this CV.
 
@@ -786,7 +787,7 @@ async def run_cv_analysis(
 async def get_cv_analysis(
     cv_id: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Retrieve the latest LLM-based CV analysis for this CV.
 

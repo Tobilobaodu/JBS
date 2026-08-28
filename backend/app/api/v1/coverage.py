@@ -20,8 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.rate_limit import check_generation_rate_limit, get_client_key
-from app.core.security import get_current_user, ownership_denied
-from app.db import get_session
+from app.core.security import get_current_user, get_scoped_session_for_user, ownership_denied
 from app.db.models import (
     AuditEvent,
     CoverageReport,
@@ -74,7 +73,7 @@ def _report_response(report: CoverageReport) -> CoverageReportOut:
 async def create_collection(
     body: CreateCollectionRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Create a named collection of job posts for aggregate comparison.
     No rate limit — plain CRUD, no job dispatch, no LLM/matching call."""
@@ -114,7 +113,7 @@ async def list_collections(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     result = await session.execute(
         select(JobPostCollection).where(JobPostCollection.user_id == current_user.id)
@@ -139,7 +138,7 @@ async def trigger_coverage_report(
     request: Request,
     body: CoverageReportTriggerRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Run an aggregated coverage-gap report for a CV against every job
     post in the collection. Rate-limited per client IP (generation tier)
@@ -234,7 +233,7 @@ async def trigger_coverage_report(
 async def get_coverage_report(
     reportId: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     result = await session.execute(
         select(CoverageReport).where(

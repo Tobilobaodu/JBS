@@ -8,12 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import get_session
 from app.db.models import ProcessingJob
 from app.schemas.jobs import ProcessingJobResponse
 from app.core.security import (
     RequestIdentity,
     get_current_user_or_trial_session,
+    get_scoped_session,
     identity_owner_filter,
     ownership_denied,
 )
@@ -27,7 +27,7 @@ logger = get_logger(__name__)
 async def get_job_status(
     job_id: str,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Get the status of an async processing job.
 

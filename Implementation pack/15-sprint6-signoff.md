@@ -336,3 +336,45 @@ follow-up.
 - **Frontend UI for Sprint 5's export/ATS-check/coverage-report features** —
   explicitly deferred to its own planning pass, per prior direction.
 
+## Post-sprint-6 alert-rules audit (2026-08-28)
+
+A deferred-items review asked for a full line-by-line pass of
+`prometheus/alert_rules.yml` against this document's §10 requirement ("5
+attack-pattern counters + rules fire, +1 cost alert"), previously
+postponed for lack of the source document — it was this file all along
+(re-identified by the Implementation pack's own `00`-`15` file numbering;
+`10-security-plan.md` itself only runs to §14, so it can't be the
+referent).
+
+| Rule | Metric | Scrape path | Live-fire status |
+|---|---|---|---|
+| `CredentialStuffingSuspect` | `auth_failures_total` | API process, direct | Not separately live-fired; wired since Sprint 6, no scrape gap possible (in-process counter) |
+| `IdorProbingSuspect` | `authz_denied_total` | API process, direct | ✅ live-fire proven — real cross-user request in the 2026-08-13 tabletop, plus `test_idor_matrix.py` across all 28 routes |
+| `SsrfProbingSuspect` | `ssrf_rejected_total` | Worker → Pushgateway | ✅ live-fire proven — real SSRF probe (`169.254.169.254`) confirmed reaching Prometheus |
+| `GenerationValidationSpike` | `generation_schema_validation_failed_total` | Worker → Pushgateway | ⚠️ wired, not live-fired — this doc's own §"Post-sign-off correction" already flags it as "code-reviewed, not separately live-fired" |
+| `QueueDepthSpike` | `processing_queue_depth` (gauge) | API process, direct | ✅ live-fire proven — real leftover dev-DB rows pushed it into `pending` state against live Prometheus |
+| `QueueHasNoConsumer` | `processing_queue_consumers`/`processing_queue_depth` | API process, direct | ✅ real-incident proven — its own comment in `alert_rules.yml` records two genuine production occurrences this diagnosed, not a synthetic test |
+| `CostSpikeSuspect` | `cost_usd_total` | Worker → Pushgateway | ⚠️ wired, not live-fired — **correction to how this has been described since**: this doc's "Fixes" §1 covers SSRF, generation-validation, *and* cost under one Pushgateway change, but its own next sentence says only SSRF was independently re-proven live; generation-validation and cost were "code-reviewed, not separately live-fired." Later summaries (including this session's) had drifted into listing `CostSpikeSuspect` alongside the live-fire-proven rules — it isn't, on this document's own original wording. |
+| `FabricationRateSpike` | `evidence_verification_total` | Worker → Pushgateway | ⚠️ wired, not live-fired — added after this sign-off (Sprint A/B/C, O1), same Pushgateway pattern, same gap: registered in `PUSH_REGISTRY` (`app/core/metrics.py`) and pushed from `generation_core.py`, never triggered against the live stack |
+
+**Coverage**: all 5 of §10's attack-pattern counters have a firing rule,
+plus the 1 cost alert — nothing in §10's requirement lacks a rule, and no
+rule references a metric that's dead on arrival (the `QueueDepthSpike`
+label mismatch this doc already caught and fixed is the only instance of
+that failure mode found either time).
+
+**Real, still-open follow-up** (small, not attempted here — needs a
+deliberate live-fire session with either a full CV+match+generate chain
+and real OpenAI spend, or a mocked worker environment, plus — for
+`CostSpikeSuspect` specifically — ~$90 of real spend sustained for 5
+minutes to actually cross the threshold, which is not something to
+trigger casually): live-fire `GenerationValidationSpike`,
+`CostSpikeSuspect`, and `FabricationRateSpike` the same way `SsrfProbingSuspect`
+was proven, so all 8 rules have the same class of evidence behind them.
+
+**Confirmed still open, unchanged**: `prometheus/alertmanager.yml` remains
+a log-only `stub` receiver — no Slack/email/PagerDuty channel. This is a
+credential the reviewing session doesn't hold (a webhook URL or API key),
+not a code gap — wiring a real receiver once one is available is a small,
+same-shape change to that one file.
+

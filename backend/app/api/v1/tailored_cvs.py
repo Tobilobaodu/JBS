@@ -19,10 +19,10 @@ from app.core.rate_limit import check_generation_rate_limit, get_client_key
 from app.core.security import (
     RequestIdentity,
     get_current_user_or_trial_session,
+    get_scoped_session,
     identity_owner_filter,
     ownership_denied,
 )
-from app.db import get_session
 from app.db.models import AuditEvent, MatchRun, ProcessingJob, TailoredCvDraft, TailoredCvSection
 from app.schemas.jobs import ProcessingJobRef
 from app.schemas.tailored_cv import (
@@ -137,7 +137,7 @@ async def create_tailored_cv(
     matchId: str,
     request: Request,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Generate a tailored CV draft from a completed match result.
 
@@ -202,7 +202,7 @@ async def create_tailored_cv(
 async def get_tailored_cv(
     draftId: str,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Retrieve a tailored CV draft (IDOR-safe, trial-accessible)."""
     result = await session.execute(
@@ -237,7 +237,7 @@ async def regenerate_tailored_cv(
     request: Request,
     body: RegenerateRequest,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Generate a new version of a tailored CV draft. The base draft is
     never mutated — old versions stay retrievable by construction, not
@@ -292,7 +292,7 @@ async def regenerate_tailored_cv(
 async def approve_tailored_cv(
     draftId: str,
     identity: RequestIdentity = Depends(get_current_user_or_trial_session),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session),
 ):
     """Approve a generated draft. No rate limit — no LLM call involved,
     mirrors cover_letters.py::approve()."""

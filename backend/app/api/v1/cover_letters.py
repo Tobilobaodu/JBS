@@ -20,8 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.logging import get_logger
 from app.core.rate_limit import check_generation_rate_limit, get_client_key
-from app.core.security import get_current_user, ownership_denied
-from app.db import get_session
+from app.core.security import get_current_user, get_scoped_session_for_user, ownership_denied
 from app.db.models import (
     AuditEvent, CoverLetterAnswer, CoverLetterDraft, CoverLetterQuestion,
     CoverLetterWorkflow, CvFile, CvProfile, CvProfileVersion, JobPost,
@@ -83,7 +82,7 @@ async def start_workflow(
     request: Request,
     body: StartWorkflowRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Start a guided cover letter workflow from a CV and job post.
 
@@ -237,7 +236,7 @@ async def list_cover_letter_workflows(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """List cover-letter workflows for the current user, with pagination.
 
@@ -290,7 +289,7 @@ async def list_cover_letter_workflows(
 async def get_questions(
     workflowId: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Return the question set for the current step."""
     wf = await _verify_ownership(session, workflowId, current_user.id)
@@ -325,7 +324,7 @@ async def submit_answers(
     workflowId: str,
     body: SubmitAnswersRequest,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Submit answers for the current step."""
     wf = await _verify_ownership(session, workflowId, current_user.id)
@@ -406,7 +405,7 @@ async def submit_answers(
 async def get_draft(
     workflowId: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Return the current draft of the cover letter."""
     wf = await _verify_ownership(session, workflowId, current_user.id)
@@ -450,7 +449,7 @@ async def regenerate(
     request: Request,
     workflowId: str,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Regenerate the letter (after user edits or new answers).
 
@@ -491,7 +490,7 @@ async def approve(
     workflowId: str,
     request: Request,
     current_user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
 ):
     """Mark the current draft as approved."""
     wf = await _verify_ownership(session, workflowId, current_user.id)
