@@ -11,6 +11,7 @@
 
 import hashlib
 import secrets
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -48,6 +49,15 @@ def create_access_token(user_id: str) -> str:
         "sub": user_id,
         "iat": now,
         "exp": now + timedelta(seconds=settings.jwt_expiry),
+        # Unique per issuance. Without it the payload is a pure function of
+        # (user_id, current second), so two tokens minted for the same user
+        # inside the same second — two tabs redeeming a refresh token at
+        # once, or a login racing a refresh — are byte-identical, and the
+        # second write collides on user_sessions.access_token_hash's UNIQUE
+        # index (a 500, not two working sessions). Never read back:
+        # get_current_user only uses "sub", and an unknown claim is ignored
+        # on decode, so this is not a token-format change for any consumer.
+        "jti": uuid.uuid4().hex,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
 

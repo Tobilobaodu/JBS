@@ -127,6 +127,7 @@ def run_match_llm(
             schema_name=prompts.MATCH_ANALYSIS_TASK,
             max_tokens=2000,  # evidence items scale with requirement count
             client=client,
+            prompt_version=prompts.MATCH_ANALYSIS_PROMPT_VERSION,
         )
     except (LlmCallError, LlmSchemaValidationError) as e:
         LLM_GENERATION_COUNTER.labels(

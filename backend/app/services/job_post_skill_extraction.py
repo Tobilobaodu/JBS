@@ -25,6 +25,7 @@ from app.core.logging import get_logger
 from app.extraction.evidence_binder import verify_claim_against_evidence
 from app.prompts.job_post_prompts import (
     JOB_POST_SKILL_EXTRACTION_JSON_SCHEMA,
+    JOB_POST_SKILL_EXTRACTION_PROMPT_VERSION,
     JOB_POST_SKILL_EXTRACTION_SYSTEM_PROMPT,
     JOB_POST_SKILL_EXTRACTION_TASK,
     build_user_payload,
@@ -83,6 +84,7 @@ def extract_skills_via_llm(
             schema_name=JOB_POST_SKILL_EXTRACTION_TASK,
             max_tokens=600,  # short phrases only
             client=llm_client_override,
+            prompt_version=JOB_POST_SKILL_EXTRACTION_PROMPT_VERSION,
         )
     except (LlmCallError, LlmSchemaValidationError) as e:
         logger.warning("job_post_skill_extraction_call_failed", error=str(e))

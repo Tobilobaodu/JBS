@@ -17,6 +17,7 @@ import {
 import { useJobPoll } from "@/hooks/use-job-poll"
 import { usePollUntilReady } from "@/hooks/use-poll-until-ready"
 import { SegmentedControl } from "@/components/modernist/segmented-control"
+import { ProgressBar } from "@/components/modernist/progress-bar"
 
 // Mirrors backend app/api/v1/job_posts.py's JobPostTextRequest min_length.
 const MIN_JOB_TEXT_CHARS = 100
@@ -242,6 +243,12 @@ export default function NewMatchPage() {
                         ? "processing…"
                         : "uploaded"}
                 </div>
+                <ProgressBar
+                  isActive={!cvError && !cvUploadPoll.isCompleted}
+                  expectedDurationMs={8000}
+                  width={160}
+                  height={6}
+                />
               </div>
               {cvUploadPoll.isCompleted && !cvError && (
                 <Check width={18} height={18} strokeWidth={2.4} strokeLinecap="square" style={{ color: "var(--color-text)" }} />
@@ -298,11 +305,14 @@ export default function NewMatchPage() {
         </div>
       </div>
 
-      <div style={{ borderTop: "1px solid var(--color-divider)", paddingTop: 24, display: "flex", alignItems: "center", gap: 16 }}>
-        <button type="button" className="btn btn-primary" disabled={isRunning || isUploadingCv} onClick={handleRunMatch}>
-          {runLabel}
-        </button>
-        <div style={{ fontSize: 13, color: "var(--color-neutral-700)" }}>This uses one of your remaining rewrites.</div>
+      <div style={{ borderTop: "1px solid var(--color-divider)", paddingTop: 24, display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <button type="button" className="btn btn-primary" disabled={isRunning || isUploadingCv} onClick={handleRunMatch}>
+            {runLabel}
+          </button>
+          <div style={{ fontSize: 13, color: "var(--color-neutral-700)" }}>This uses one of your remaining rewrites.</div>
+        </div>
+        <ProgressBar isActive={isRunning} expectedDurationMs={50000} width={280} />
       </div>
     </div>
   )

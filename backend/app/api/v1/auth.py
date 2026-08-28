@@ -32,6 +32,7 @@ from app.schemas.auth import (
     ClaimTrialResponse,
     LoginRequest,
     LoginResponse,
+    RefreshRequest,
     RegisterRequest,
     UserResponse,
 )
@@ -229,6 +230,108 @@ async def login(
     return LoginResponse(
         access_token=access_token,
         refresh_token=refresh_token,
+        user=_map_user(user),
+    )
+
+
+@router.post("/refresh", response_model=LoginResponse)
+async def refresh(
+    body: RefreshRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Redeem a refresh token for a fresh access token.
+
+    Closes the gap that made an expired access token unrecoverable: the
+    30-day refresh token issued at login was stored in user_sessions but
+    nothing redeemed it, so the only way past a rejected access token was
+    for the user to log in again (frontend api.ts cleared local auth on
+    any 401).
+
+    Deliberately NOT authenticated via get_current_user — the whole point
+    is to be reachable when the access token is expired or otherwise no
+    longer accepted. Authorization comes from the refresh token itself,
+    which is a 512-bit secret stored only as a hash, and every check
+    get_current_user applies to a session is re-applied here (live,
+    non-revoked, unexpired row; active user).
+
+    The refresh token is intentionally NOT rotated. Rotation is the
+    stronger posture in general, but with one row per session it makes
+    concurrent redemptions (two tabs recovering from the same expired
+    token) invalidate each other, reintroducing exactly the spurious
+    logout this endpoint exists to remove. The token stays revocable via
+    /auth/logout and bounded by the session's absolute expires_at, which
+    is not extended here — refreshing renews access, it does not
+    lengthen the session.
+    """
+    # Rate limited under its own key namespace ("refresh:<ip>") rather
+    # than the bare client key used by login/register. The limiter blocks
+    # a violating key for 5 minutes, and this endpoint is called
+    # automatically by the client rather than by a person — sharing the
+    # key would let a burst of background refreshes lock the same IP out
+    # of /auth/login, turning a recoverable session into a hard lockout.
+    client_key = get_client_key(request)
+    if not check_rate_limit(f"refresh:{client_key}"):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many refresh attempts. Please wait and try again.",
+        )
+
+    # One error for every failure mode below: which specific check failed
+    # (unknown token vs revoked vs expired vs suspended account) is not
+    # something an unauthenticated caller should be able to distinguish.
+    invalid_token = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Refresh token is invalid, expired, or has been revoked.",
+    )
+
+    result = await session.execute(
+        select(UserSession).where(
+            UserSession.refresh_token_hash == hash_token(body.refresh_token),
+            UserSession.revoked_at.is_(None),
+        )
+    )
+    user_session = result.scalar_one_or_none()
+
+    if user_session is None:
+        AUTH_FAILURE_COUNTER.labels(reason="invalid_refresh_token").inc()
+        raise invalid_token
+
+    if user_session.expires_at <= datetime.now(timezone.utc):
+        AUTH_FAILURE_COUNTER.labels(reason="expired_refresh_token").inc()
+        raise invalid_token
+
+    user_result = await session.execute(
+        select(User).where(User.id == user_session.user_id)
+    )
+    user = user_result.scalar_one_or_none()
+    if user is None or user.status != "active":
+        AUTH_FAILURE_COUNTER.labels(reason="inactive_user").inc()
+        raise invalid_token
+
+    # Replaces the hash the old access token was looked up by, so the
+    # superseded token stops authenticating immediately instead of
+    # remaining valid alongside the new one until its own JWT exp.
+    access_token = create_access_token(user.id)
+    user_session.access_token_hash = hash_token(access_token)
+    user.last_active = datetime.now(timezone.utc)
+
+    await _create_audit_event(
+        session=session,
+        event_type="token_refreshed",
+        user_id=user.id,
+        entity_type="user_session",
+        entity_id=user_session.id,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+
+    await session.commit()
+    logger.info("access_token_refreshed", user_id=user.id, session_id=user_session.id)
+
+    return LoginResponse(
+        access_token=access_token,
+        refresh_token=body.refresh_token,
         user=_map_user(user),
     )
 

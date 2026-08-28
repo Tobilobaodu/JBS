@@ -31,6 +31,32 @@ export const loginInvalidHandler = http.post(`${API_BASE_URL}/auth/login`, async
   return HttpResponse.json({ detail: "Invalid email or password." }, { status: 401 })
 })
 
+// lib/api.ts redeems the stored refresh token whenever a request 401s, so
+// any test whose handler returns a 401 while a refreshToken is in the store
+// reaches this endpoint too. A default handler keeps those tests from
+// tripping MSW's onUnhandledRequest: "error" policy (test/setup.ts).
+export const refreshHandler = http.post(`${API_BASE_URL}/auth/refresh`, async () => {
+  return HttpResponse.json({
+    accessToken: "refreshed-access-token",
+    refreshToken: "test-refresh-token",
+    user: {
+      id: "user-1",
+      email: "test@example.com",
+      accountStatus: "active",
+      createdAt: new Date().toISOString(),
+    },
+  })
+})
+
+// performLogout() (lib/auth-api.ts) always fires this before clearing local
+// auth state — a default handler here means any test exercising logout
+// (Navbar, Topbar) doesn't need to mock it just to satisfy MSW's
+// onUnhandledRequest: "error" policy (test/setup.ts).
+export const logoutHandler = http.post(
+  `${API_BASE_URL}/auth/logout`,
+  () => new HttpResponse(null, { status: 204 })
+)
+
 export const registerConflictHandler = http.post(`${API_BASE_URL}/auth/register`, async () => {
   return HttpResponse.json(
     { detail: "An account with this email already exists." },
@@ -47,4 +73,10 @@ export const journeyBeaconHandler = http.post(
   () => new HttpResponse(null, { status: 204 })
 )
 
-export const handlers = [registerHandler, loginHandler, journeyBeaconHandler]
+export const handlers = [
+  registerHandler,
+  loginHandler,
+  logoutHandler,
+  refreshHandler,
+  journeyBeaconHandler,
+]

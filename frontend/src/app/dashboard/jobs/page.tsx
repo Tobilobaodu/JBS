@@ -21,10 +21,22 @@ const STATUS_LABEL: Record<string, string> = {
   failed: "Failed",
 }
 
+const PAGE_SIZE = 20
+
 export default function JobsPage() {
   const queryClient = useQueryClient()
-  const query = useQuery({ queryKey: ["dashboard-job-posts"], queryFn: () => listJobPosts() })
-  const matchesQuery = useQuery({ queryKey: ["dashboard-matches"], queryFn: () => listMatches() })
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const query = useQuery({
+    queryKey: ["dashboard-job-posts", visibleCount],
+    queryFn: () => listJobPosts(visibleCount, 0),
+  })
+  // Kept in step with visibleCount — otherwise a job loaded past the first
+  // page would never find its score, since matchesQuery would still only
+  // hold the first PAGE_SIZE matches.
+  const matchesQuery = useQuery({
+    queryKey: ["dashboard-matches", visibleCount],
+    queryFn: () => listMatches(visibleCount, 0),
+  })
   const [selected, setSelected] = useState<string[]>([])
   const [pastingJobId, setPastingJobId] = useState<string | null>(null)
   const [pasteText, setPasteText] = useState("")
@@ -167,6 +179,19 @@ export default function JobsPage() {
           })}
         </tbody>
       </TableShell>
+
+      {query.data && query.data.total > items.length && (
+        <div style={{ display: "flex", justifyContent: "center" }}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={query.isFetching}
+            onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
+          >
+            {query.isFetching ? "Loading…" : "Load more"}
+          </button>
+        </div>
+      )}
 
       {pastingJobId && (
         <section style={{ background: "var(--color-surface)", padding: 24 }}>

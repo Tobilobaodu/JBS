@@ -31,8 +31,31 @@ from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.circuit_breaker import OPENAI_CIRCUIT
 from app.core.metrics import LLM_TOKENS_COUNTER
+from app.core.tracing import tracer
 
 logger = get_logger(__name__)
+
+# O3: per-token USD rates for the two models actually used in this
+# codebase (settings.openai_model/openai_model_generation). Mirrors the
+# rates app/api/v1/resume_rewrites.py's _GPT_4O_MINI_RATE/_GPT_4O_RATE
+# already use for real budget accounting — duplicated here rather than
+# imported, since this module is a lower layer neither of those
+# API-layer modules should import from in the other direction. Unifying
+# into one shared pricing source is reasonable future cleanup, not done
+# here — this table exists only to label the tracing span's cost_usd
+# attribute, it is not itself a billing/budget source of truth.
+_MODEL_PRICING_PER_TOKEN = {
+    "gpt-4o-mini": (0.150 / 1_000_000, 0.600 / 1_000_000),  # (prompt, completion)
+    "gpt-4o": (2.50 / 1_000_000, 10.00 / 1_000_000),
+}
+
+
+def _estimate_cost_usd(model: str, prompt_tokens: int, completion_tokens: int) -> float | None:
+    rates = _MODEL_PRICING_PER_TOKEN.get(model)
+    if rates is None:
+        return None
+    prompt_rate, completion_rate = rates
+    return prompt_tokens * prompt_rate + completion_tokens * completion_rate
 
 
 class LlmCallError(Exception):
@@ -77,6 +100,7 @@ def generate_structured(
     timeout: float | None = None,
     max_api_retries: int = 2,
     client: OpenAI | None = None,
+    prompt_version: str | None = None,
 ) -> StructuredGenerationResult:
     """Call the chat completions API in JSON-schema strict mode.
 
@@ -90,92 +114,112 @@ def generate_structured(
     `client` is injectable so tests never construct a real OpenAI client
     (which would fail immediately without an API key) — pass a fake with
     a matching `.chat.completions.create` surface instead.
+
+    `prompt_version` (O3): optional, purely a tracing-span attribute — the
+    caller's own PROMPT_VERSION constant, when it has one. Optional
+    rather than required so adopting tracing doesn't force every call
+    site to change atomically; omit it and the span just won't carry
+    that attribute.
     """
-    client = client or _get_client(timeout)
-    model = model or settings.openai_model
+    with tracer.start_as_current_span("llm.generate_structured") as span:
+        span.set_attribute("llm.schema_name", schema_name)
+        if prompt_version:
+            span.set_attribute("llm.prompt_version", prompt_version)
 
-    # Circuit breaker (§6): fail fast rather than queuing a call that will
-    # only time out and hold worker capacity while the provider is degraded.
-    if not OPENAI_CIRCUIT.allow():
-        raise LlmCallError(
-            "LLM circuit open — failing fast rather than attempting a call "
-            "that will only time out."
-        )
+        client = client or _get_client(timeout)
+        model = model or settings.openai_model
+        span.set_attribute("llm.model", model)
 
-    last_error: Exception | None = None
-    response = None
-    for attempt in range(max_api_retries + 1):
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_payload},
-                ],
-                max_tokens=max_tokens,
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": schema_name,
-                        "schema": json_schema,
-                        "strict": True,
+        # Circuit breaker (§6): fail fast rather than queuing a call that will
+        # only time out and hold worker capacity while the provider is degraded.
+        if not OPENAI_CIRCUIT.allow():
+            raise LlmCallError(
+                "LLM circuit open — failing fast rather than attempting a call "
+                "that will only time out."
+            )
+
+        last_error: Exception | None = None
+        response = None
+        for attempt in range(max_api_retries + 1):
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_payload},
+                    ],
+                    max_tokens=max_tokens,
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": schema_name,
+                            "schema": json_schema,
+                            "strict": True,
+                        },
                     },
-                },
+                )
+                break
+            except _TRANSIENT_EXCEPTIONS as e:
+                last_error = e
+                logger.warning(
+                    "llm_transient_error", attempt=attempt, error=str(e), schema_name=schema_name,
+                )
+                continue
+            except APIError as e:
+                # Non-transient (bad request, auth, content policy, etc.) — no retry.
+                raise LlmCallError(f"OpenAI API error: {e}") from e
+
+        if response is None:
+            OPENAI_CIRCUIT.record_failure()
+            raise LlmCallError(
+                f"OpenAI API call failed after {max_api_retries + 1} attempts: {last_error}"
             )
-            break
-        except _TRANSIENT_EXCEPTIONS as e:
-            last_error = e
+
+        # The dependency responded — that's a circuit success, regardless of what
+        # content-level validation below decides about the payload.
+        OPENAI_CIRCUIT.record_success()
+
+        choice = response.choices[0]
+        message = choice.message
+
+        if message.refusal:
+            raise LlmSchemaValidationError(f"Model refused to generate: {message.refusal}")
+
+        if not message.content:
+            raise LlmSchemaValidationError("Model returned empty content")
+
+        # With strict:true, hitting max_tokens truncates mid-JSON and json.loads
+        # below raises a generic "not valid JSON" — which sends you looking for
+        # a model problem that is really a config problem (the cap set too low
+        # for this schema/input). Name it explicitly instead.
+        if getattr(choice, "finish_reason", None) == "length":
             logger.warning(
-                "llm_transient_error", attempt=attempt, error=str(e), schema_name=schema_name,
+                "llm_output_truncated", schema_name=schema_name, max_tokens=max_tokens,
             )
-            continue
-        except APIError as e:
-            # Non-transient (bad request, auth, content policy, etc.) — no retry.
-            raise LlmCallError(f"OpenAI API error: {e}") from e
+            raise LlmSchemaValidationError(
+                "Response hit the token cap before completing."
+            )
 
-    if response is None:
-        OPENAI_CIRCUIT.record_failure()
-        raise LlmCallError(
-            f"OpenAI API call failed after {max_api_retries + 1} attempts: {last_error}"
+        try:
+            data = json.loads(message.content)
+        except json.JSONDecodeError as e:
+            raise LlmSchemaValidationError(f"Response was not valid JSON: {e}") from e
+
+        usage = response.usage
+        prompt_tokens = usage.prompt_tokens if usage else 0
+        completion_tokens = usage.completion_tokens if usage else 0
+        span.set_attribute("llm.input_tokens", prompt_tokens)
+        span.set_attribute("llm.output_tokens", completion_tokens)
+        cost_usd = _estimate_cost_usd(model, prompt_tokens, completion_tokens)
+        if cost_usd is not None:
+            span.set_attribute("llm.cost_usd", cost_usd)
+
+        return StructuredGenerationResult(
+            data=data,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            model=response.model,
         )
-
-    # The dependency responded — that's a circuit success, regardless of what
-    # content-level validation below decides about the payload.
-    OPENAI_CIRCUIT.record_success()
-
-    choice = response.choices[0]
-    message = choice.message
-
-    if message.refusal:
-        raise LlmSchemaValidationError(f"Model refused to generate: {message.refusal}")
-
-    if not message.content:
-        raise LlmSchemaValidationError("Model returned empty content")
-
-    # With strict:true, hitting max_tokens truncates mid-JSON and json.loads
-    # below raises a generic "not valid JSON" — which sends you looking for
-    # a model problem that is really a config problem (the cap set too low
-    # for this schema/input). Name it explicitly instead.
-    if getattr(choice, "finish_reason", None) == "length":
-        logger.warning(
-            "llm_output_truncated", schema_name=schema_name, max_tokens=max_tokens,
-        )
-        raise LlmSchemaValidationError(
-            "Response hit the token cap before completing."
-        )
-
-    try:
-        data = json.loads(message.content)
-    except json.JSONDecodeError as e:
-        raise LlmSchemaValidationError(f"Response was not valid JSON: {e}") from e
-
-    usage = response.usage
-    return StructuredGenerationResult(
-        data=data,
-        prompt_tokens=usage.prompt_tokens if usage else 0,
-        completion_tokens=usage.completion_tokens if usage else 0,
-        model=response.model,
-    )
 
 
 def stream_text(
@@ -188,6 +232,7 @@ def stream_text(
     generation_task: str = "resume_rewrite",
     client: OpenAI | None = None,
     usage_callback: "Callable[[int, int], None] | None" = None,
+    prompt_version: str | None = None,
 ) -> Iterator[str]:
     """Stream a plain-text/markdown completion. No JSON schema — the
     caller wants readable output as it arrives, which a strict-schema
@@ -214,46 +259,59 @@ def stream_text(
     generator's yielded values are text chunks, not a place to also
     return usage.
     """
-    client = client or _get_client(timeout)
-    model = model or settings.openai_model
+    with tracer.start_as_current_span("llm.stream_text") as span:
+        span.set_attribute("llm.generation_task", generation_task)
+        if prompt_version:
+            span.set_attribute("llm.prompt_version", prompt_version)
 
-    if not OPENAI_CIRCUIT.allow():
-        raise LlmCallError(
-            "LLM circuit open — failing fast rather than attempting a call "
-            "that will only time out."
-        )
+        client = client or _get_client(timeout)
+        model = model or settings.openai_model
+        span.set_attribute("llm.model", model)
 
-    try:
-        stream = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_payload},
-            ],
-            max_tokens=max_tokens,
-            stream=True,
-            # Without this the final chunk carrying usage never arrives,
-            # and LLM_TOKENS_COUNTER silently stops counting generation
-            # tokens — easy to miss, and it breaks cost tracking without
-            # breaking the feature itself.
-            stream_options={"include_usage": True},
-        )
-        for chunk in stream:
-            if chunk.usage:
-                LLM_TOKENS_COUNTER.labels(
-                    generation_task=generation_task, token_type="completion",
-                ).inc(chunk.usage.completion_tokens)
-                LLM_TOKENS_COUNTER.labels(
-                    generation_task=generation_task, token_type="prompt",
-                ).inc(chunk.usage.prompt_tokens)
-                if usage_callback:
-                    usage_callback(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
-        OPENAI_CIRCUIT.record_success()
-    except _TRANSIENT_EXCEPTIONS as e:
-        OPENAI_CIRCUIT.record_failure()
-        raise LlmCallError(f"Stream failed: {e}") from e
-    except APIError as e:
-        OPENAI_CIRCUIT.record_failure()
-        raise LlmCallError(f"OpenAI API error: {e}") from e
+        if not OPENAI_CIRCUIT.allow():
+            raise LlmCallError(
+                "LLM circuit open — failing fast rather than attempting a call "
+                "that will only time out."
+            )
+
+        try:
+            stream = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_payload},
+                ],
+                max_tokens=max_tokens,
+                stream=True,
+                # Without this the final chunk carrying usage never arrives,
+                # and LLM_TOKENS_COUNTER silently stops counting generation
+                # tokens — easy to miss, and it breaks cost tracking without
+                # breaking the feature itself.
+                stream_options={"include_usage": True},
+            )
+            for chunk in stream:
+                if chunk.usage:
+                    LLM_TOKENS_COUNTER.labels(
+                        generation_task=generation_task, token_type="completion",
+                    ).inc(chunk.usage.completion_tokens)
+                    LLM_TOKENS_COUNTER.labels(
+                        generation_task=generation_task, token_type="prompt",
+                    ).inc(chunk.usage.prompt_tokens)
+                    span.set_attribute("llm.input_tokens", chunk.usage.prompt_tokens)
+                    span.set_attribute("llm.output_tokens", chunk.usage.completion_tokens)
+                    cost_usd = _estimate_cost_usd(
+                        model, chunk.usage.prompt_tokens, chunk.usage.completion_tokens,
+                    )
+                    if cost_usd is not None:
+                        span.set_attribute("llm.cost_usd", cost_usd)
+                    if usage_callback:
+                        usage_callback(chunk.usage.prompt_tokens, chunk.usage.completion_tokens)
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+            OPENAI_CIRCUIT.record_success()
+        except _TRANSIENT_EXCEPTIONS as e:
+            OPENAI_CIRCUIT.record_failure()
+            raise LlmCallError(f"Stream failed: {e}") from e
+        except APIError as e:
+            OPENAI_CIRCUIT.record_failure()
+            raise LlmCallError(f"OpenAI API error: {e}") from e

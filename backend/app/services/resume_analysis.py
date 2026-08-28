@@ -98,6 +98,7 @@ def analyze_resume(
             timeout=15,
             max_api_retries=1,
             client=llm_client_override,
+            prompt_version=prompts.RESUME_ANALYSIS_PROMPT_VERSION,
         )
     except (LlmCallError, LlmSchemaValidationError) as e:
         LLM_GENERATION_COUNTER.labels(

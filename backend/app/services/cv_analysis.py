@@ -87,6 +87,7 @@ def analyze_cv(cv_text: str, *, client=None) -> CvAnalysisResult:
             schema_name=prompts.CV_ANALYSIS_TASK,
             max_tokens=1200,  # scores plus issue lists
             client=client,
+            prompt_version=prompts.CV_ANALYSIS_PROMPT_VERSION,
         )
     except (LlmCallError, LlmSchemaValidationError) as e:
         LLM_GENERATION_COUNTER.labels(

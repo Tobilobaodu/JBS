@@ -80,9 +80,61 @@ paths:
                 type: object
                 properties:
                   accessToken: { type: string }
+                  refreshToken:
+                    type: string
+                    description: >-
+                      Long-lived, revocable, stored server-side in
+                      user_sessions. Redeem at POST /auth/refresh for a new
+                      access token.
                   user: { $ref: '#/components/schemas/User' }
         '401':
           description: Invalid credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      security: []
+      summary: Exchange a refresh token for a new access token
+      description: >-
+        Unauthenticated by design: it is reached precisely when the access
+        token is expired or no longer accepted, so it cannot itself require
+        a valid bearer token. Authorization comes from the refresh token in
+        the body. The session's absolute expiry is NOT extended, and the
+        refresh token is not rotated, so concurrent redemptions from
+        multiple tabs do not invalidate one another. Redeeming supersedes
+        the previous access token immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: New access token issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken: { type: string }
+                  refreshToken: { type: string }
+                  user: { $ref: '#/components/schemas/User' }
+        '401':
+          description: >-
+            Refresh token unknown, revoked (logged out), past the session's
+            expiry, or the account is no longer active.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Too many refresh attempts
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

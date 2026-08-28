@@ -112,3 +112,7 @@ export function listCoverLetterWorkflows(limit = 20, offset = 0) {
     `/cover-letters?limit=${limit}&offset=${offset}`
   )
 }
+
+export function deleteCoverLetterWorkflow(workflowId: string) {
+  return apiFetch<void>(`/cover-letters/${workflowId}`, { method: "DELETE" })
+}

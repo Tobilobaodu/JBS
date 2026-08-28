@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
+import { Trash2 } from "lucide-react"
 
-import { listCoverLetterWorkflows, type CoverLetterWorkflowListItem } from "@/lib/dashboard-api"
+import { deleteCoverLetterWorkflow, listCoverLetterWorkflows, type CoverLetterWorkflowListItem } from "@/lib/dashboard-api"
 import {
   approveCoverLetterDraft,
   exportCoverLetter,
@@ -17,6 +18,7 @@ import {
 import { errorMessage } from "@/lib/api"
 import { Tag } from "@/components/modernist/tag"
 import { TableShell } from "@/components/modernist/table-shell"
+import { ProgressBar } from "@/components/modernist/progress-bar"
 import { ExportButton } from "@/components/export-button"
 
 const STATUS_LABEL: Record<string, string> = {
@@ -40,6 +42,22 @@ export default function CoverLettersPage() {
   const queryClient = useQueryClient()
   const query = useQuery({ queryKey: ["dashboard-cover-letters"], queryFn: () => listCoverLetterWorkflows() })
   const [active, setActive] = useState<ActiveWorkflow | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  async function handleDelete(e: React.MouseEvent, wf: CoverLetterWorkflowListItem) {
+    e.stopPropagation()
+    if (!window.confirm(`Delete the cover letter for ${wf.jobTitle ?? "this role"}? This can't be undone.`)) return
+    setDeletingId(wf.id)
+    try {
+      await deleteCoverLetterWorkflow(wf.id)
+      if (active?.id === wf.id) setActive(null)
+      void queryClient.invalidateQueries({ queryKey: ["dashboard-cover-letters"] })
+    } catch (error) {
+      toast.error(errorMessage(error, "Couldn't delete that cover letter."))
+    } finally {
+      setDeletingId(null)
+    }
+  }
 
   // Default to the newest resumable workflow once the list loads, so the
   // guided card has something to show without requiring an extra click.
@@ -97,6 +115,7 @@ export default function CoverLettersPage() {
               <th>Step</th>
               <th>Created</th>
               <th></th>
+              <th></th>
             </tr>
           </thead>
           <tbody>
@@ -121,6 +140,17 @@ export default function CoverLettersPage() {
                   ) : (
                     <span style={{ fontSize: 13, color: "var(--color-neutral-600)" }}>—</span>
                   )}
+                </td>
+                <td style={{ textAlign: "right" }}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost"
+                    aria-label={`Delete cover letter for ${wf.jobTitle ?? "this role"}`}
+                    disabled={deletingId === wf.id}
+                    onClick={(e) => handleDelete(e, wf)}
+                  >
+                    <Trash2 width={16} height={16} strokeWidth={2} />
+                  </button>
                 </td>
               </tr>
             ))}
@@ -297,7 +327,10 @@ function DraftStep({ workflow, onFinished }: { workflow: ActiveWorkflow; onFinis
       <p style={{ margin: "0 0 24px", fontSize: 14, color: "var(--color-neutral-700)" }}>{workflow.employer ?? ""}</p>
 
       {workflow.status === "generating" || draftQuery.isLoading ? (
-        <p style={{ fontSize: 14, color: "var(--color-neutral-700)" }}>Writing your letter — this takes about a minute.</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <p style={{ margin: 0, fontSize: 14, color: "var(--color-neutral-700)" }}>Writing your letter — this takes about a minute.</p>
+          <ProgressBar isActive width={280} expectedDurationMs={60000} />
+        </div>
       ) : draftQuery.data ? (
         <>
           <pre

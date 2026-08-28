@@ -54,10 +54,19 @@ function pollJob(baseUrl, headers, jobId, capMs) {
   return { status, elapsedSeconds: (Date.now() - startedAt) / 1000 };
 }
 
-export default function () {
+// See scenario_a_browse.js's setup() comment: logging in per-iteration
+// instead of once rate-limits almost every VU into 429s under any real
+// concurrency (auth tier: 5 requests/60s per IP) — confirmed live.
+export function setup() {
   const token = login(BASE_URL, __ENV.TEST_EMAIL, __ENV.TEST_PASSWORD);
-  if (!token) return;
-  const headers = authHeaders(token);
+  if (!token) {
+    throw new Error("setup() login failed — check TEST_EMAIL/TEST_PASSWORD and that the account exists.");
+  }
+  return { token };
+}
+
+export default function (data) {
+  const headers = authHeaders(data.token);
 
   // Stage 1: match
   const matchRes = http.post(

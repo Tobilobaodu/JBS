@@ -37,10 +37,14 @@ export default function RegisterPage() {
       // Registration does not return a token (app/api/v1/auth.py::register
       // returns 201 UserResponse only) — log in immediately after.
       const loginResult = await loginAccount(values.email, values.password)
-      setAuth(loginResult.accessToken, {
-        id: loginResult.user.id,
-        email: loginResult.user.email,
-      })
+      setAuth(
+        loginResult.accessToken,
+        {
+          id: loginResult.user.id,
+          email: loginResult.user.email,
+        },
+        loginResult.refreshToken
+      )
       await redirectAfterAuth()
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {

@@ -351,11 +351,11 @@ referent).
 | `CredentialStuffingSuspect` | `auth_failures_total` | API process, direct | Not separately live-fired; wired since Sprint 6, no scrape gap possible (in-process counter) |
 | `IdorProbingSuspect` | `authz_denied_total` | API process, direct | ✅ live-fire proven — real cross-user request in the 2026-08-13 tabletop, plus `test_idor_matrix.py` across all 28 routes |
 | `SsrfProbingSuspect` | `ssrf_rejected_total` | Worker → Pushgateway | ✅ live-fire proven — real SSRF probe (`169.254.169.254`) confirmed reaching Prometheus |
-| `GenerationValidationSpike` | `generation_schema_validation_failed_total` | Worker → Pushgateway | ⚠️ wired, not live-fired — this doc's own §"Post-sign-off correction" already flags it as "code-reviewed, not separately live-fired" |
+| `GenerationValidationSpike` | `generation_schema_validation_failed_total` | Worker → Pushgateway | ✅ live-fire proven 2026-08-28 — see below |
 | `QueueDepthSpike` | `processing_queue_depth` (gauge) | API process, direct | ✅ live-fire proven — real leftover dev-DB rows pushed it into `pending` state against live Prometheus |
 | `QueueHasNoConsumer` | `processing_queue_consumers`/`processing_queue_depth` | API process, direct | ✅ real-incident proven — its own comment in `alert_rules.yml` records two genuine production occurrences this diagnosed, not a synthetic test |
-| `CostSpikeSuspect` | `cost_usd_total` | Worker → Pushgateway | ⚠️ wired, not live-fired — **correction to how this has been described since**: this doc's "Fixes" §1 covers SSRF, generation-validation, *and* cost under one Pushgateway change, but its own next sentence says only SSRF was independently re-proven live; generation-validation and cost were "code-reviewed, not separately live-fired." Later summaries (including this session's) had drifted into listing `CostSpikeSuspect` alongside the live-fire-proven rules — it isn't, on this document's own original wording. |
-| `FabricationRateSpike` | `evidence_verification_total` | Worker → Pushgateway | ⚠️ wired, not live-fired — added after this sign-off (Sprint A/B/C, O1), same Pushgateway pattern, same gap: registered in `PUSH_REGISTRY` (`app/core/metrics.py`) and pushed from `generation_core.py`, never triggered against the live stack |
+| `CostSpikeSuspect` | `cost_usd_total` | Worker → Pushgateway | ✅ live-fire proven 2026-08-28 — see below. **Correction to how this had been described up to this point**: this doc's original "Fixes" §1 covers SSRF, generation-validation, *and* cost under one Pushgateway change, but its own next sentence says only SSRF was independently re-proven live at the time; later summaries (including one this session) had drifted into listing `CostSpikeSuspect` alongside the live-fire-proven rules regardless — that drift is now moot, since it's genuinely proven below, but the earlier claim was wrong when made. |
+| `FabricationRateSpike` | `evidence_verification_total` | Worker → Pushgateway | ✅ live-fire proven 2026-08-28 — see below |
 
 **Coverage**: all 5 of §10's attack-pattern counters have a firing rule,
 plus the 1 cost alert — nothing in §10's requirement lacks a rule, and no
@@ -363,14 +363,44 @@ rule references a metric that's dead on arrival (the `QueueDepthSpike`
 label mismatch this doc already caught and fixed is the only instance of
 that failure mode found either time).
 
-**Real, still-open follow-up** (small, not attempted here — needs a
-deliberate live-fire session with either a full CV+match+generate chain
-and real OpenAI spend, or a mocked worker environment, plus — for
-`CostSpikeSuspect` specifically — ~$90 of real spend sustained for 5
-minutes to actually cross the threshold, which is not something to
-trigger casually): live-fire `GenerationValidationSpike`,
-`CostSpikeSuspect`, and `FabricationRateSpike` the same way `SsrfProbingSuspect`
-was proven, so all 8 rules have the same class of evidence behind them.
+**2026-08-28 live-fire session — the three remaining unproven rules, closed:**
+- **`CostSpikeSuspect`**: not real spend — pushed a synthetic `cost_usd_total`
+  value directly to Pushgateway (`job=synthetic_costspike_test`), incrementing
+  it every 15s for ~6.5 minutes to keep `rate() > 0.30/s` sustained through
+  the rule's `for: 5m`. Confirmed `firing` in both Prometheus and
+  Alertmanager (`{"alertname":"CostSpikeSuspect","state":"active"}`). One
+  real bug found and fixed en route: the first attempt used a plain
+  double-quoted shell string for `--data-binary`, where `\n` is not an
+  actual newline — Pushgateway silently rejected every push after the
+  first, and the failures were swallowed by a `>/dev/null` redirect. Fixed
+  by using `$'...'` ANSI-C quoting for real newlines; verified each push's
+  HTTP status directly on retry.
+- **`GenerationValidationSpike`** and **`FabricationRateSpike`**: both fire
+  from the same code path (`generation_core.py`'s `generate_and_verify_
+  section`, the "omitted after max_attempts" branch), so one real,
+  unmocked LLM call sequence exercises both. Called `generate_and_verify_
+  section` directly (not through the full upload→parse→match→generate HTTP
+  chain — no CV fixture exists in this repo to drive that path; this calls
+  the same real function, real LLM client, real `evidence_binder`
+  verification, and real Pushgateway push, just without the surrounding
+  HTTP/worker plumbing) with a deliberately fabricated claim (specific
+  invented revenue/CRM numbers) against an unrelated evidence pool (a
+  barista job). The real model produced the requested claim, the real
+  verifier correctly rejected it every time (`unsupported facts not
+  present in cited evidence: ['47%', '$2.3M', 'Salesforce CRM']`), and
+  both counters incremented for real. Looped in a single long-lived
+  process for ~13 minutes (one call every ~6-8s) to keep both rates
+  sustained through their `for: 5m`/`for: 10m` windows — confirmed both
+  `firing` in Alertmanager. One real bug found and fixed en route: the
+  first attempt spawned a fresh `docker compose exec` process per call,
+  and Pushgateway's grouping key is `hostname:pid` — each new process got
+  its own single-sample series, which can never show a nonzero `rate()`
+  no matter how many times the test ran. Fixed by looping inside one
+  process so repeated increments land on the same series.
+- As a side effect, this also live-verified O3's OpenTelemetry tracing
+  (added the same session): every call emitted a real console span with
+  `prompt_version`/`model`/`input_tokens`/`output_tokens`/`cost_usd`
+  populated correctly.
 
 **Confirmed still open, unchanged**: `prometheus/alertmanager.yml` remains
 a log-only `stub` receiver — no Slack/email/PagerDuty channel. This is a

@@ -336,6 +336,7 @@ def rewrite_resume(
             timeout=settings.openai_timeout_generation_seconds,
             model=settings.openai_model_generation,
             client=llm_client_override,
+            prompt_version=prompts.RESUME_REWRITE_PROMPT_VERSION,
         )
     except (LlmCallError, LlmSchemaValidationError) as e:
         LLM_GENERATION_COUNTER.labels(
@@ -432,6 +433,7 @@ def stream_rewrite_resume(
             timeout=settings.openai_timeout_generation_seconds,
             client=llm_client_override,
             usage_callback=_capture_usage,
+            prompt_version=prompts.RESUME_REWRITE_PROMPT_VERSION,
         ):
             accumulated.append(chunk)
             yield RewriteStreamEvent(type="delta", text=chunk)

@@ -42,7 +42,7 @@ celery_app.conf.update(
         "socket_connect_timeout": 10,
     },
     # Autodiscover tasks from worker_jobs (avoids circular import)
-    imports=("app.workers.worker_jobs",),
+    imports=("app.workers.worker_jobs", "app.workers.job_feed_jobs"),
     # Periodic tasks, run by a `celery -A app.workers.tasks beat` process
     # (see docker-compose.yml's `beat` service). Requires a worker consuming
     # the queue named in each entry's task — see `worker_maintenance` for
@@ -55,6 +55,10 @@ celery_app.conf.update(
         "recover-stalled-jobs": {
             "task": "app.workers.worker_jobs.recover_stalled_jobs",
             "schedule": timedelta(seconds=settings.stalled_job_recovery_interval_seconds),
+        },
+        "refresh-job-feed": {
+            "task": "app.workers.job_feed_jobs.refresh_job_feed",
+            "schedule": timedelta(seconds=settings.job_feed_refresh_interval_seconds),
         },
     },
 )

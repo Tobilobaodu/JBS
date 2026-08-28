@@ -25,6 +25,7 @@ from sqlalchemy.pool import NullPool
 from app.core.config import settings
 from app.api.v1.cover_letters import (
     submit_answers, get_draft, regenerate, approve, list_cover_letter_workflows,
+    delete_cover_letter_workflow,
 )
 from app.schemas.cover_letter import SubmitAnswersRequest, AnswerItem
 from app.db.models import (
@@ -389,3 +390,61 @@ async def test_regenerate_rejects_awaiting_answers_state():
         with pytest.raises(HTTPException) as exc:
             await regenerate(request=_fake_request(), workflowId=wf_id, current_user=user, session=s)
         assert exc.value.status_code == 409
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# DELETE /cover-letters/{workflowId}
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_delete_sets_status_archived():
+    async with _test_session_factory() as s:
+        user = await _user(s, "del1")
+        wf = await _workflow(s, user, status="draft_ready")
+        await s.commit()
+        wf_id = wf.id
+
+    async with _test_session_factory() as s:
+        await delete_cover_letter_workflow(workflowId=wf_id, current_user=user, session=s)
+
+    async with _test_session_factory() as verify_s:
+        result = await verify_s.execute(select(CoverLetterWorkflow).where(CoverLetterWorkflow.id == wf_id))
+        wf = result.scalar_one()
+        assert wf.status == "archived"
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_delete_rejects_wrong_owner():
+    async with _test_session_factory() as s:
+        owner = await _user(s, "del2owner")
+        wf = await _workflow(s, owner)
+        await s.commit()
+        wf_id = wf.id
+
+    async with _test_session_factory() as s:
+        attacker = await _user(s, "del2attacker")
+        await s.commit()
+
+    async with _test_session_factory() as s:
+        with pytest.raises(HTTPException) as exc:
+            await delete_cover_letter_workflow(workflowId=wf_id, current_user=attacker, session=s)
+        assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio(loop_scope="function")
+async def test_archived_workflow_excluded_from_list():
+    async with _test_session_factory() as s:
+        user = await _user(s, "del3")
+        wf_keep = await _workflow(s, user)
+        wf_delete = await _workflow(s, user)
+        await s.commit()
+        wf_delete_id = wf_delete.id
+
+    async with _test_session_factory() as s:
+        await delete_cover_letter_workflow(workflowId=wf_delete_id, current_user=user, session=s)
+
+    async with _test_session_factory() as s:
+        result = await list_cover_letter_workflows(limit=20, offset=0, current_user=user, session=s)
+        assert len(result.items) == 1
+        assert result.items[0].id == wf_keep.id

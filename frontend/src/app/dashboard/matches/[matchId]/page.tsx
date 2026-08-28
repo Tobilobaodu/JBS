@@ -20,6 +20,7 @@ import { errorMessage } from "@/lib/api"
 import { useCvAnalysis } from "@/hooks/use-cv-analysis"
 import { useJobPoll } from "@/hooks/use-job-poll"
 import { ScoreBar } from "@/components/modernist/score-bar"
+import { ProgressBar } from "@/components/modernist/progress-bar"
 import { EvidenceBand } from "@/components/modernist/evidence-band"
 import { CollapsibleIssueSection } from "@/components/modernist/collapsible-issue-section"
 import { Tag } from "@/components/modernist/tag"
@@ -189,9 +190,9 @@ export default function ReportDetailPage() {
         </p>
         {latestCv ? (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 36 }}>
-            <ScoreCell label="Overall score" score={isScoring ? null : (analysis?.overallScore ?? null)} />
-            <ScoreCell label="Skillset level vs market" score={isScoring ? null : (analysis?.skillsetScore ?? null)} />
-            <ScoreCell label="Formatting" score={isScoring ? null : (analysis?.formattingScore ?? null)} />
+            <ScoreCell label="Overall score" score={isScoring ? null : (analysis?.overallScore ?? null)} isLoading={isScoring} />
+            <ScoreCell label="Skillset level vs market" score={isScoring ? null : (analysis?.skillsetScore ?? null)} isLoading={isScoring} />
+            <ScoreCell label="Formatting" score={isScoring ? null : (analysis?.formattingScore ?? null)} isLoading={isScoring} />
           </div>
         ) : (
           <p style={{ fontSize: 13, color: "var(--color-neutral-700)" }}>Resume score unavailable for this match.</p>
@@ -227,28 +228,37 @@ export default function ReportDetailPage() {
         tips={tips}
       />
 
-      <div style={{ display: "flex", gap: 12, paddingTop: 8, flexWrap: "wrap" }}>
-        <button type="button" className="btn btn-primary" onClick={handleDownloadTailoredCv} disabled={isDownloading}>
-          {isDownloading ? "Preparing…" : "Download tailored CV"}
-        </button>
-        <button type="button" className="btn btn-secondary" onClick={handleWriteCoverLetter} disabled={isStartingLetter}>
-          {isStartingLetter ? "Starting…" : "Write the cover letter"}
-        </button>
-        <Link href="/dashboard/new" className="btn btn-secondary">
-          Upload another file
-        </Link>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingTop: 8 }}>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <button type="button" className="btn btn-primary" onClick={handleDownloadTailoredCv} disabled={isDownloading}>
+            {isDownloading ? "Preparing…" : "Download tailored CV"}
+          </button>
+          <button type="button" className="btn btn-secondary" onClick={handleWriteCoverLetter} disabled={isStartingLetter}>
+            {isStartingLetter ? "Starting…" : "Write the cover letter"}
+          </button>
+          <Link href="/dashboard/new" className="btn btn-secondary">
+            Upload another file
+          </Link>
+        </div>
+        <ProgressBar isActive={isDownloading} expectedDurationMs={20000} width={220} />
       </div>
     </div>
   )
 }
 
-function ScoreCell({ label, score }: { label: string; score: number | null }) {
+function ScoreCell({
+  label, score, isLoading,
+}: {
+  label: string
+  score: number | null
+  isLoading?: boolean
+}) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--color-neutral-700)" }}>
         {label}
       </div>
-      <ScoreBar score={score} />
+      <ScoreBar score={score} isLoading={isLoading} />
     </div>
   )
 }

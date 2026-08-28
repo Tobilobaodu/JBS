@@ -1,3 +1,6 @@
+import { LogOut } from "lucide-react"
+
+import { performLogout } from "@/lib/auth-api"
 import { useAuthStore } from "@/store/auth-store"
 
 function initialsFromEmail(email: string | undefined): string {
@@ -43,6 +46,14 @@ export function Topbar({ crumb }: { crumb: string }) {
         >
           {initialsFromEmail(email)}
         </div>
+        <button
+          type="button"
+          className="btn btn-ghost"
+          aria-label="Log out"
+          onClick={performLogout}
+        >
+          <LogOut width={16} height={16} strokeWidth={2} />
+        </button>
       </div>
     </div>
   )

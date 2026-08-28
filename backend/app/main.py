@@ -34,6 +34,8 @@ from app.api.v1.exports import router as exports_router
 from app.api.v1.coverage import router as coverage_router
 from app.api.v1.audit import router as audit_router
 from app.api.v1.client_metrics import router as client_metrics_router
+from app.api.v1.applications import router as applications_router
+from app.api.v1.job_feed import router as job_feed_router
 
 logger = get_logger(__name__)
 
@@ -252,6 +254,8 @@ app.include_router(exports_router, prefix="/api/v1")
 app.include_router(coverage_router, prefix="/api/v1")
 app.include_router(audit_router, prefix="/api/v1")
 app.include_router(client_metrics_router, prefix="/api/v1")
+app.include_router(applications_router, prefix="/api/v1")
+app.include_router(job_feed_router, prefix="/api/v1")
 
 # Prometheus metrics at /metrics
 metrics_app = make_asgi_app()

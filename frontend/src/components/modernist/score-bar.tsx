@@ -8,9 +8,11 @@
  * rather than 0 while a backend analysis job is still running.
  */
 
-const STRIPED_ACCENT =
+import { useSimulatedProgress } from "@/hooks/use-simulated-progress"
+
+export const STRIPED_ACCENT =
   "repeating-linear-gradient(90deg, var(--color-accent) 0 3px, transparent 3px 5px)"
-const STRIPED_NEUTRAL =
+export const STRIPED_NEUTRAL =
   "repeating-linear-gradient(90deg, var(--color-neutral-400) 0 3px, transparent 3px 5px)"
 
 export function ScoreBar({
@@ -18,14 +20,25 @@ export function ScoreBar({
   note,
   size = "md",
   width,
+  isLoading = false,
+  expectedDurationMs,
 }: {
   score: number | null
   note?: string
   size?: "md" | "sm"
   width?: number
+  /** Pass true while a backend job is actively computing this score (not
+   *  merely "no data yet") to fill the bar with a simulated in-progress
+   *  animation instead of the flat placeholder — see
+   *  hooks/use-simulated-progress.ts for why it's simulated rather than
+   *  real: nothing in the backend reports true percent-complete today. */
+  isLoading?: boolean
+  expectedDurationMs?: number
 }) {
+  const simulated = useSimulatedProgress(isLoading, expectedDurationMs)
   const clamped = score == null ? null : Math.max(0, Math.min(100, score))
   const barHeight = size === "sm" ? 10 : 16
+  const fillPercent = clamped ?? (isLoading ? simulated : null)
 
   const bar = (
     <div
@@ -36,8 +49,10 @@ export function ScoreBar({
         width: size === "sm" ? (width ?? 96) : undefined,
       }}
     >
-      {clamped != null && (
-        <div style={{ width: `${clamped}%`, background: STRIPED_ACCENT }} />
+      {fillPercent != null && (
+        <div
+          style={{ width: `${fillPercent}%`, background: STRIPED_ACCENT, transition: "width 200ms linear" }}
+        />
       )}
       <div style={{ flex: 1, background: STRIPED_NEUTRAL }} />
     </div>
@@ -48,7 +63,9 @@ export function ScoreBar({
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         {bar}
         {clamped == null ? (
-          <span style={{ fontSize: 13, color: "var(--color-neutral-600)" }}>—</span>
+          <span style={{ fontSize: 13, color: "var(--color-neutral-600)" }}>
+            {isLoading ? `${Math.round(simulated)}%` : "—"}
+          </span>
         ) : (
           <span style={{ fontFamily: "var(--font-heading)", fontWeight: 800, fontSize: 13 }}>
             {Math.round(clamped)}
@@ -62,7 +79,9 @@ export function ScoreBar({
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       {bar}
       {clamped == null ? (
-        <span style={{ fontSize: 13, color: "var(--color-neutral-600)" }}>Scoring…</span>
+        <span style={{ fontSize: 13, color: "var(--color-neutral-600)" }}>
+          {isLoading ? `Scoring… ${Math.round(simulated)}%` : "Scoring…"}
+        </span>
       ) : (
         <div style={{ display: "flex", gap: 10, alignItems: "baseline" }}>
           <div style={{ fontFamily: "var(--font-heading)", fontWeight: 800, fontSize: 20 }}>

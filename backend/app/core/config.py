@@ -114,7 +114,16 @@ class Settings(BaseSettings):
 
     # JWT
     jwt_secret: str = ""
-    jwt_expiry: int = 3600
+    # Access-token lifetime. Raised from the original 1 hour — every request
+    # already re-checks the bearer token against a live, revocable
+    # user_sessions row (get_current_user, app/core/security.py), so logout
+    # or an incident-response revoke still invalidates it immediately
+    # regardless of this value; a longer value mainly means less-frequent
+    # forced re-logins for a token that's never actually been revoked. No
+    # refresh-token flow exists yet (the 30-day refresh token issued at
+    # login is stored but nothing redeems it) — until that's built, this is
+    # the only lever for session length.
+    jwt_expiry: int = 604800  # 7 days
 
     # Rate limiting (tiered)
     rate_limit_requests: int = 100
@@ -154,6 +163,20 @@ class Settings(BaseSettings):
     # same isolation posture as the CV-parsing workers).
     gotenberg_url: str = "http://gotenberg:3000"
     gotenberg_request_timeout_seconds: int = 30
+
+    # Free-API job feed (item 7) — 5 keyless-or-free-tier sources refreshed
+    # periodically by app.workers.job_feed_jobs.refresh_job_feed (queue
+    # "job_feed", worker_job_feed in docker-compose.yml — needs public
+    # internet egress, deliberately kept off the no_internet-only workers).
+    # RemoteOK/Remotive/Arbeitnow need no key at all. Reed and USAJobs each
+    # need a free registration; refresh_all_sources skips a source
+    # gracefully (logs and returns no rows) rather than failing the whole
+    # refresh when its credential is unset — matches the kill-switch
+    # posture used elsewhere in this file (e.g. resume_analysis_enabled).
+    job_feed_refresh_interval_seconds: int = 10800  # 3 hours
+    reed_api_key: str = ""  # https://www.reed.co.uk/developers
+    usajobs_api_key: str = ""  # https://developer.usajobs.gov
+    usajobs_user_agent_email: str = ""  # USAJobs requires the registered email as the request's User-Agent
 
     # Pushgateway (Sprint 6 live-fire finding) — counters that only ever
     # increment inside Celery worker processes (SSRF rejections, generation

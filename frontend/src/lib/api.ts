@@ -1,8 +1,112 @@
+import { toast } from "sonner"
+
 import { useAuthStore } from "@/store/auth-store"
 import { useTrialStore } from "@/store/trial-store"
 
+/** Clears auth state on a 401, and — only when there actually was a
+ *  session to lose — tells the user why they were signed out. Checking
+ *  accessToken !== null *before* clearing distinguishes "your session
+ *  just died" from "you were never logged in" (e.g. a failed /auth/login
+ *  attempt, which also 401s but has nothing to do with session expiry).
+ */
+function handleUnauthorized() {
+  const hadSession = useAuthStore.getState().accessToken !== null
+  useAuthStore.getState().clearAuth()
+  if (hadSession) {
+    toast.error("Your session has expired — please sign in again.")
+  }
+}
+
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000/api/v1"
+
+const REFRESH_PATH = "/auth/refresh"
+
+/** Endpoints that must never trigger the refresh-and-retry path below.
+ *  A 401 from /auth/login is "wrong password", not "expired session", and
+ *  a 401 from /auth/refresh is the refresh itself failing — retrying
+ *  either would be wrong, and recursing into /auth/refresh would loop. */
+const NON_RENEWABLE_PATHS = ["/auth/login", "/auth/register", REFRESH_PATH]
+
+/** Outcome of trying to renew the session after a 401.
+ *  - "renewed"   — new access token stored; the caller should retry once.
+ *  - "dead"      — the refresh token itself was rejected; sign the user out.
+ *  - "transient" — refresh could not be completed (network, 429, 5xx). The
+ *                  session is deliberately LEFT INTACT: a rate-limited or
+ *                  briefly unreachable backend is not proof that the
+ *                  user's credentials are gone, and clearing here is what
+ *                  turned a momentary blip into a surprise logout.
+ *  - "skipped"   — not eligible (no refresh token, or a non-renewable
+ *                  path), so the legacy behaviour applies. */
+type RenewalOutcome = "renewed" | "dead" | "transient" | "skipped"
+
+async function requestNewAccessToken(): Promise<RenewalOutcome> {
+  const refreshToken = useAuthStore.getState().refreshToken
+  if (refreshToken === null) return "skipped"
+
+  let response: Response
+  try {
+    response = await fetch(`${API_BASE_URL}${REFRESH_PATH}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken }),
+    })
+  } catch {
+    return "transient"
+  }
+
+  if (response.status === 401 || response.status === 403) return "dead"
+  if (!response.ok) return "transient"
+
+  try {
+    const data = (await response.json()) as {
+      accessToken?: unknown
+      refreshToken?: unknown
+    }
+    if (typeof data.accessToken !== "string") return "transient"
+    useAuthStore
+      .getState()
+      .setTokens(
+        data.accessToken,
+        typeof data.refreshToken === "string" ? data.refreshToken : refreshToken
+      )
+    return "renewed"
+  } catch {
+    return "transient"
+  }
+}
+
+/** Single-flight: the dashboard fires several authenticated queries in
+ *  parallel, so an expired token produces a burst of simultaneous 401s.
+ *  Without sharing one in-flight refresh they would each redeem the token
+ *  separately, and every redemption supersedes the previous access token —
+ *  the requests would knock each other's credentials out and at least one
+ *  would still fail. */
+let renewalInFlight: Promise<RenewalOutcome> | null = null
+
+function renewSessionOnce(path: string): Promise<RenewalOutcome> {
+  if (NON_RENEWABLE_PATHS.some((p) => path.startsWith(p))) {
+    return Promise.resolve("skipped")
+  }
+  if (renewalInFlight === null) {
+    renewalInFlight = requestNewAccessToken()
+    void renewalInFlight.finally(() => {
+      renewalInFlight = null
+    })
+  }
+  return renewalInFlight
+}
+
+/** Shared 401 policy for all three request helpers. Returns true when the
+ *  caller should replay its request with the freshly stored token. */
+async function shouldRetryAfter401(path: string): Promise<boolean> {
+  const outcome = await renewSessionOnce(path)
+  if (outcome === "renewed") return true
+  // "transient" keeps the session so the user can carry on once the
+  // backend recovers; the original error still surfaces to the caller.
+  if (outcome === "dead" || outcome === "skipped") handleUnauthorized()
+  return false
+}
 
 export class ApiError extends Error {
   status: number
@@ -46,18 +150,27 @@ export async function apiFetch<T>(
   const { body, headers, ...rest } = options
   const isFormData = body instanceof FormData
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...rest,
-    headers: {
-      ...(isFormData ? {} : { "Content-Type": "application/json" }),
-      ...buildIdentityHeaders(),
-      ...headers,
-    },
-    body: isFormData ? body : body !== undefined ? JSON.stringify(body) : undefined,
-  })
+  // Re-reads the identity headers on every call so a replay after a
+  // successful refresh picks up the NEW token rather than resending the
+  // rejected one.
+  const send = () =>
+    fetch(`${API_BASE_URL}${path}`, {
+      ...rest,
+      headers: {
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
+        ...buildIdentityHeaders(),
+        ...headers,
+      },
+      body: isFormData ? body : body !== undefined ? JSON.stringify(body) : undefined,
+    })
 
-  if (response.status === 401) {
-    useAuthStore.getState().clearAuth()
+  let response = await send()
+
+  if (response.status === 401 && (await shouldRetryAfter401(path))) {
+    response = await send()
+    // Still 401 with a token the backend just issued: the session is not
+    // recoverable, so fall through to the sign-out path.
+    if (response.status === 401) handleUnauthorized()
   }
 
   if (!response.ok) {
@@ -88,20 +201,24 @@ export async function apiFetchBlob(
   const { body, headers, ...rest } = options
   const isFormData = body instanceof FormData
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...rest,
-    headers: {
-      ...(isFormData || body === undefined
-        ? {}
-        : { "Content-Type": "application/json" }),
-      ...buildIdentityHeaders(),
-      ...headers,
-    },
-    body: isFormData ? body : body !== undefined ? JSON.stringify(body) : undefined,
-  })
+  const send = () =>
+    fetch(`${API_BASE_URL}${path}`, {
+      ...rest,
+      headers: {
+        ...(isFormData || body === undefined
+          ? {}
+          : { "Content-Type": "application/json" }),
+        ...buildIdentityHeaders(),
+        ...headers,
+      },
+      body: isFormData ? body : body !== undefined ? JSON.stringify(body) : undefined,
+    })
 
-  if (response.status === 401) {
-    useAuthStore.getState().clearAuth()
+  let response = await send()
+
+  if (response.status === 401 && (await shouldRetryAfter401(path))) {
+    response = await send()
+    if (response.status === 401) handleUnauthorized()
   }
 
   if (!response.ok) {
@@ -131,18 +248,22 @@ export async function* apiFetchStream(
 ): AsyncGenerator<string> {
   const { body, headers, ...rest } = options
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...rest,
-    headers: {
-      "Content-Type": "application/json",
-      ...buildIdentityHeaders(),
-      ...headers,
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  })
+  const send = () =>
+    fetch(`${API_BASE_URL}${path}`, {
+      ...rest,
+      headers: {
+        "Content-Type": "application/json",
+        ...buildIdentityHeaders(),
+        ...headers,
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
 
-  if (response.status === 401) {
-    useAuthStore.getState().clearAuth()
+  let response = await send()
+
+  if (response.status === 401 && (await shouldRetryAfter401(path))) {
+    response = await send()
+    if (response.status === 401) handleUnauthorized()
   }
 
   if (!response.ok || !response.body) {

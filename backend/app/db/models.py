@@ -1246,3 +1246,164 @@ class CoverageReport(Base):
         DateTime(timezone=True), nullable=True
     )
 
+
+# ──────────────────────────────────────────────────────────────────────
+# Applications / response-rate tracking (D5, 6a/6b)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class Application(Base):
+    """A job application the user has submitted (through JBS's tailor
+    flow or elsewhere) and wants to track through to a response.
+
+    Account-only (user_id NOT NULL, no trial_session_id) — same treatment
+    as CoverLetterWorkflow/JobPostCollection/CoverageReport: tracking a
+    search over time isn't a first-touch trial need. job_title/employer
+    are captured directly on the row (not read through job_post_id at
+    display time) so a manually-logged application — one made outside
+    JBS's ingestion flow entirely — is just as complete a record as one
+    linked to a JobPost; job_post_id/tailored_cv_draft_id/
+    cover_letter_draft_id are optional provenance, not the source of
+    truth for what to display.
+
+    status is validated against app/core/application_states.py's
+    transition table by every write path (never assigned as a bare
+    string) — see ApplicationEvent below for the paired append-only log
+    of every transition.
+    """
+
+    __tablename__ = "applications"
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id"), nullable=False, index=True
+    )
+    job_post_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("job_posts.id"), nullable=True, index=True
+    )
+    tailored_cv_draft_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("tailored_cv_drafts.id"), nullable=True
+    )
+    cover_letter_draft_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("cover_letter_drafts.id"), nullable=True
+    )
+    job_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    employer: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), default="applied", nullable=False, index=True
+    )  # applied, interviewing, offer, accepted, rejected, withdrawn, ghosted
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    events: Mapped[list["ApplicationEvent"]] = relationship(
+        back_populates="application",
+        cascade="all, delete-orphan",
+        order_by="ApplicationEvent.created_at",
+    )
+
+
+class ApplicationEvent(Base):
+    """Append-only log of everything that happens to an Application —
+    every status transition, plus free-standing notes. Same
+    append_only/no_update/no_delete treatment as AuditEvent, for the same
+    reason: this is the record that makes "did I actually hear back from
+    this company, and when" answerable later, not just the current
+    status. Not RLS-covered directly (no user_id column) — same shape as
+    match_evidence_items/tailored_cv_sections/cover_letter_questions:
+    reached only via a join through its already-RLS-covered parent
+    (applications), which migration 019 covers.
+    """
+
+    __tablename__ = "application_events"
+    __table_args__ = (
+        {"info": {"append_only": True, "no_update": True, "no_delete": True}},
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    application_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("applications.id"), nullable=False, index=True
+    )
+    event_type: Mapped[str] = mapped_column(
+        String(30), nullable=False
+    )  # status_change, note_added
+    from_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    to_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actor_type: Mapped[str] = mapped_column(
+        String(50), nullable=False
+    )  # user, system — system is reserved for the future inbound-email
+       # classifier (6c); every event this pass writes is actor_type="user".
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+
+    application: Mapped["Application"] = relationship(back_populates="events")
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Free-API job feed (item 7) — a shared catalog, not user-owned data
+# ──────────────────────────────────────────────────────────────────────
+
+
+class FeedJobPosting(Base):
+    """One listing ingested from a free/keyless job-board API by
+    app/workers/job_feed_jobs.py's periodic refresh task.
+
+    Deliberately has no user_id/trial_session_id — this is shared
+    inventory every user browses, not a per-user resource, so it's not
+    RLS-covered (same "not an owned resource" treatment migration 018's
+    docstring already gives users/audit_events). A user acts on a listing
+    via POST /job-feed/{id}/import, which creates a real, owned JobPost
+    row from it — that JobPost (and everything downstream of it) goes
+    through the existing owned-resource path unchanged.
+
+    (source, external_id) is the de-dup key: the same posting reappearing
+    in a later refresh must not create a second row. See
+    app/services/job_feed/ingest.py's on_conflict_do_nothing upsert.
+    """
+
+    __tablename__ = "feed_job_postings"
+    __table_args__ = (
+        UniqueConstraint("source", "external_id", name="uq_feed_job_postings_source_external_id"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, index=True
+    )  # remoteok, remotive, arbeitnow, reed, usajobs
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    company: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    remote: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    url: Mapped[str] = mapped_column(String(500), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    tags: Mapped[list[str] | None] = mapped_column(ARRAY(String), nullable=True)
+    salary_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    posted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+

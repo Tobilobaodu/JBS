@@ -224,7 +224,11 @@
       "WebFetch(domain:github.com)",
       "Bash(python -m pytest tests/test_cv_analysis.py -q)",
       "Bash(DATABASE_URL=\"postgresql://cvapp:cvapp_local@localhost:5432/cv_tailoring\" DATABASE_URL_ASYNC=\"postgresql+asyncpg://cvapp:cvapp_local@localhost:5432/cv_tailoring\" python -m pytest tests/test_cv_analysis.py -q)",
-      "Bash(NODE_OPTIONS=--no-experimental-webstorage npx vitest run src/app/dashboard --reporter=verbose)"
+      "Bash(NODE_OPTIONS=--no-experimental-webstorage npx vitest run src/app/dashboard --reporter=verbose)",
+      "Bash(npx eslint *)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3100/dashboard)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3100/try/results)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3100/dashboard/matches/test-id-123)"
     ]
   }
 }

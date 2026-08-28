@@ -7,6 +7,7 @@ import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { errorMessage } from "@/lib/api"
 import { getExport, downloadExport, type ExportRequestOut } from "@/lib/trial-api"
+import { ProgressBar } from "@/components/modernist/progress-bar"
 
 /**
  * Generalizes the create-export -> poll -> download flow proven in
@@ -68,16 +69,20 @@ export function ExportButton({
     }
   }
 
-  const isBusy = isStarting || (!!exportId && exportQuery.data?.status !== "completed" && exportQuery.data?.status !== "failed")
+  const isPolling = !!exportId && exportQuery.data?.status !== "completed" && exportQuery.data?.status !== "failed"
+  const isBusy = isStarting || isPolling
 
   return (
-    <Button
-      size="sm"
-      variant={variant}
-      onClick={handleClick}
-      disabled={disabled || isBusy || hasDownloaded}
-    >
-      {hasDownloaded ? "Downloaded" : isBusy ? "Preparing…" : label}
-    </Button>
+    <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+      <Button
+        size="sm"
+        variant={variant}
+        onClick={handleClick}
+        disabled={disabled || isBusy || hasDownloaded}
+      >
+        {hasDownloaded ? "Downloaded" : isBusy ? "Preparing…" : label}
+      </Button>
+      <ProgressBar isActive={isPolling} width={60} height={6} expectedDurationMs={6000} />
+    </div>
   )
 }

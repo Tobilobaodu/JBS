@@ -59,6 +59,57 @@ services:
       - default
       - no_internet
 
+  # ──────────────────────────────────────────────────────────────────
+  # Read-replica — a plan/reviewable shape, not an active service. See
+  # the DR/read-replica deferred-item note: this is the self-managed-
+  # Postgres path's equivalent of "provision a read replica," left
+  # commented rather than live because nothing today has a read-heavy
+  # workload to justify running it, and because streaming replication
+  # needs a real primary reachable at a stable network identity — fine
+  # in this same compose file, not yet proven against a real deployed
+  # topology. Cutting actual read traffic to it is an app-level routing
+  # decision (a second SQLAlchemy engine, read-only endpoints choosing
+  # it) deliberately not made here — this only stands the replica up.
+  # Uncommenting this block alone is not enough to activate it — three
+  # things still need doing first, deliberately not done here since they
+  # touch the live primary and aren't needed while this stays inactive:
+  #   1. Primary needs `wal_level=replica` (+ max_wal_senders,
+  #      max_replication_slots) — a `command:` override on `postgres`
+  #      above, e.g. `command: postgres -c wal_level=replica -c max_wal_senders=3`.
+  #   2. A `replicator` role with REPLICATION privilege must exist on
+  #      the primary (a migration, or postgres-init/ script — not the
+  #      app_runtime role from migration 017, a separate one).
+  #   3. `postgres_replica_data` needs declaring in this file's
+  #      top-level `volumes:` section.
+  # ──────────────────────────────────────────────────────────────────
+  #  postgres_replica:
+  #    image: postgres:16-alpine
+  #    environment:
+  #      POSTGRES_USER: ${POSTGRES_USER:-cvapp}
+  #      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cvapp_local}
+  #      PGPASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-replicator_local}
+  #    ports:
+  #      - "5433:5432"
+  #    volumes:
+  #      - postgres_replica_data:/var/lib/postgresql/data
+  #    # No local init — this entrypoint clones the primary via
+  #    # pg_basebackup on first start (empty data dir), then starts as a
+  #    # hot standby streaming from it. depends_on healthy so the base
+  #    # backup doesn't race the primary's own startup.
+  #    entrypoint: >
+  #      bash -c "
+  #      if [ -z \"$(ls -A /var/lib/postgresql/data)\" ]; then
+  #        pg_basebackup -h postgres -U replicator -D /var/lib/postgresql/data -Fp -Xs -P -R;
+  #      fi;
+  #      docker-entrypoint.sh postgres"
+  #    depends_on:
+  #      postgres:
+  #        condition: service_healthy
+  #    restart: unless-stopped
+  #    networks:
+  #      - default
+  #      - no_internet
+
   # Redis for Celery broker and cache
   redis:
     image: redis:7-alpine
@@ -476,9 +527,17 @@ services:
     volumes:
       - ./app:/app/app:ro
     restart: unless-stopped
-    # match_engine.run_match() is pure/rules-based — zero internet need.
+    # _get_or_run_match (worker_jobs.py) calls the LLM-based match
+    # analysis (match_analysis.py::run_match_llm) whenever a job post in
+    # the collection has no existing completed MatchRun yet — the same
+    # OpenAI call worker_match makes. This was no_internet-only under the
+    # old rules-based match_engine.run_match(); it was never updated when
+    # matching moved to the LLM, so every coverage report on a job
+    # without a pre-existing match silently failed after 3 retries
+    # ("Connection error"). Needs the same network posture as
+    # worker_match/worker_cv_analyze now.
     networks:
-      - no_internet
+      - default
 
   # Celery worker - maintenance tasks (trial-session expiry cleanup)
   worker_maintenance:
@@ -501,6 +560,28 @@ services:
     networks:
       - default
       - no_internet
+
+  # Celery worker — free-API job feed refresh (item 7). Needs public
+  # internet egress to reach RemoteOK/Remotive/Arbeitnow/Reed/USAJobs, so
+  # (like worker_job_fetch, unlike worker_maintenance) it stays off
+  # no_internet.
+  worker_job_feed:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.workers.tasks worker -Q job_feed --concurrency=1 --loglevel=info
+    env_file:
+      - .env.local
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    volumes:
+      - ./app:/app/app:ro
+    restart: unless-stopped
+    networks:
+      - default
 
   # Celery beat — schedules periodic tasks (see beat_schedule in
   # app/workers/tasks.py). A pure scheduler process: publishes task

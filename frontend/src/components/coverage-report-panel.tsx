@@ -1,7 +1,7 @@
 "use client"
 
-import { useState } from "react"
-import { useQuery } from "@tanstack/react-query"
+import { useEffect, useState } from "react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
 import { errorMessage } from "@/lib/api"
@@ -13,6 +13,7 @@ import {
 } from "@/lib/trial-api"
 import { useJobPoll } from "@/hooks/use-job-poll"
 import { Tag } from "@/components/modernist/tag"
+import { ProgressBar } from "@/components/modernist/progress-bar"
 
 /**
  * Sprint 5's multi-job-post coverage reporting (job-post-collections +
@@ -28,12 +29,24 @@ export function CoverageReportPanel({
   selectedJobPostIds: string[]
   onClearSelection: () => void
 }) {
+  const queryClient = useQueryClient()
   const [cvId, setCvId] = useState<string>("")
   const [jobId, setJobId] = useState<string | null>(null)
   const [isStarting, setIsStarting] = useState(false)
   const { job, isCompleted, isFailed } = useJobPoll(jobId)
 
   const cvsQuery = useQuery({ queryKey: ["dashboard-cvs-for-coverage"], queryFn: () => listCvs() })
+
+  // A completed report runs _get_or_run_match for any selected job that had
+  // no existing MatchRun, creating a fresh one as a side effect — the Jobs
+  // table's own "Match" column reads from a separately-cached ["dashboard-
+  // matches"] query that has no way to know that happened, so without this
+  // it kept showing stale/empty scores until a manual page reload.
+  useEffect(() => {
+    if (isCompleted) {
+      void queryClient.invalidateQueries({ queryKey: ["dashboard-matches"] })
+    }
+  }, [isCompleted, queryClient])
 
   // POST .../coverage-report only returns a ProcessingJobRef, not the
   // report's own id — but worker_jobs.py creates that ProcessingJob with
@@ -101,7 +114,10 @@ export function CoverageReportPanel({
       </div>
 
       {jobId && !isCompleted && !isFailed && (
-        <p style={{ fontSize: 13, color: "var(--color-neutral-700)" }}>Running report across selected jobs…</p>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <p style={{ fontSize: 13, color: "var(--color-neutral-700)", margin: 0 }}>Running report across selected jobs…</p>
+          <ProgressBar isActive width={240} expectedDurationMs={Math.max(6000, selectedJobPostIds.length * 6000)} />
+        </div>
       )}
       {isFailed && <p style={{ fontSize: 13, color: "var(--color-accent-700)" }}>The report failed. Please try again.</p>}
       {isCompleted && reportQuery.isLoading && (

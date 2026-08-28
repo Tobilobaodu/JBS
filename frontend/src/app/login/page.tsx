@@ -34,10 +34,16 @@ export default function LoginPage() {
     setIsSubmitting(true)
     try {
       const result = await loginAccount(values.email, values.password)
-      setAuth(result.accessToken, {
-        id: result.user.id,
-        email: result.user.email,
-      })
+      setAuth(
+        result.accessToken,
+        {
+          id: result.user.id,
+          email: result.user.email,
+        },
+        // Stored so an expired access token can be renewed silently
+        // (lib/api.ts) instead of forcing this form again.
+        result.refreshToken
+      )
       await redirectAfterAuth()
     } catch (error) {
       if (error instanceof ApiError && error.status === 429) {

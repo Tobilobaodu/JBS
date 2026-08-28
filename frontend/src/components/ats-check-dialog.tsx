@@ -16,6 +16,7 @@ import {
 import { errorMessage, ApiError } from "@/lib/api"
 import { triggerAtsCheck, getAtsCheck } from "@/lib/trial-api"
 import { useJobPoll } from "@/hooks/use-job-poll"
+import { ProgressBar } from "@/components/modernist/progress-bar"
 
 /**
  * Product Extension #1 (ATS structural-readiness check) had zero dashboard
@@ -68,7 +69,10 @@ export function AtsCheckDialog({ cvId, cvName }: { cvId: string; cvName: string 
         {resultQuery.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
 
         {jobId && !isCompleted && !isFailed && (
-          <p className="text-sm text-muted-foreground">Running check…</p>
+          <div className="flex flex-col items-start gap-2">
+            <p className="text-sm text-muted-foreground">Running check…</p>
+            <ProgressBar isActive width={200} expectedDurationMs={5000} />
+          </div>
         )}
 
         {isFailed && <p className="text-sm text-destructive">The check failed. Please try again.</p>}

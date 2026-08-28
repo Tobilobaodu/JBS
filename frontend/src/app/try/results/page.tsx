@@ -11,6 +11,7 @@ import { Progress } from "@/components/ui/progress"
 import { PaywallDialog } from "@/components/paywall-dialog"
 import { useJobPoll } from "@/hooks/use-job-poll"
 import { usePollUntilReady } from "@/hooks/use-poll-until-ready"
+import { useSimulatedProgress } from "@/hooks/use-simulated-progress"
 import { useTrialStore } from "@/store/trial-store"
 import { useAuthStore } from "@/store/auth-store"
 import { errorMessage } from "@/lib/api"
@@ -110,6 +111,7 @@ export default function TrialResultsPage() {
     enabled: !!matchId && matchJob.isCompleted,
     refetchInterval: (q) => (q.state.data?.status === "completed" ? false : 2000),
   })
+  const matchProgress = useSimulatedProgress(!matchQuery.data, 8000)
 
   // ── Stage 3: generate the tailored CV once the match is complete ───
   const [cvGenerateJobId, setCvGenerateJobId] = useState<string | null>(null)
@@ -140,6 +142,7 @@ export default function TrialResultsPage() {
     queryFn: () => getTailoredCvDraft(draftId as string),
     enabled: !!draftId,
   })
+  const draftProgress = useSimulatedProgress(!!matchQuery.data && !draftQuery.data, 20000)
 
   // Exporting requires status 'approved' (app/api/v1/exports.py 409s
   // otherwise). The trial flow has no manual review step, so approve
@@ -168,6 +171,7 @@ export default function TrialResultsPage() {
     refetchInterval: (q) => (q.state.data?.status === "completed" ? false : 1500),
   })
   const [hasDownloaded, setHasDownloaded] = useState(false)
+  const exportProgress = useSimulatedProgress(isStartingExport || !!exportId, 8000)
 
   useEffect(() => {
     if (exportQuery.data?.status === "completed" && exportId && !hasDownloaded) {
@@ -228,7 +232,7 @@ export default function TrialResultsPage() {
         <Card className="mt-6">
           <CardContent className="py-8 text-center text-muted-foreground">
             <p>Analyzing your CV against this job…</p>
-            <Progress value={null} className="mt-4" />
+            <Progress value={matchProgress} className="mt-4" />
           </CardContent>
         </Card>
       )}
@@ -262,7 +266,7 @@ export default function TrialResultsPage() {
         <Card className="mt-6">
           <CardContent className="py-8 text-center text-muted-foreground">
             Generating your tailored CV…
-            <Progress value={null} className="mt-4" />
+            <Progress value={draftProgress} className="mt-4" />
           </CardContent>
         </Card>
       )}
@@ -309,6 +313,7 @@ export default function TrialResultsPage() {
                     ? "Preparing your download…"
                     : "Download trial CV"}
             </Button>
+            <Progress value={exportProgress} className="mt-3 max-w-xs" />
             {isAuthenticated ? (
               <Button variant="outline" disabled title="Coming soon">
                 Create a cover letter for this job

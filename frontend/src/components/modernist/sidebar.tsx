@@ -10,8 +10,10 @@ const workspaceLinks: NavLink[] = [
   { href: "/dashboard", label: "Overview" },
   { href: "/dashboard/cvs", label: "CVs" },
   { href: "/dashboard/jobs", label: "Jobs" },
+  { href: "/dashboard/job-feed", label: "Job feed" },
   { href: "/dashboard/matches", label: "Reports" },
   { href: "/dashboard/cover-letters", label: "Cover letters" },
+  { href: "/dashboard/applications", label: "Applications" },
 ]
 
 const startLinks: NavLink[] = [{ href: "/dashboard/new", label: "New match" }]

@@ -248,14 +248,20 @@ async def list_cover_letter_workflows(
         await session.execute(
             select(func.count())
             .select_from(CoverLetterWorkflow)
-            .where(CoverLetterWorkflow.user_id == current_user.id)
+            .where(
+                CoverLetterWorkflow.user_id == current_user.id,
+                CoverLetterWorkflow.status != "archived",
+            )
         )
     ).scalar_one()
 
     result = await session.execute(
         select(CoverLetterWorkflow, JobPostProfile)
         .join(JobPostProfile, JobPostProfile.id == CoverLetterWorkflow.job_post_profile_id)
-        .where(CoverLetterWorkflow.user_id == current_user.id)
+        .where(
+            CoverLetterWorkflow.user_id == current_user.id,
+            CoverLetterWorkflow.status != "archived",
+        )
         .order_by(CoverLetterWorkflow.created_at.desc())
         .offset(offset)
         .limit(limit)
@@ -541,6 +547,40 @@ async def approve(
         created_at=draft.created_at.isoformat() if draft.created_at else "",
         approved_at=draft.approved_at.isoformat() if draft.approved_at else None,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# DELETE /cover-letters/{workflowId}
+# ──────────────────────────────────────────────────────────────────────
+
+
+@router.delete("/cover-letters/{workflowId}", status_code=202)
+async def delete_cover_letter_workflow(
+    workflowId: str,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_scoped_session_for_user),
+):
+    """Archive a cover-letter workflow. Sets status="archived" rather than
+    a deleted_at column — unlike job_posts/cvs/match_runs, this model has
+    no soft-delete column, but "archived" was already a documented status
+    value in this table's own status comment (never actually set by any
+    code path until now) — reusing it keeps this a status transition, not
+    a new migration, and list_cover_letter_workflows above already
+    excludes it."""
+    wf = await _verify_ownership(session, workflowId, current_user.id)
+
+    wf.status = "archived"
+
+    session.add(AuditEvent(
+        user_id=current_user.id,
+        entity_type="cover_letter_workflow",
+        entity_id=wf.id,
+        event_type="deletion_requested",
+        actor_type="user",
+    ))
+
+    await session.commit()
+    logger.info("cover_letter_workflow_archived", workflow_id=wf.id, user_id=current_user.id)
 
 
 # ──────────────────────────────────────────────────────────────────────

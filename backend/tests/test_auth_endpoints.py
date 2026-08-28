@@ -25,12 +25,12 @@ from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.pool import NullPool
 
 import app.core.rate_limit as rl
-from app.api.v1.auth import login, logout, register
+from app.api.v1.auth import login, logout, refresh, register
 from app.core.config import settings
 from app.core.security import create_access_token, get_current_user, hash_password
 from app.core.security import verify_password as _real_verify_password
 from app.db.models import AuditEvent, User
-from app.schemas.auth import LoginRequest, RegisterRequest
+from app.schemas.auth import LoginRequest, RefreshRequest, RegisterRequest
 
 _test_engine = create_async_engine(settings.database_url_async, poolclass=NullPool)
 _test_session_factory = async_sessionmaker(_test_engine, expire_on_commit=False)
@@ -368,3 +368,280 @@ def test_security_headers_present_on_every_response():
     assert resp.headers.get("X-Content-Type-Options") == "nosniff"
     assert resp.headers.get("X-Frame-Options") == "DENY"
     assert resp.headers.get("Content-Security-Policy") == "default-src 'none'"
+
+
+# ── Access-token renewal (POST /auth/refresh) ───────────────────────────
+#
+# Regression cover for the "tab refresh logs me out" defect: before this
+# endpoint existed, an access token the backend no longer accepted was
+# unrecoverable, because nothing redeemed the 30-day refresh token that
+# login had already stored in user_sessions. The frontend's only response
+# to a 401 was to discard the session (lib/api.ts), so a single expired
+# token meant a forced re-login.
+
+class TestAccessTokenRefresh:
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_refresh_issues_a_token_that_authenticates(self):
+        """The behaviour the fix exists for: redeeming the refresh token
+        yields an access token that get_current_user actually accepts."""
+        async with _test_session_factory() as s:
+            password = "RealPassword123!"
+            u = await _user(s, "refresh-ok", password=password)
+            await s.commit()
+
+            login_resp = await login(
+                body=LoginRequest(email=u.email, password=password),
+                request=_request(),
+                session=s,
+            )
+
+            refresh_resp = await refresh(
+                body=RefreshRequest(refresh_token=login_resp.refresh_token),
+                request=_request(),
+                session=s,
+            )
+
+            assert refresh_resp.access_token != login_resp.access_token
+            assert refresh_resp.user.id == u.id
+            # Not rotated: a concurrent redemption from another tab must not
+            # invalidate the token this one is still holding.
+            assert refresh_resp.refresh_token == login_resp.refresh_token
+
+            resolved = await get_current_user(
+                request=_request(),
+                credentials=HTTPAuthorizationCredentials(
+                    scheme="Bearer", credentials=refresh_resp.access_token
+                ),
+                session=s,
+            )
+            assert resolved.id == u.id
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_superseded_access_token_stops_working(self):
+        """Renewal replaces the session's access_token_hash, so the token it
+        supersedes must stop authenticating immediately rather than staying
+        valid alongside the new one until its own JWT exp."""
+        async with _test_session_factory() as s:
+            password = "RealPassword123!"
+            u = await _user(s, "refresh-supersede", password=password)
+            await s.commit()
+
+            login_resp = await login(
+                body=LoginRequest(email=u.email, password=password),
+                request=_request(),
+                session=s,
+            )
+            await refresh(
+                body=RefreshRequest(refresh_token=login_resp.refresh_token),
+                request=_request(),
+                session=s,
+            )
+
+            with pytest.raises(HTTPException) as exc:
+                await get_current_user(
+                    request=_request(),
+                    credentials=HTTPAuthorizationCredentials(
+                        scheme="Bearer", credentials=login_resp.access_token
+                    ),
+                    session=s,
+                )
+            assert exc.value.status_code == 401
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_unknown_refresh_token_rejected(self):
+        async with _test_session_factory() as s:
+            with pytest.raises(HTTPException) as exc:
+                await refresh(
+                    body=RefreshRequest(refresh_token="not-a-real-refresh-token"),
+                    request=_request(),
+                    session=s,
+                )
+            assert exc.value.status_code == 401
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_refresh_token_rejected_after_logout(self):
+        """Logout revokes the session, so the refresh token must not be a
+        back door that mints fresh access tokens for a session the user
+        explicitly ended."""
+        async with _test_session_factory() as s:
+            password = "RealPassword123!"
+            u = await _user(s, "refresh-logout", password=password)
+            await s.commit()
+
+            login_resp = await login(
+                body=LoginRequest(email=u.email, password=password),
+                request=_request(),
+                session=s,
+            )
+            await logout(current_user=u, session=s)
+
+            with pytest.raises(HTTPException) as exc:
+                await refresh(
+                    body=RefreshRequest(refresh_token=login_resp.refresh_token),
+                    request=_request(),
+                    session=s,
+                )
+            assert exc.value.status_code == 401
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_expired_session_refresh_token_rejected(self):
+        """expires_at is an absolute cap that refreshing does not extend —
+        past it the refresh token is dead even though it was never
+        revoked."""
+        async with _test_session_factory() as s:
+            password = "RealPassword123!"
+            u = await _user(s, "refresh-expired", password=password)
+            await s.commit()
+
+            login_resp = await login(
+                body=LoginRequest(email=u.email, password=password),
+                request=_request(),
+                session=s,
+            )
+
+            await s.execute(
+                text(
+                    "UPDATE user_sessions SET expires_at = now() - interval '1 hour' "
+                    "WHERE user_id = :uid"
+                ),
+                {"uid": u.id},
+            )
+            await s.commit()
+
+            with pytest.raises(HTTPException) as exc:
+                await refresh(
+                    body=RefreshRequest(refresh_token=login_resp.refresh_token),
+                    request=_request(),
+                    session=s,
+                )
+            assert exc.value.status_code == 401
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_suspended_user_cannot_refresh(self):
+        async with _test_session_factory() as s:
+            password = "RealPassword123!"
+            u = await _user(s, "refresh-suspended", password=password)
+            await s.commit()
+
+            login_resp = await login(
+                body=LoginRequest(email=u.email, password=password),
+                request=_request(),
+                session=s,
+            )
+
+            u.status = "suspended"
+            await s.commit()
+
+            with pytest.raises(HTTPException) as exc:
+                await refresh(
+                    body=RefreshRequest(refresh_token=login_resp.refresh_token),
+                    request=_request(),
+                    session=s,
+                )
+            assert exc.value.status_code == 401
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_back_to_back_refreshes_do_not_collide(self):
+        """Two redemptions inside the same wall-clock second must both
+        succeed. Without a unique jti the JWT payload is a pure function of
+        (user_id, second), so the two tokens would be byte-identical and the
+        second write would violate access_token_hash's UNIQUE index."""
+        async with _test_session_factory() as s:
+            password = "RealPassword123!"
+            u = await _user(s, "refresh-collide", password=password)
+            await s.commit()
+
+            login_resp = await login(
+                body=LoginRequest(email=u.email, password=password),
+                request=_request(),
+                session=s,
+            )
+
+            first = await refresh(
+                body=RefreshRequest(refresh_token=login_resp.refresh_token),
+                request=_request(),
+                session=s,
+            )
+            second = await refresh(
+                body=RefreshRequest(refresh_token=login_resp.refresh_token),
+                request=_request(),
+                session=s,
+            )
+
+            assert first.access_token != second.access_token
+            resolved = await get_current_user(
+                request=_request(),
+                credentials=HTTPAuthorizationCredentials(
+                    scheme="Bearer", credentials=second.access_token
+                ),
+                session=s,
+            )
+            assert resolved.id == u.id
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_refresh_uses_its_own_rate_limit_bucket(self):
+        """Refresh is called automatically by the client, so exhausting its
+        limiter must not lock the same IP out of /auth/login — that would
+        turn a renewable session into a hard lockout."""
+        async with _test_session_factory() as s:
+            password = "RealPassword123!"
+            u = await _user(s, "refresh-ratelimit", password=password)
+            await s.commit()
+
+            ip = "203.0.113.90"
+            for _ in range(rl.MAX_ATTEMPTS_PER_WINDOW + 1):
+                try:
+                    await refresh(
+                        body=RefreshRequest(refresh_token="bogus"),
+                        request=_request(client_host=ip),
+                        session=s,
+                    )
+                except HTTPException:
+                    pass
+
+            # Refresh is now limited for this IP...
+            with pytest.raises(HTTPException) as refresh_exc:
+                await refresh(
+                    body=RefreshRequest(refresh_token="bogus"),
+                    request=_request(client_host=ip),
+                    session=s,
+                )
+            assert refresh_exc.value.status_code == 429
+
+            # ...while login from the same IP still works.
+            login_resp = await login(
+                body=LoginRequest(email=u.email, password=password),
+                request=_request(client_host=ip),
+                session=s,
+            )
+            assert login_resp.access_token
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_refresh_writes_an_audit_event(self):
+        async with _test_session_factory() as s:
+            password = "RealPassword123!"
+            u = await _user(s, "refresh-audit", password=password)
+            await s.commit()
+
+            login_resp = await login(
+                body=LoginRequest(email=u.email, password=password),
+                request=_request(),
+                session=s,
+            )
+            await refresh(
+                body=RefreshRequest(refresh_token=login_resp.refresh_token),
+                request=_request(),
+                session=s,
+            )
+
+            rows = (
+                await s.execute(
+                    text(
+                        "SELECT event_type FROM audit_events "
+                        "WHERE user_id = :uid AND event_type = 'token_refreshed'"
+                    ),
+                    {"uid": u.id},
+                )
+            ).all()
+            assert len(rows) == 1

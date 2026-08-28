@@ -10,7 +10,7 @@ afterEach(() => {
   server.resetHandlers()
   cleanup()
   window.localStorage.clear()
-  useAuthStore.setState({ accessToken: null, user: null })
+  useAuthStore.setState({ accessToken: null, refreshToken: null, user: null })
   useTrialStore.setState({
     trialSessionId: null,
     expiresAt: null,

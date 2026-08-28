@@ -31,6 +31,20 @@ class LoginResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class RefreshRequest(BaseModel):
+    """Body of POST /auth/refresh.
+
+    The refresh token travels in the body rather than the Authorization
+    header on purpose: the header carries the *access* token everywhere
+    else in this API (get_current_user), and /auth/refresh is reached
+    precisely when that access token is no longer usable.
+    """
+
+    refresh_token: str = Field(alias="refreshToken")
+
+    model_config = {"populate_by_name": True}
+
+
 class ClaimTrialRequest(BaseModel):
     trial_session_id: str = Field(alias="trialSessionId")
 

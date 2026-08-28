@@ -93,12 +93,13 @@ export default function DashboardPage() {
         </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 40 }}>
-          <ScoreCell label="Overall score" score={isScoring ? null : (analysis?.overallScore ?? null)} note={analysis ? "Ranked against resumes in your industry" : undefined} />
-          <ScoreCell label="Skillset level vs market" score={isScoring ? null : (analysis?.skillsetScore ?? null)} />
+          <ScoreCell label="Overall score" score={isScoring ? null : (analysis?.overallScore ?? null)} note={analysis ? "Ranked against resumes in your industry" : undefined} isLoading={isScoring} />
+          <ScoreCell label="Skillset level vs market" score={isScoring ? null : (analysis?.skillsetScore ?? null)} isLoading={isScoring} />
           <ScoreCell
             label="Formatting"
             score={isScoring ? null : (analysis?.formattingScore ?? null)}
             note={analysis ? `${analysis.atsIssues.filter((i) => !i.passed).length + analysis.formattingIssues.filter((i) => !i.passed).length} fixable issues across ATS and layout` : undefined}
+            isLoading={isScoring}
           />
         </div>
 
@@ -187,7 +188,7 @@ export default function DashboardPage() {
                   <td style={{ fontWeight: 600 }}>{match.jobTitle ?? "Untitled role"}</td>
                   <td>{match.employer ?? "—"}</td>
                   <td>
-                    <ScoreBar score={match.score} size="sm" />
+                    <ScoreBar score={match.score} size="sm" isLoading={!completed && match.status !== "failed"} />
                   </td>
                   <td style={{ fontSize: 13, color: "var(--color-neutral-700)" }}>
                     {completed ? "Scored" : "Scoring…"}
@@ -224,13 +225,20 @@ export default function DashboardPage() {
   )
 }
 
-function ScoreCell({ label, score, note }: { label: string; score: number | null; note?: string }) {
+function ScoreCell({
+  label, score, note, isLoading,
+}: {
+  label: string
+  score: number | null
+  note?: string
+  isLoading?: boolean
+}) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ fontSize: 11, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--color-neutral-700)" }}>
         {label}
       </div>
-      <ScoreBar score={score} note={note} />
+      <ScoreBar score={score} note={note} isLoading={isLoading} />
     </div>
   )
 }

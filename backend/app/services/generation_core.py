@@ -158,6 +158,7 @@ def generate_and_verify_section(
                 schema_name=schema_name,
                 max_tokens=max_tokens,
                 client=llm_client_override,
+                prompt_version=prompt_version,
             )
         except (LlmCallError, LlmSchemaValidationError) as e:
             correction = str(e)
