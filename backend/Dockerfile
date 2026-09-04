@@ -73,5 +73,6 @@ COPY alembic/ ./alembic/
 # Expose API port
 EXPOSE 8000
 
-# Default command - run the API server
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Default command - run the API server. Temps injects PORT; fall back to
+# 8000 for local docker-compose, which doesn't set it.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

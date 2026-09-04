@@ -40,42 +40,71 @@ _LINK = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 # Print stylesheet. Self-contained by necessity: Gotenberg sits on the
 # no_internet network, so a web font or external sheet would silently fail
 # to load and the PDF would render in a default serif.
+#
+# One accent color, used sparingly (a rule under the header block, the
+# section-label color + left bar, bullet markers) — everything else stays
+# near-black for reading contrast. Still single-column, real selectable
+# text, no images/icons/tables: this is a look upgrade, not a structural
+# one, so it stays exactly as ATS-safe as the plain version it replaces.
 _STYLES = """
-:root { color-scheme: light; }
+:root {
+  color-scheme: light;
+  --accent: #1B3A57;
+  --ink: #1a1a1a;
+  --muted: #5b6a75;
+  --rule: #d8dee2;
+}
 * { box-sizing: border-box; }
 body {
   font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
   font-size: 10.5pt;
-  line-height: 1.45;
-  color: #1a1a1a;
+  line-height: 1.48;
+  color: var(--ink);
   margin: 0;
 }
 h1 {
-  font-size: 20pt;
-  letter-spacing: 0.5px;
-  margin: 0 0 2pt;
+  font-size: 21pt;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  margin: 0 0 4pt;
   text-transform: uppercase;
+  color: var(--ink);
+}
+/* The contact line right under the name: its own line, then a colored
+   rule closes off the header block like a letterhead. */
+h1 + p {
+  color: var(--muted);
+  font-size: 9.5pt;
+  margin-bottom: 8pt;
+  padding-bottom: 10pt;
+  border-bottom: 1.5pt solid var(--accent);
 }
 h2 {
-  font-size: 11.5pt;
+  font-size: 11pt;
+  font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.6px;
-  border-bottom: 1px solid #c8c8c8;
-  padding-bottom: 2pt;
-  margin: 16pt 0 7pt;
+  letter-spacing: 1px;
+  color: var(--accent);
+  border-left: 2.5pt solid var(--accent);
+  padding-left: 8pt;
+  margin: 18pt 0 8pt;
 }
 h3 {
   font-size: 10.5pt;
-  margin: 11pt 0 1pt;
+  font-weight: 700;
+  margin: 12pt 0 1pt;
+  color: var(--ink);
 }
+/* Each role's date line: smaller and greyer so the structure reads at a
+   glance, matching the contact line's treatment (no rule here though —
+   that's reserved for the one-per-document header). */
+h3 + p { color: var(--muted); font-size: 9.5pt; margin-bottom: 5pt; }
 h4, h5, h6 { font-size: 10.5pt; margin: 9pt 0 1pt; }
 p { margin: 0 0 6pt; }
-ul { margin: 4pt 0 8pt; padding-left: 15pt; }
-li { margin-bottom: 3pt; }
+ul { margin: 4pt 0 9pt; padding-left: 14pt; }
+li { margin-bottom: 3.5pt; }
+li::marker { color: var(--accent); }
 a { color: inherit; text-decoration: none; }
-/* The contact line and each role's date line: the first paragraph after a
-   heading, set smaller and greyer so the structure reads at a glance. */
-h1 + p, h3 + p { color: #555; font-size: 9.5pt; margin-bottom: 5pt; }
 /* Never leave a role heading stranded at the foot of a page. */
 h2, h3 { break-after: avoid; page-break-after: avoid; }
 li, p { break-inside: avoid; page-break-inside: avoid; }

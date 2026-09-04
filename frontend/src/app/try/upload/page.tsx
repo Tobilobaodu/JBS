@@ -21,6 +21,7 @@ import { useTrialStore } from "@/store/trial-store"
 import { ScoreBar } from "@/components/modernist/score-bar"
 import { Tag } from "@/components/modernist/tag"
 import { SegmentedControl } from "@/components/modernist/segmented-control"
+import { LinkedInImportHint } from "@/components/linkedin-import-hint"
 
 type UploadState =
   | { phase: "idle" }
@@ -524,6 +525,12 @@ export default function TailorPage() {
                 onChange={onFileSelected}
               />
             </div>
+
+            {upload.phase === "idle" && (
+              <LinkedInImportHint
+                onOpen={() => recordJourney("cv_import_linkedin_hint_opened", 0)}
+              />
+            )}
 
             {upload.phase === "uploading" && (
               <div data-testid="status-uploading" style={{ display: "flex", flexDirection: "column", gap: 8 }}>

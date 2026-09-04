@@ -6,7 +6,7 @@ import { useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Check, Upload } from "lucide-react"
 
-import { errorMessage } from "@/lib/api"
+import { errorMessage, recordJourney } from "@/lib/api"
 import {
   createMatch,
   getParsedCvProfile,
@@ -18,6 +18,7 @@ import { useJobPoll } from "@/hooks/use-job-poll"
 import { usePollUntilReady } from "@/hooks/use-poll-until-ready"
 import { SegmentedControl } from "@/components/modernist/segmented-control"
 import { ProgressBar } from "@/components/modernist/progress-bar"
+import { LinkedInImportHint } from "@/components/linkedin-import-hint"
 
 // Mirrors backend app/api/v1/job_posts.py's JobPostTextRequest min_length.
 const MIN_JOB_TEXT_CHARS = 100
@@ -218,6 +219,12 @@ export default function NewMatchPage() {
               <input type="file" accept=".pdf,.docx" onChange={onFileInputChange} style={{ display: "none" }} />
             </label>
           </div>
+
+          {!cvFile && (
+            <LinkedInImportHint
+              onOpen={() => recordJourney("cv_import_linkedin_hint_opened", 0)}
+            />
+          )}
 
           {cvFile && (
             <div

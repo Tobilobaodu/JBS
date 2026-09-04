@@ -469,19 +469,10 @@ export async function* streamResumeRewrite(input: {
   }
 }
 
-// ── Journey latency beacon (jbs-solution-sheet.md O4) ──
-// The server can't see poll lag or render time on its own — S5's 14s of
-// dead time lived entirely there. Fire-and-forget: never awaited by the
-// caller, never surfaces an error to the user — losing a metrics beacon
-// must not affect the product.
-export function recordJourney(journey: string, durationSeconds: number) {
-  void apiFetch("/client-metrics/journey", {
-    method: "POST",
-    body: { journey, durationSeconds },
-  }).catch(() => {
-    // best-effort telemetry only
-  })
-}
+// recordJourney moved to api.ts (both the trial and dashboard flows fire
+// it now) — re-exported here so existing `from "@/lib/trial-api"` imports
+// keep working.
+export { recordJourney } from "@/lib/api"
 
 // ── CV analysis (resume score / ATS readiness / formatting / tips) ──
 // Powers the Overview and Report-detail "resume summary" ScoreBar trio.

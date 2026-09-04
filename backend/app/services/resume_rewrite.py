@@ -39,6 +39,18 @@ class ResumeRewriteResult:
     tailored_resume_markdown: str
     information_needed: list[str] = field(default_factory=list)
     prompt_version: str = prompts.RESUME_REWRITE_PROMPT_VERSION
+    # Server-internal token accounting for the caller's cost tracking
+    # ({"prompt_tokens", "completion_tokens"}); None when not requested.
+    # Additive — existing consumers are unaffected.
+    usage: dict | None = None
+    # v5 additions (sync path only — see RESUME_REWRITE_JSON_SCHEMA):
+    # rewrittenExperience/suggestedAdditions from the model, already passed
+    # through the same truthfulness safety nets as the markdown. Empty on
+    # the streamed path, which doesn't request these fields. Additive —
+    # existing consumers reading only tailored_resume_markdown are
+    # unaffected.
+    rewritten_experience: list[dict] = field(default_factory=list)
+    suggested_additions: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -140,6 +152,21 @@ def _containment(needle: set[str], haystack: set[str]) -> float:
     return len(needle & haystack) / len(needle)
 
 
+def _is_lifted_claim(text: str, job_lines: list[set[str]], cv_words: set[str]) -> bool:
+    """Shared judgment behind _strip_lifted_requirements and
+    _filter_lifted_texts: is `text` copied from the job post's wording
+    without the CV backing it up? Takes bare text — the caller decides
+    whether that text came from a markdown line or a structured field."""
+    words = _content_words(text)
+    if len(words) < _MIN_JUDGEABLE_WORDS:
+        return False
+    lifted = max((_containment(words, jl) for jl in job_lines), default=0.0)
+    supported = _containment(words, cv_words)
+    near_verbatim = lifted >= _LIFTED_FROM_JOB_MIN and supported < _SUPPORTED_BY_CV_MIN
+    unsupported_paraphrase = lifted >= _PARAPHRASE_LIFTED_MIN and supported == 0.0
+    return near_verbatim or unsupported_paraphrase
+
+
 def _strip_lifted_requirements(
     markdown: str, cv_text: str, job_post_text: str
 ) -> tuple[str, list[str]]:
@@ -173,25 +200,39 @@ def _strip_lifted_requirements(
     for line in markdown.splitlines():
         stripped = line.strip()
         body = re.sub(r"^[-*+]\s+|^#{1,6}\s+", "", stripped)
-        words = _content_words(body)
 
-        if len(words) >= _MIN_JUDGEABLE_WORDS and not stripped.startswith("#"):
-            lifted = max(_containment(words, jl) for jl in job_lines)
-            supported = _containment(words, cv_words)
-            near_verbatim = (
-                lifted >= _LIFTED_FROM_JOB_MIN
-                and supported < _SUPPORTED_BY_CV_MIN
-            )
-            unsupported_paraphrase = (
-                lifted >= _PARAPHRASE_LIFTED_MIN and supported == 0.0
-            )
-            if near_verbatim or unsupported_paraphrase:
-                removed.append(body)
-                continue
+        if not stripped.startswith("#") and _is_lifted_claim(body, job_lines, cv_words):
+            removed.append(body)
+            continue
 
         kept.append(line)
 
     return _drop_empty_sections("\n".join(kept)), removed
+
+
+def _filter_lifted_texts(
+    texts: list[str], cv_text: str, job_post_text: str
+) -> tuple[list[str], list[str]]:
+    """_strip_lifted_requirements for a flat list of free-text strings
+    (rewrittenExperience bullets, suggestedAdditions) instead of markdown
+    lines — no heading/bullet-marker stripping needed, same judgment."""
+    job_lines = [
+        _content_words(line)
+        for line in job_post_text.splitlines()
+        if line.strip()
+    ]
+    cv_words = _content_words(cv_text)
+    if not job_lines:
+        return list(texts), []
+
+    kept: list[str] = []
+    removed: list[str] = []
+    for text in texts:
+        if _is_lifted_claim(text, job_lines, cv_words):
+            removed.append(text)
+            continue
+        kept.append(text)
+    return kept, removed
 
 
 def _drop_empty_sections(markdown: str) -> str:
@@ -229,6 +270,27 @@ def _normalise(text: str) -> str:
     return re.sub(r"\s+", " ", text).casefold()
 
 
+def _is_invented_location(text: str, haystack: str) -> bool:
+    """Shared judgment behind _strip_invented_locations and
+    _filter_invented_locations: is `text`, in isolation, nothing but a
+    place the CV never stated? `haystack` is the already-normalised CV
+    text. Only whole strings that are nothing but a place match, so a
+    location genuinely present in the CV, or one embedded in a sentence,
+    is left alone."""
+    candidate = text.strip().rstrip("|").strip()
+    if not (
+        candidate
+        and len(candidate) <= _MAX_LOCATION_LINE_CHARS
+        and _LOCATION_ONLY_LINE.match(candidate)
+        and _normalise(candidate) not in haystack
+    ):
+        return False
+    # Each comma-separated part must also be absent; "London" alone
+    # appearing in the CV is enough to treat the line as supported.
+    parts = [p.strip() for p in candidate.split(",") if p.strip()]
+    return all(_normalise(p) not in haystack for p in parts)
+
+
 def _strip_invented_locations(markdown: str, cv_text: str) -> tuple[str, list[str]]:
     """Remove location-only lines the source CV never stated.
 
@@ -247,34 +309,165 @@ def _strip_invented_locations(markdown: str, cv_text: str) -> tuple[str, list[st
     removed: list[str] = []
 
     for line in markdown.splitlines():
-        candidate = line.strip().rstrip("|").strip()
-        if (
-            candidate
-            and len(candidate) <= _MAX_LOCATION_LINE_CHARS
-            and _LOCATION_ONLY_LINE.match(candidate)
-            and _normalise(candidate) not in haystack
-        ):
-            # Each comma-separated part must also be absent; "London" alone
-            # appearing in the CV is enough to treat the line as supported.
-            parts = [p.strip() for p in candidate.split(",") if p.strip()]
-            if all(_normalise(p) not in haystack for p in parts):
-                removed.append(candidate)
-                continue
+        if _is_invented_location(line, haystack):
+            removed.append(line.strip().rstrip("|").strip())
+            continue
         kept.append(line)
 
     return "\n".join(kept), removed
 
 
-def _apply_safety_nets(
-    markdown: str, cv_text: str, job_post_text: str
-) -> tuple[str, list[str]]:
-    """Run both code-side truthfulness backstops and build the
-    information_needed list purely from what they removed — this list no
-    longer comes from the model (that moved to resume_analysis.py's
-    matchNotes/informationNeeded), only from what code caught."""
-    markdown, lifted = _strip_lifted_requirements(markdown, cv_text, job_post_text)
-    markdown, removed_locations = _strip_invented_locations(markdown, cv_text)
+def _filter_invented_locations(
+    texts: list[str], cv_text: str
+) -> tuple[list[str], list[str]]:
+    """_strip_invented_locations for a flat list of free-text strings
+    instead of markdown lines — same judgment, no line-splitting."""
+    haystack = _normalise(cv_text)
+    kept: list[str] = []
+    removed: list[str] = []
+    for text in texts:
+        if _is_invented_location(text, haystack):
+            removed.append(text.strip().rstrip("|").strip())
+            continue
+        kept.append(text)
+    return kept, removed
 
+
+# Deterministic, zero-LLM-cost backstop for the "Sounding human, not
+# machine-written" prompt rules above — same defense-in-depth idiom as
+# _strip_lifted_requirements/_strip_invented_locations (ask the model
+# nicely, then enforce mechanically). Sourced from the same two places as
+# the prompt section: the orphaned root tailored_cv_prompts.py's
+# ANTI_AI_TELL_RULES "use the plain word instead" table, and
+# clearspeaking.skill's lexical-flag taxonomy. Deliberately narrow: only
+# single-word/short-phrase substitutions with an unambiguous, grammar-safe
+# replacement. Rule-of-Three and "-ing" tail removal are NOT here — both
+# require prose judgment a mechanical regex can't safely make (unlike
+# deleting an unsupported line outright, rewriting a sentence's shape
+# risks producing something ungrammatical), so those stay prompt-only.
+_BUZZWORD_REPLACEMENTS: dict[str, str] = {
+    "proven track record": "track record",
+    "proven success": "success",
+    "results-driven": "results-focused",
+    "cutting-edge": "advanced",
+    "state-of-the-art": "advanced",
+    "alignment with": "match with",
+    "align with": "match",
+    "served as": "was",
+    "serves as": "is",
+    "stands as": "is",
+    "features a": "has a",
+    "boasts": "has",
+    "leveraging": "using",
+    "leverage": "use",
+    "fostering": "building",
+    "foster": "build",
+    "showcasing": "highlighting",
+    "showcase": "highlight",
+    "underscoring": "highlighting",
+    "underscore": "highlight",
+    "enhancing": "improving",
+    "enhancement": "improvement",
+    "enhance": "improve",
+    "bolstering": "strengthening",
+    "bolster": "strengthen",
+    "spearheading": "leading",
+    "spearhead": "lead",
+    "robust": "strong",
+    "vibrant": "active",
+    "pivotal": "key",
+    "crucial": "key",
+    "intricate": "detailed",
+    "valuable": "useful",
+    "profound": "deep",
+    "meticulous": "careful",
+    "comprehensive": "complete",
+    "thorough": "complete",
+    "innovative": "new",
+    "dedicated": "committed",
+    "extensive": "wide",
+    "passionate": "keen",
+    "seamless": "smooth",
+    "tapestry": "mix",
+    "landscape": "field",
+    "testament": "evidence",
+    "delving": "looking",
+}
+
+_BUZZWORD_PATTERN = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in sorted(_BUZZWORD_REPLACEMENTS, key=len, reverse=True)) + r")\b",
+    re.IGNORECASE,
+)
+
+_CURLY_QUOTES = str.maketrans({
+    "“": '"', "”": '"', "‘": "'", "’": "'",
+})
+
+
+def _match_case(replacement: str, original: str) -> str:
+    if original.isupper():
+        return replacement.upper()
+    if original[:1].isupper():
+        return replacement[:1].upper() + replacement[1:]
+    return replacement
+
+
+_EM_DASH_SEPARATOR = re.compile(r"\s*—\s*")
+
+
+def _normalize_ai_tells(text: str) -> str:
+    """Straight quotes + plain-word substitution for the highest-confidence
+    AI-tell vocabulary, plus em-dash-as-separator flattening. Runs on model
+    output only, never on evidence/job-post text, and never removes
+    content — every substitution preserves the sentence's grammar and
+    meaning, just not its exact wording.
+
+    The em-dash rule is prompt-only guidance above ("use commas and full
+    stops instead") but live output still used " — " as a phrase separator
+    in several places (e.g. "Aston University — MSc Human Resources
+    Management, 2022") despite the instruction — this mechanical
+    replacement with ", " is safe because the observed pattern is always a
+    spaced em-dash standing in for a comma between two phrases, never a
+    mid-word dash."""
+    text = text.translate(_CURLY_QUOTES)
+    text = _EM_DASH_SEPARATOR.sub(", ", text)
+    return _BUZZWORD_PATTERN.sub(
+        lambda m: _match_case(_BUZZWORD_REPLACEMENTS[m.group(1).lower()], m.group(1)),
+        text,
+    )
+
+
+def _filter_rewritten_experience(
+    experience: list[dict], cv_text: str, job_post_text: str
+) -> tuple[list[dict], list[str], list[str]]:
+    """Apply both truthfulness safety nets to every bullet of every role in
+    the structured rewrittenExperience array — the same claim the markdown
+    safety nets would strip must not survive untouched here just because
+    it arrived as a schema field instead of a markdown line. A role that
+    loses every bullet this way is dropped entirely: an empty experience
+    card is worse than an absent one, mirroring _drop_empty_sections'
+    rule for the markdown."""
+    kept_roles: list[dict] = []
+    all_lifted: list[str] = []
+    all_locations: list[str] = []
+    for role in experience:
+        bullets = list(role.get("bullets") or [])
+        bullets, lifted = _filter_lifted_texts(bullets, cv_text, job_post_text)
+        bullets, locations = _filter_invented_locations(bullets, cv_text)
+        all_lifted += lifted
+        all_locations += locations
+        if bullets:
+            kept_roles.append({**role, "bullets": bullets})
+    return kept_roles, all_lifted, all_locations
+
+
+def _build_information_needed(
+    lifted: list[str], removed_locations: list[str]
+) -> list[str]:
+    """Turns what the safety nets stripped into user-facing questions.
+    Shared by _apply_safety_nets (markdown) and _apply_structured_safety_nets
+    (rewrittenExperience/suggestedAdditions) so the same underlying claim
+    produces the same question regardless of which field it was caught in."""
     information_needed: list[str] = []
     if lifted:
         for claim in lifted:
@@ -292,7 +485,46 @@ def _apply_safety_nets(
             f"location? Your CV does not say, so the draft added {shown}, "
             "which has been removed. Tell us and it can be stated correctly.",
         )
-    return markdown, information_needed
+    return information_needed
+
+
+def _apply_safety_nets(
+    markdown: str, cv_text: str, job_post_text: str
+) -> tuple[str, list[str]]:
+    """Run both code-side truthfulness backstops and build the
+    information_needed list purely from what they removed — this list no
+    longer comes from the model (that moved to resume_analysis.py's
+    matchNotes/informationNeeded), only from what code caught."""
+    markdown, lifted = _strip_lifted_requirements(markdown, cv_text, job_post_text)
+    markdown, removed_locations = _strip_invented_locations(markdown, cv_text)
+    markdown = _normalize_ai_tells(markdown)
+    return markdown, _build_information_needed(lifted, removed_locations)
+
+
+def _apply_structured_safety_nets(
+    rewritten_experience: list[dict],
+    suggested_additions: list[str],
+    cv_text: str,
+    job_post_text: str,
+) -> tuple[list[dict], list[str], list[str]]:
+    """The structured-field counterpart of _apply_safety_nets — sync path
+    only (v5 schema fields the streamed path doesn't request)."""
+    experience, exp_lifted, exp_locations = _filter_rewritten_experience(
+        rewritten_experience, cv_text, job_post_text
+    )
+    additions, add_lifted = _filter_lifted_texts(
+        suggested_additions, cv_text, job_post_text
+    )
+    additions, add_locations = _filter_invented_locations(additions, cv_text)
+    information_needed = _build_information_needed(
+        exp_lifted + add_lifted, exp_locations + add_locations
+    )
+    experience = [
+        {**role, "bullets": [_normalize_ai_tells(b) for b in role["bullets"]]}
+        for role in experience
+    ]
+    additions = [_normalize_ai_tells(a) for a in additions]
+    return experience, additions, information_needed
 
 
 def rewrite_resume(
@@ -332,7 +564,12 @@ def rewrite_resume(
             user_payload=payload,
             json_schema=prompts.RESUME_REWRITE_JSON_SCHEMA,
             schema_name=prompts.RESUME_REWRITE_TASK,
-            max_tokens=3000,
+            # v5 asks for rewrittenExperience + suggestedAdditions on top of
+            # the same content already in tailoredResumeMarkdown — raised
+            # from 3000 so the structured mirror of the experience section
+            # doesn't get truncated after the markdown has already used
+            # most of the budget.
+            max_tokens=4500,
             timeout=settings.openai_timeout_generation_seconds,
             model=settings.openai_model_generation,
             client=llm_client_override,
@@ -360,20 +597,39 @@ def rewrite_resume(
                 generation_task=prompts.RESUME_REWRITE_TASK, token_type=token_type,
             ).inc(count)
 
-    markdown, information_needed = _apply_safety_nets(
+    usage = {
+        "prompt_tokens": result.prompt_tokens,
+        "completion_tokens": result.completion_tokens,
+    }
+
+    markdown, markdown_information_needed = _apply_safety_nets(
         data.get("tailoredResumeMarkdown") or "", cv_text, job_post_text
     )
+    rewritten_experience, suggested_additions, structured_information_needed = (
+        _apply_structured_safety_nets(
+            data.get("rewrittenExperience") or [],
+            data.get("suggestedAdditions") or [],
+            cv_text,
+            job_post_text,
+        )
+    )
+    information_needed = markdown_information_needed + structured_information_needed
 
     logger.info(
         "resume_rewrite_complete",
         model=result.model,
         markdown_chars=len(markdown),
+        rewritten_experience_roles=len(rewritten_experience),
+        suggested_additions=len(suggested_additions),
         information_needed=len(information_needed),
     )
 
     return ResumeRewriteResult(
         tailored_resume_markdown=markdown,
         information_needed=information_needed,
+        usage=usage,
+        rewritten_experience=rewritten_experience,
+        suggested_additions=suggested_additions,
     )
 
 

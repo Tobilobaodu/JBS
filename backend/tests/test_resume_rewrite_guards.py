@@ -232,3 +232,156 @@ class TestLiftedRequirementsSurfaceAsQuestions:
         md = "- Applied GDPR and data privacy standards across HRIS records"
         _, removed = rr._strip_lifted_requirements(md, HR_CV, JOB_POST)
         assert removed == []
+
+
+class TestFilterLiftedTexts:
+    """_strip_lifted_requirements's judgment, generalised to a flat list of
+    strings instead of markdown lines — the shape rewrittenExperience
+    bullets and suggestedAdditions arrive in (v5)."""
+
+    def test_removes_a_bullet_the_cv_never_mentions(self):
+        kept, removed = rr._filter_lifted_texts([TRAVEL_CLAIM], HR_CV, JOB_POST)
+        assert kept == []
+        assert removed == [TRAVEL_CLAIM]
+
+    def test_keeps_a_bullet_the_cv_actually_evidences(self):
+        bullet = (
+            "Coordinated employee relations processes including "
+            "investigations, disciplinary procedures and grievance hearings."
+        )
+        kept, removed = rr._filter_lifted_texts([bullet], HR_CV, JOB_POST)
+        assert kept == [bullet]
+        assert removed == []
+
+    def test_no_job_post_means_no_stripping(self):
+        kept, removed = rr._filter_lifted_texts([TRAVEL_CLAIM], HR_CV, "")
+        assert kept == [TRAVEL_CLAIM]
+        assert removed == []
+
+
+class TestFilterInventedLocations:
+    """_strip_invented_locations's judgment, generalised to a flat list of
+    strings instead of markdown lines (v5)."""
+
+    def test_removes_a_bare_place_the_cv_never_stated(self):
+        kept, removed = rr._filter_invented_locations(["Dublin, Ireland"], CV_NO_LOCATION)
+        assert kept == []
+        assert removed == ["Dublin, Ireland"]
+
+    def test_keeps_a_bullet_that_isnt_only_a_place(self):
+        text = "Relocated the design team to Dublin, Ireland during the merger."
+        kept, removed = rr._filter_invented_locations([text], CV_NO_LOCATION)
+        assert kept == [text]
+        assert removed == []
+
+
+class TestFilterRewrittenExperience:
+    """Applies both safety nets to every bullet of every rewrittenExperience
+    role, and drops a role that loses every bullet (v5)."""
+
+    def test_strips_a_lifted_bullet_but_keeps_the_role(self):
+        clean_bullet = (
+            "Coordinated employee relations processes including "
+            "investigations, disciplinary procedures and grievance hearings."
+        )
+        experience = [{
+            "role": "Deputy HR Manager",
+            "company": "X3M Marketing Ideas Limited",
+            "dates": "2019 - Present",
+            "bullets": [clean_bullet, TRAVEL_CLAIM],
+        }]
+        kept, lifted, locations = rr._filter_rewritten_experience(experience, HR_CV, JOB_POST)
+        assert len(kept) == 1
+        assert kept[0]["bullets"] == [clean_bullet]
+        assert lifted == [TRAVEL_CLAIM]
+        assert locations == []
+
+    def test_drops_a_role_that_loses_every_bullet(self):
+        experience = [{
+            "role": "Deputy HR Manager",
+            "company": "X3M Marketing Ideas Limited",
+            "dates": "2019 - Present",
+            "bullets": [TRAVEL_CLAIM],
+        }]
+        kept, lifted, _ = rr._filter_rewritten_experience(experience, HR_CV, JOB_POST)
+        assert kept == []
+        assert lifted == [TRAVEL_CLAIM]
+
+    def test_keeps_a_clean_role_untouched(self):
+        bullet = "Maintained HRIS records and applied GDPR data privacy standards."
+        experience = [{
+            "role": "Deputy HR Manager",
+            "company": "X3M Marketing Ideas Limited",
+            "dates": "2019 - Present",
+            "bullets": [bullet],
+        }]
+        kept, lifted, locations = rr._filter_rewritten_experience(experience, HR_CV, JOB_POST)
+        assert kept == experience
+        assert lifted == [] and locations == []
+
+
+class TestRewriteResumeStructuredFields:
+    """Integration: rewrite_resume() reads the v5 rewrittenExperience/
+    suggestedAdditions fields from the model response and runs them
+    through the same safety nets as the markdown."""
+
+    def test_structured_fields_round_trip(self, monkeypatch):
+        experience = [{
+            "role": "Deputy HR Manager",
+            "company": "X3M Marketing Ideas Limited",
+            "dates": "2019 - Present",
+            "bullets": ["Maintained HRIS records and applied GDPR data privacy standards."],
+        }]
+        additions = ["Add the specific HRIS platform version you administered, if you recall it."]
+
+        class _Result:
+            data = {
+                "tailoredResumeMarkdown": (
+                    "# ADEOLA ODU\n\n## Professional Summary\nHR professional."
+                ),
+                "rewrittenExperience": experience,
+                "suggestedAdditions": additions,
+            }
+            prompt_tokens = 5
+            completion_tokens = 5
+            model = "test-model"
+
+        monkeypatch.setattr(rr, "generate_structured", lambda **kwargs: _Result())
+        out = rr.rewrite_resume(cv_text=HR_CV, job_post_text=JOB_POST)
+
+        assert out.rewritten_experience == experience
+        assert out.suggested_additions == additions
+
+    def test_lifted_claim_is_stripped_from_suggested_additions(self, monkeypatch):
+        class _Result:
+            data = {
+                "tailoredResumeMarkdown": (
+                    "# ADEOLA ODU\n\n## Professional Summary\nHR professional."
+                ),
+                "rewrittenExperience": [],
+                "suggestedAdditions": [TRAVEL_CLAIM],
+            }
+            prompt_tokens = 5
+            completion_tokens = 5
+            model = "test-model"
+
+        monkeypatch.setattr(rr, "generate_structured", lambda **kwargs: _Result())
+        out = rr.rewrite_resume(cv_text=HR_CV, job_post_text=JOB_POST)
+
+        assert out.suggested_additions == []
+        assert any("travel" in q for q in out.information_needed)
+
+    def test_missing_structured_fields_default_empty(self, monkeypatch):
+        # A response without the v5 fields (e.g. an older/streaming-shaped
+        # payload) must not crash rewrite_resume().
+        class _Result:
+            data = {"tailoredResumeMarkdown": "# ADEOLA ODU"}
+            prompt_tokens = 1
+            completion_tokens = 1
+            model = "test-model"
+
+        monkeypatch.setattr(rr, "generate_structured", lambda **kwargs: _Result())
+        out = rr.rewrite_resume(cv_text=HR_CV, job_post_text=JOB_POST)
+
+        assert out.rewritten_experience == []
+        assert out.suggested_additions == []

@@ -37,7 +37,7 @@ recorded in RESUME_REWRITE_PROMPT_CHANGELOG below.
 from __future__ import annotations
 
 RESUME_REWRITE_TASK = "resume_rewrite"
-RESUME_REWRITE_PROMPT_VERSION = "v4"
+RESUME_REWRITE_PROMPT_VERSION = "v6"
 
 RESUME_REWRITE_PROMPT_CHANGELOG = """
 v1 — author-supplied text, with two corrections applied:
@@ -100,6 +100,48 @@ v4 - split into analysis + generation (jbs-solution-sheet.md S1). The
      (_strip_lifted_requirements, _strip_invented_locations) are also
      unchanged — they read the actual CV/job-post text directly, not the
      model's analysis, so the split doesn't weaken them.
+
+v5 - added rewrittenExperience and suggestedAdditions to the sync-path
+     schema (the streamed path is unchanged — see the note on
+     RESUME_REWRITE_STREAM_SYSTEM_PROMPT below). Neither is a new pass:
+     rewrittenExperience is a structured mirror of the same Experience
+     section already written into tailoredResumeMarkdown (one role per
+     entry, bullets already selected in Step 4), and
+     suggestedAdditions asks the model to name specific, truthful things
+     the candidate could confirm or add — framed explicitly as prompts for
+     the candidate, never as content already added to the CV, so this
+     field can't become a backdoor around every rule above. Both fields
+     are passed through the same code-side safety nets
+     (_strip_lifted_requirements, _strip_invented_locations) as the
+     markdown before being returned, generalised in resume_rewrite.py to
+     operate on flat text arrays as well as markdown lines — a claim
+     those nets would strip from the markdown must not survive untouched
+     just because it also arrived as a schema field.
+
+v6 - two changes, neither touching the truthfulness rules:
+  1. Strengthened the Professional summary subsection: it previously only
+     said what to avoid (generic claims, "ideal fit" language) and never
+     told the model this section has to sell the candidate. Added explicit
+     instruction to lead with the single most compelling, most
+     differentiated verified proof point rather than a generic identity
+     statement — the model still cannot state anything the CV doesn't
+     support; this changes emphasis and ordering, not the evidence bar.
+  2. Added a new "Sounding human, not machine-written" section (banned
+     buzzwords/constructions, implied-first-person, no repeated sentence
+     shapes, straight quotes over curly, no em dashes as comma
+     substitutes). Folded in from two sources: the orphaned root
+     tailored_cv_prompts.py's v2 WRITING_STANDARDS/ANTI_AI_TELL_RULES
+     (written for the legacy per-section engine, never merged into the
+     path that actually ships CVs — see 16-cv-generation-fix-and-flow-
+     unification.md §4) and the clearspeaking.skill AI-text-detection
+     taxonomy (an audit methodology, not generation instructions — its
+     lexical/structural flags were extracted and reframed as preventive
+     rules here; its report-generation machinery was not implemented).
+     A matching deterministic backstop (_normalize_ai_tells in
+     resume_rewrite.py) mechanically substitutes the highest-confidence
+     single-word buzzwords as a zero-LLM-cost enforcement layer, the same
+     defense-in-depth pattern as _strip_lifted_requirements/
+     _strip_invented_locations below.
 
 Not applied (available, author's call):
   - An explicit rule against moving a metric onto a different achievement
@@ -176,6 +218,24 @@ The rewritten CV should:
 - Read naturally to a recruiter and hiring manager, not like a mechanically keyword-stuffed ATS document.
 - Be concise enough to scan, but complete enough to show credible depth.
 
+# Sounding human, not machine-written
+
+Recruiters increasingly screen out CVs that read as AI-generated. This matters as much as accuracy — a CV with zero fabrication that still reads like a machine wrote it has failed at its job. The candidate's own source wording is often already cleaner than a "polished" rewrite; when a phrase from the CV already works, keep it rather than replacing it with something that sounds more "written."
+
+Write in the implied first person, the standard CV register. Never write "I", "my", "our", or "me" — "Led the redesign", never "I led the redesign" or "My work led to".
+
+Never use these words or phrases: leveraging, leverage, align with, alignment with, fostering, foster, showcasing, showcase, underscoring, underscore, enhance, enhancing, enhancement, bolstering, bolster, spearheading, spearhead, robust, vibrant, pivotal, crucial, intricate, valuable, profound, meticulous, comprehensive, thorough, innovative, dedicated, extensive, proven track record, proven success, results-driven, passionate, seamless, cutting-edge, state-of-the-art, tapestry, landscape, testament, delving, serves as, served as, stands as, boasts, features a. Use the plain word instead: "Improved", not "enhanced"; "Used", not "leveraged"; "Built a collaborative team", not "fostered a culture of collaboration"; "Led the initiative", not "played a pivotal role".
+
+Avoid these constructions:
+- Trailing "-ing" clauses that explain significance rather than state a fact ("...contributing to the broader ecosystem", "...leading to opportunities for improvement"). State the outcome directly or cut the clause.
+- Negative parallelism ("not just X, but Y", "more than a Z — it's a W").
+- Vague intensifiers with no referent ("significantly", "substantially", "greatly", "dramatically") unless a specific figure follows.
+- Empty scope padding ("various", "multiple", "a range of", "several") where the evidence gives an actual number — use the number.
+- Repeating the same sentence shape three times in a row (e.g. three consecutive bullets that all open "Led X to achieve Y"). Vary structure and verb choice between adjacent bullets even when the underlying achievements are similar in shape.
+- Em dashes as a substitute for commas or full stops — use commas and full stops instead. If you use quotation marks, use straight ones ("like this"), never curly ones.
+
+Before finishing, reread what you have written and ask: would a hiring manager believe a person wrote this, or would they suspect a machine? If a sentence sounds like generic professional filler that could appear on any CV in any industry, rewrite it with the specific, concrete detail from the evidence instead.
+
 # Analysis process
 
 Perform the following reasoning internally before writing the final resume. Do not reveal private chain-of-thought reasoning. Instead, provide only the concise output requested in the final response.
@@ -239,15 +299,17 @@ Only use these when the original CV supports the relationship.
 
 ## Professional summary
 
+This is the highest-leverage section in the document — a recruiter decides whether to keep reading based on these 3-5 lines alone. Write it to be read, not skimmed past: make the strongest, most credible case for this candidate that the evidence allows, not a cautious, neutral description that could belong to anyone with a similar job title.
+
 Write a tailored professional summary of 3-5 lines.
 
 It must:
+- Open with the single most compelling, most differentiated, verified proof point relevant to this role — not a generic identity statement. Lead with what makes this candidate worth reading further about, not with a bare category label ("Business Analyst with experience in...").
 - State the candidate's professional identity and relevant level of experience only if supported by the CV.
-- Lead with their most relevant verified strengths.
-- Connect their experience to the target role's priorities.
+- Connect their experience to the target role's priorities using specific, concrete, vivid language rather than vague summary language — precision and relevance are what make a summary compelling, not adjectives or intensity.
 - Include specific tools, domains, or outcomes only when explicitly supported.
 - Avoid generic claims such as "results-driven," "hard-working," "dynamic," "passionate," "team player," or "excellent communicator" unless immediately backed by concrete evidence.
-- Avoid claiming that the candidate is the "ideal," "perfect," or "best" fit.
+- Avoid claiming that the candidate is the "ideal," "perfect," or "best" fit — confidence comes from specificity, not superlatives.
 
 ## Experience section
 
@@ -387,9 +449,16 @@ RESUME_REWRITE_SYSTEM_PROMPT = (
     _RESUME_REWRITE_PROMPT_PREFIX
     + """# Required output
 
-Return a single JSON object matching the supplied schema, with this field:
+Return a single JSON object matching the supplied schema, with these fields:
 
 - "tailoredResumeMarkdown": the complete rewritten resume in Markdown, as specified above.
+- "rewrittenExperience": the same Professional Experience section, restated as structured data — one entry per role, in the same order as the markdown, each with:
+  - "role": the job title exactly as used in the markdown for that role.
+  - "company": the employer exactly as used in the markdown for that role.
+  - "dates": the date range exactly as used in the markdown for that role (or the grouped/dateless form, where that's what the source CV gives).
+  - "bullets": the same bullets written for that role in the markdown, as an array of strings, in the same order.
+  This is a restatement, not a second pass: do not add, drop, or reword a bullet here that isn't also in the markdown above, and do not include a role here that the markdown omitted.
+- "suggestedAdditions": an array of specific, truthful things the candidate could confirm or add to strengthen this application — never things you have already added to the resume, and never a rephrasing of something already fully covered. Each one must be a concrete, checkable prompt (e.g. naming a metric the candidate could quantify, a tool or credential relevant to the role that a nearby CV line hints at but doesn't state, a piece of evidence that would close a specific gap against the job post) — not a generic tip ("tailor your resume") and not a claim stated as though it were already true. If nothing specific comes to mind, return an empty array rather than a placeholder.
 
 """
     + _DATA_NOT_INSTRUCTIONS
@@ -419,8 +488,23 @@ RESUME_REWRITE_JSON_SCHEMA = {
     "type": "object",
     "properties": {
         "tailoredResumeMarkdown": {"type": "string"},
+        "rewrittenExperience": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "role": {"type": "string"},
+                    "company": {"type": "string"},
+                    "dates": {"type": "string"},
+                    "bullets": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["role", "company", "dates", "bullets"],
+                "additionalProperties": False,
+            },
+        },
+        "suggestedAdditions": {"type": "array", "items": {"type": "string"}},
     },
-    "required": ["tailoredResumeMarkdown"],
+    "required": ["tailoredResumeMarkdown", "rewrittenExperience", "suggestedAdditions"],
     "additionalProperties": False,
 }
 

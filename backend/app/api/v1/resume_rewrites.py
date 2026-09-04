@@ -88,15 +88,16 @@ async def _load_raw_text(
     return raw_text.canonical_text
 
 
-# gpt-4o-mini / gpt-4o per-token pricing, same source as COST_USD_COUNTER's
-# other increment sites (worker_jobs.py) — duplicated here rather than
-# imported since those live in worker code and these two calls run in the
-# API process. Model-aware (unlike the existing worker call sites, which
-# predate S4's model split and all use the mini rate even where the
-# generation model is actually gpt-4o) because /resume-rewrites always
-# uses openai_model_generation now.
-_GPT_4O_MINI_RATE = (0.150 / 1_000_000, 0.600 / 1_000_000)  # prompt, completion
-_GPT_4O_RATE = (2.50 / 1_000_000, 10.00 / 1_000_000)
+# gpt-5-mini per-token pricing ($0.25/M prompt, $2.00/M completion —
+# confirmed against OpenAI's pricing page), same source as
+# COST_USD_COUNTER's other increment sites (worker_jobs.py) — duplicated
+# here rather than imported since those live in worker code and these two
+# calls run in the API process. Both /match-analyses (openai_model) and
+# /resume-rewrites (openai_model_generation) currently resolve to the same
+# model, hence one constant used at both call sites below — if the two
+# settings are ever split to different models again, split this back into
+# two rates at that point.
+_GPT_5_MINI_RATE = (0.25 / 1_000_000, 2.00 / 1_000_000)  # prompt, completion
 
 
 def _budget_identity(identity: RequestIdentity) -> tuple[str, str]:
@@ -202,7 +203,7 @@ async def create_match_analysis(
             status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)
         ) from e
 
-    prompt_rate, completion_rate = _GPT_4O_MINI_RATE
+    prompt_rate, completion_rate = _GPT_5_MINI_RATE
     record_llm_spend(
         identity_key,
         result.prompt_tokens * prompt_rate + result.completion_tokens * completion_rate,
@@ -305,7 +306,7 @@ async def create_resume_rewrite(
             # on spend accounting — same trade record_llm_spend's own
             # caller-facing contract already makes.
             if usage:
-                prompt_rate, completion_rate = _GPT_4O_RATE
+                prompt_rate, completion_rate = _GPT_5_MINI_RATE
                 record_llm_spend(
                     identity_key,
                     usage.get("prompt_tokens", 0) * prompt_rate

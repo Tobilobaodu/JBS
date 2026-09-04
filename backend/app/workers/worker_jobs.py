@@ -1551,6 +1551,30 @@ def process_cv_generate(self, job_id: str) -> None:
             *(jp_profile.responsibilities or [] if jp_profile else []),
         ]
 
+        # Full CV + job post text for the single-call body fallback in
+        # generate_draft_sections (doc 17 §7): the row-driven generators read
+        # profile rows production cv_analyze doesn't create. Same sources the
+        # match engine itself uses (CvRawText.canonical_text /
+        # job_posts.raw_text). Missing text ⇒ fallback silently off.
+        cv_text = None
+        cv_text_source_id = None
+        cv_version = session.get(CvProfileVersion, match_run.cv_profile_version_id)
+        if cv_version is not None:
+            cv_raw = session.execute(
+                select(CvRawText).where(CvRawText.cv_file_id == cv_version.cv_file_id)
+            ).scalar_one_or_none()
+            if cv_raw is not None and (cv_raw.canonical_text or "").strip():
+                cv_text = cv_raw.canonical_text
+                cv_text_source_id = cv_raw.id
+
+        job_post_text = None
+        target_title = None
+        if jp_profile is not None:
+            job_post = session.get(JobPost, jp_profile.job_post_id)
+            if job_post is not None and (job_post.raw_text or "").strip():
+                job_post_text = job_post.raw_text
+            target_title = jp_profile.job_title or None
+
         from app.services.tailored_cv_generation import (
             generate_draft_sections, assemble_content_json, render_text_from_sections,
             build_validation_result, build_improvement_checklist,
@@ -1565,6 +1589,10 @@ def process_cv_generate(self, job_id: str) -> None:
             project_items=project_items,
             job_requirements=job_requirements,
             instructions=draft.instructions,
+            cv_text=cv_text,
+            job_post_text=job_post_text,
+            target_title=target_title,
+            cv_text_source_id=cv_text_source_id,
         )
 
         for section in outcome.sections:

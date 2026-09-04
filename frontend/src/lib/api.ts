@@ -354,3 +354,18 @@ export function errorMessage(error: unknown, fallback: string): string {
   }
   return fallback
 }
+
+// ── Journey latency beacon (jbs-solution-sheet.md O4) ──
+// The server can't see poll lag or render time on its own — S5's 14s of
+// dead time lived entirely there. Fire-and-forget: never awaited by the
+// caller, never surfaces an error to the user — losing a metrics beacon
+// must not affect the product. Lives here (not trial-api.ts, which
+// re-exports it) since both the trial and dashboard flows fire it.
+export function recordJourney(journey: string, durationSeconds: number) {
+  void apiFetch("/client-metrics/journey", {
+    method: "POST",
+    body: { journey, durationSeconds },
+  }).catch(() => {
+    // best-effort telemetry only
+  })
+}

@@ -56,8 +56,13 @@ class Settings(BaseSettings):
     # opts into openai_model_generation instead — see llm_client.py callers.
     # These two used to disagree between here and .env.example; keep them
     # in sync if you change either.
-    openai_model: str = "gpt-4o-mini"
-    openai_model_generation: str = "gpt-4o"
+    # Both point at gpt-5-mini for now (matches the Example reference app's
+    # model choice) — kept as two separate settings rather than collapsed
+    # into one so the tiers can diverge again later without a config
+    # shape change. gpt-5-mini is a Chat Completions model that requires
+    # max_completion_tokens instead of max_tokens — see llm_client.py.
+    openai_model: str = "gpt-5-mini"
+    openai_model_generation: str = "gpt-5-mini"
     openai_request_timeout_seconds: int = 30
     # Per-task timeouts: tight on the critical (synchronous, user-waiting)
     # path, looser on generation now that it runs off-path (streamed or

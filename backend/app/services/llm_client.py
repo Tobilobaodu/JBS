@@ -35,18 +35,19 @@ from app.core.tracing import tracer
 
 logger = get_logger(__name__)
 
-# O3: per-token USD rates for the two models actually used in this
-# codebase (settings.openai_model/openai_model_generation). Mirrors the
-# rates app/api/v1/resume_rewrites.py's _GPT_4O_MINI_RATE/_GPT_4O_RATE
-# already use for real budget accounting — duplicated here rather than
-# imported, since this module is a lower layer neither of those
-# API-layer modules should import from in the other direction. Unifying
-# into one shared pricing source is reasonable future cleanup, not done
-# here — this table exists only to label the tracing span's cost_usd
-# attribute, it is not itself a billing/budget source of truth.
+# O3: per-token USD rate for the model actually used in this codebase
+# (settings.openai_model/openai_model_generation both point at gpt-5-mini
+# today). Mirrors the rate app/api/v1/resume_rewrites.py's
+# _GPT_5_MINI_RATE already uses for real budget accounting — duplicated
+# here rather than imported, since this module is a lower layer neither
+# of those API-layer modules should import from in the other direction.
+# Unifying into one shared pricing source is reasonable future cleanup,
+# not done here — this table exists only to label the tracing span's
+# cost_usd attribute, it is not itself a billing/budget source of truth.
+# Rate confirmed against OpenAI's pricing page: $0.25/M input,
+# $2.00/M output.
 _MODEL_PRICING_PER_TOKEN = {
-    "gpt-4o-mini": (0.150 / 1_000_000, 0.600 / 1_000_000),  # (prompt, completion)
-    "gpt-4o": (2.50 / 1_000_000, 10.00 / 1_000_000),
+    "gpt-5-mini": (0.25 / 1_000_000, 2.00 / 1_000_000),  # (prompt, completion)
 }
 
 
@@ -148,7 +149,11 @@ def generate_structured(
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_payload},
                     ],
-                    max_tokens=max_tokens,
+                    # gpt-5-mini-class models reject the older max_tokens
+                    # param name and require max_completion_tokens — this
+                    # function's own max_tokens= parameter is unchanged,
+                    # only the outgoing API request key is renamed.
+                    max_completion_tokens=max_tokens,
                     response_format={
                         "type": "json_schema",
                         "json_schema": {
@@ -281,7 +286,8 @@ def stream_text(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_payload},
                 ],
-                max_tokens=max_tokens,
+                # See the matching comment in generate_structured above.
+                max_completion_tokens=max_tokens,
                 stream=True,
                 # Without this the final chunk carrying usage never arrives,
                 # and LLM_TOKENS_COUNTER silently stops counting generation

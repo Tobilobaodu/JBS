@@ -228,7 +228,18 @@
       "Bash(npx eslint *)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3100/dashboard)",
       "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3100/try/results)",
-      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3100/dashboard/matches/test-id-123)"
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:3100/dashboard/matches/test-id-123)",
+      "Bash(python -m pytest tests/test_resume_rewrite_guards.py -q)",
+      "Bash(python -m pytest tests/test_cv_content_pipeline_regression.py tests/test_tailored_cv_body_fallback.py -q)",
+      "Bash(python -m pytest tests/test_tailored_cv_body_fallback.py tests/test_resume_rewrite_guards.py -q)",
+      "Bash(python -m pytest tests/test_resume_analysis_guards.py tests/test_tailored_cv_generation.py -q)",
+      "Bash(python -c \"from app.services import resume_rewrite, tailored_cv_generation, generation_core; from app.prompts import resume_rewrite_prompts; print\\('OK', resume_rewrite_prompts.RESUME_REWRITE_PROMPT_VERSION\\)\")",
+      "Bash(curl -s -X POST http://localhost:8000/api/v1/trial-sessions -H \"Content-Type: application/json\" -d '{}')",
+      "Bash(curl -s -X POST http://localhost:8000/api/v1/cvs -H 'X-Trial-Session-Id: 5afba783-1dec-4c5d-b297-05eae17eaaad' -F 'file=@C:/Users/second/Documents/GitHub/JBS/Test Cvs/BA Master CV- Rayo Odu.pdf;type=application/pdf')",
+      "Bash(python jbs_flow.py)",
+      "Bash(taskkill //PID 20944 //F)",
+      "Bash(NODE_OPTIONS=--no-experimental-webstorage npx vitest run src/components/__tests__/linkedin-import-hint.test.tsx)",
+      "Bash(NODE_OPTIONS=--no-experimental-webstorage npx vitest run)"
     ]
   }
 }

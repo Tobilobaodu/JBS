@@ -63,6 +63,15 @@ class GenerationOutcome:
     issues: list[str] = field(default_factory=list)
     total_prompt_tokens: int = 0
     total_completion_tokens: int = 0
+    # Populated only by tailored_cv_generation.py's single-call body
+    # fallback (resume_rewrite.py's v5 schema fields) — empty for every
+    # other generation task, including cover letters, which don't produce
+    # this shape. Carried here rather than dropped so a future consumer
+    # (the structured result view, once its target page is designed) has
+    # somewhere to read them from without re-deriving them from the
+    # rendered body text.
+    rewritten_experience: list[dict] = field(default_factory=list)
+    suggested_additions: list[str] = field(default_factory=list)
 
 
 def generate_and_verify_section(

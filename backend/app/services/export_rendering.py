@@ -35,6 +35,7 @@ _SECTION_HEADINGS = {
     "experience": "Experience",
     "projects": "Projects",
     "skills": "Skills",
+    "body": "Tailored CV",
 }
 
 
@@ -130,6 +131,13 @@ def build_cv_docx_context(
                 header = _format_project_header(project_by_id.get(section.source_item_id))
             block["entries"].append({"header": header, "bullets": _split_bullets(section.content_text)})
         elif kind == "education":
+            lines = [line.strip() for line in section.content_text.splitlines() if line.strip()]
+            blocks.append({"kind": kind, "heading": heading, "paragraph": None, "lines": lines, "entries": None})
+        elif kind == "body":
+            # Single-call rewrite output (tailored_cv_body): a full markdown
+            # document. Rendered line-by-line like education — the newlines
+            # carry the document's structure, and the single-paragraph
+            # fallback below would collapse them into one blob.
             lines = [line.strip() for line in section.content_text.splitlines() if line.strip()]
             blocks.append({"kind": kind, "heading": heading, "paragraph": None, "lines": lines, "entries": None})
         else:

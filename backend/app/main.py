@@ -265,4 +265,4 @@ app.mount("/metrics", metrics_app)
 @app.get("/health")
 async def health():
     """Health check endpoint. Returns 200 if the API is running."""
-    return {"status": "ok", "environment": settings.environment}
+    return {"status": "ok"}

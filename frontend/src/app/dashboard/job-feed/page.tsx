@@ -18,6 +18,14 @@ const SOURCE_LABEL: Record<string, string> = {
   usajobs: "USAJobs",
 }
 
+// Same grow-the-limit pagination the Jobs page uses (dashboard/jobs/page.tsx):
+// one query whose limit grows, rather than accumulating pages client-side.
+const PAGE_SIZE = 20
+// GET /job-feed caps `limit` at 100 (app/api/v1/job_feed.py), exactly as
+// GET /job-posts does. Requesting more is a 422, so the button stops at the
+// ceiling and the note below explains how to reach older listings.
+const MAX_ITEMS = 100
+
 export default function JobFeedPage() {
   const router = useRouter()
   const queryClient = useQueryClient()
@@ -26,17 +34,33 @@ export default function JobFeedPage() {
   const [source, setSource] = useState("")
   const [remoteOnly, setRemoteOnly] = useState(false)
   const [importingId, setImportingId] = useState<string | null>(null)
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
 
   const query = useQuery({
-    queryKey: ["job-feed", appliedQ, source, remoteOnly],
+    queryKey: ["job-feed", appliedQ, source, remoteOnly, visibleCount],
     queryFn: () =>
       listJobFeed({
         q: appliedQ || undefined,
         source: source || undefined,
         remote: remoteOnly ? true : undefined,
-        limit: 50,
+        limit: visibleCount,
       }),
+    // Growing `visibleCount` changes the query key, so without this the new
+    // page counts as a fresh query: `isLoading` flips true, TableShell swaps
+    // the rows for skeletons, and the button below unmounts mid-click (its
+    // "Loading…" state would never be reachable). Keeping the previous page
+    // as placeholder data means the loaded rows stay put and only the button
+    // shows the pending state.
+    placeholderData: (previousData) => previousData,
   })
+
+  /** Any filter change starts a new result set — keep the page size from
+   *  carrying over, so a search after several "Load more" clicks doesn't
+   *  silently request 100 rows of the new query. */
+  function applySearch() {
+    setAppliedQ(q.trim())
+    setVisibleCount(PAGE_SIZE)
+  }
 
   async function handleImport(feedPostingId: string) {
     setImportingId(feedPostingId)
@@ -72,13 +96,20 @@ export default function JobFeedPage() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") setAppliedQ(q.trim())
+              if (e.key === "Enter") applySearch()
             }}
           />
         </div>
         <div className="field">
           <label>Source</label>
-          <select className="input" value={source} onChange={(e) => setSource(e.target.value)}>
+          <select
+            className="input"
+            value={source}
+            onChange={(e) => {
+              setSource(e.target.value)
+              setVisibleCount(PAGE_SIZE)
+            }}
+          >
             <option value="">All sources</option>
             {Object.entries(SOURCE_LABEL).map(([value, label]) => (
               <option key={value} value={value}>
@@ -93,7 +124,10 @@ export default function JobFeedPage() {
             <input
               type="checkbox"
               checked={remoteOnly}
-              onChange={(e) => setRemoteOnly(e.target.checked)}
+              onChange={(e) => {
+                setRemoteOnly(e.target.checked)
+                setVisibleCount(PAGE_SIZE)
+              }}
               style={{ accentColor: "var(--color-accent)", width: 15, height: 15 }}
             />
             Remote only
@@ -101,7 +135,7 @@ export default function JobFeedPage() {
         </div>
         <div className="field" style={{ justifyContent: "flex-end" }}>
           <label>&nbsp;</label>
-          <button type="button" className="btn btn-secondary" onClick={() => setAppliedQ(q.trim())}>
+          <button type="button" className="btn btn-secondary" onClick={applySearch}>
             Search
           </button>
         </div>
@@ -156,6 +190,26 @@ export default function JobFeedPage() {
           ))}
         </tbody>
       </TableShell>
+
+      {query.data && query.data.total > items.length && visibleCount < MAX_ITEMS && (
+        <div style={{ display: "flex", justifyContent: "center" }}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            disabled={query.isFetching}
+            onClick={() => setVisibleCount((n) => Math.min(n + PAGE_SIZE, MAX_ITEMS))}
+          >
+            {query.isFetching ? "Loading…" : "Load more"}
+          </button>
+        </div>
+      )}
+
+      {query.data && query.data.total > items.length && visibleCount >= MAX_ITEMS && (
+        <p style={{ margin: 0, textAlign: "center", fontSize: 13, color: "var(--color-neutral-700)" }}>
+          Showing the first {items.length} of {query.data.total} listings — narrow your search to see
+          more.
+        </p>
+      )}
     </div>
   )
 }
