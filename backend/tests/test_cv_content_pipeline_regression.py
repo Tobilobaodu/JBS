@@ -8,7 +8,7 @@ run by worker_jobs.py::process_cv_analyze). That replacement extracts
 only `basics` + `skills`; the old pipeline was the ONLY writer of
 CvExperienceItem / CvEducationItem / CvCertificationItem / CvProjectItem
 rows (verified by repo-wide grep: the only remaining constructor calls
-live in decommissioned/extraction_v1/step6_cv_parse_task.py and in test
+live in decommissioned/step6_cv_parse_task.py and in test
 fixtures).
 
 Consequence, and the reason a real user's "tailored CV" is unusable:

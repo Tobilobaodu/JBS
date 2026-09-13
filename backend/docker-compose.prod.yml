@@ -1,0 +1,571 @@
+# ═══════════════════════════════════════════════════════════════════════
+# PRODUCTION compose file — deployed by Coolify.
+#
+# Coolify settings that point at this file:
+#   Build pack ............ Docker Compose
+#   Base directory ........ /backend
+#   Docker Compose Location /docker-compose.prod.yml
+#
+# THIS IS A FULL FILE, NOT AN OVERRIDE. Coolify's compose resource takes a
+# single file path — there is no way to layer `-f base.yml -f override.yml`
+# through its UI — so every service is defined here rather than patched on
+# top of docker-compose.yml. The two files WILL drift: treat "add a service"
+# or "add an env var" as a two-file change.
+#
+# Differences from docker-compose.yml (the local dev file), all deliberate:
+#   1. No `env_file: .env.local` — that file is gitignored and never reaches
+#      the server. Values come from Coolify's environment variables via
+#      ${VAR} interpolation. Required secrets use ${VAR:?message} so a
+#      missing one fails the deploy loudly instead of booting a broken app.
+#   2. No host `ports:` on postgres/redis/minio/etc. On a public VPS those
+#      mappings expose the database to the internet. Only `api` and
+#      `frontend` are reachable, and only through Coolify's proxy.
+#   3. No `./app:/app/app:ro` bind mounts. That's a dev convenience so edits
+#      skip a rebuild; in production it runs the checked-out tree instead of
+#      the built image.
+#   4. A `migrate` one-shot service runs `alembic upgrade head` before the
+#      api and workers start. Nothing ran migrations under the old setup.
+#   5. Worker concurrency is 1 everywhere and four cold queues share one
+#      container — 27 worker processes do not fit in 8 GB. See the block
+#      above `worker_jobs_misc`.
+#   6. A `frontend` service, which has no local-dev equivalent (dev runs
+#      `npm run dev` on :3100 outside compose).
+#
+# The `no_internet` network is unchanged and load-bearing. It is
+# `internal: true`, and multi-homing a deny-egress service onto `default`
+# silently restores its internet access — a bug this project has already hit
+# live. After the first deploy, verify Coolify's proxy network has not been
+# attached to the isolated services.
+# ═══════════════════════════════════════════════════════════════════════
+
+x-app-build: &app-build
+  build:
+    context: .
+    dockerfile: Dockerfile
+  restart: unless-stopped
+
+# Every app container (api, workers, beat, migrate) gets this same block.
+# Anything without an explicit default here is required: ${VAR:?...} aborts
+# the deploy with that message rather than starting with an empty value,
+# which pydantic would otherwise surface as a confusing validation error.
+x-app-env: &app-env
+  APP_NAME: ${APP_NAME:-cv-tailoring-backend}
+  PORT: "8000"
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+  ENVIRONMENT: ${ENVIRONMENT:-production}
+
+  DATABASE_URL: postgresql://${POSTGRES_USER:-cvapp}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cv_tailoring}
+  DATABASE_URL_ASYNC: postgresql+asyncpg://${POSTGRES_USER:-cvapp}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-cv_tailoring}
+  APP_RUNTIME_DB_PASSWORD: ${APP_RUNTIME_DB_PASSWORD:-app_runtime_unused}
+
+  REDIS_URL: redis://redis:6379/0
+
+  AWS_REGION: ${AWS_REGION:-us-east-1}
+  AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-placeholder}
+  AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-placeholder}
+  S3_BUCKET_NAME: ${S3_BUCKET_NAME:-cv-tailoring}
+
+  MINIO_ENDPOINT: http://minio:9000
+  MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+  MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+
+  TEXTRACT_ENABLED: "false"
+
+  OPENAI_API_KEY: ${OPENAI_API_KEY:?set OPENAI_API_KEY}
+  OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
+  OPENAI_MODEL_GENERATION: ${OPENAI_MODEL_GENERATION:-gpt-5-mini}
+
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET to a fresh random value}
+  JWT_EXPIRY: ${JWT_EXPIRY:-604800}
+
+  # Scheme + host only, no trailing slash — a trailing slash never matches
+  # an Origin header and every browser request fails CORS.
+  CORS_ORIGIN: ${CORS_ORIGIN:?set CORS_ORIGIN, e.g. https://jbs.tobilobaodu.com}
+
+  MAX_CONCURRENT_JOBS_PER_USER: ${MAX_CONCURRENT_JOBS_PER_USER:-5}
+
+  CLAMD_HOST: clamav
+  CLAMD_PORT: "3310"
+
+  JOB_FEED_REFRESH_INTERVAL_SECONDS: ${JOB_FEED_REFRESH_INTERVAL_SECONDS:-10800}
+  REED_API_KEY: ${REED_API_KEY:-}
+  USAJOBS_API_KEY: ${USAJOBS_API_KEY:-}
+  USAJOBS_USER_AGENT_EMAIL: ${USAJOBS_USER_AGENT_EMAIL:-}
+
+# Celery defaults for every worker. concurrency=1 because each slot forks a
+# full Python process carrying SQLAlchemy, pydantic, httpx and the skills
+# taxonomy (150-250 MB each). max-tasks-per-child recycles those processes
+# so leaked memory is returned instead of accumulating until the OOM killer
+# picks a container at random — which presents as unexplained job failures,
+# not as a memory error.
+x-celery-opts: &celery-opts "--concurrency=1 --max-tasks-per-child=50 --loglevel=info"
+
+x-worker-mem: &worker-mem
+  deploy:
+    resources:
+      limits:
+        memory: 450M
+
+services:
+  # ── One-shot migrations ──────────────────────────────────────────────
+  # Runs to completion and exits; api and the workers wait on it. Kept out
+  # of the API's own startup because several containers start at once and
+  # concurrent `alembic upgrade head` runs race for the migration lock.
+  migrate:
+    <<: *app-build
+    restart: "no"
+    command: alembic upgrade head
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - no_internet
+
+  # ── API ──────────────────────────────────────────────────────────────
+  # Assign jbs-api.tobilobaodu.com to this service in the Coolify UI.
+  # Do NOT add a host port mapping: Coolify's proxy reaches it over the
+  # internal network, and a published port would bypass the proxy.
+  api:
+    <<: *app-build
+    expose:
+      - "8000"
+    environment: *app-env
+    deploy:
+      resources:
+        limits:
+          memory: 700M
+    # On no_internet as well, so the synchronous PDF export can reach
+    # gotenberg (which is no_internet-ONLY by design — it renders untrusted
+    # CV content). This grants gotenberg nothing; the API already has egress
+    # via `default` for the LLM provider.
+    networks:
+      - default
+      - no_internet
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      clamav:
+        condition: service_healthy
+    # python rather than curl: the python:3.11-slim base image has no curl,
+    # and a healthcheck that always errors marks the container unhealthy,
+    # which Coolify reads as a failed deploy.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=5).status == 200 else 1)"
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # ── Frontend ─────────────────────────────────────────────────────────
+  # Assign jbs.tobilobaodu.com to this service in the Coolify UI.
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        # Build-time, not runtime — see frontend/Dockerfile. This must be
+        # the PUBLIC API URL as the browser will see it, not an internal
+        # compose hostname: the value ends up in JavaScript running on the
+        # user's machine, which cannot resolve `api`.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:?set NEXT_PUBLIC_API_BASE_URL, e.g. https://jbs-api.tobilobaodu.com}
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+    deploy:
+      resources:
+        limits:
+          memory: 400M
+    networks:
+      - default
+
+  # ── Datastores ───────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cvapp}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-cv_tailoring}
+    volumes:
+      # No ./postgres-init mount: that script exists only to create
+      # cv_tailoring_test for host-venv pytest runs, which never happen here.
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cvapp} -d ${POSTGRES_DB:-cv_tailoring}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    # Multi-homed so the no_internet-only workers can still reach it.
+    # no_internet is `internal: true`, so this grants postgres no egress.
+    networks:
+      - default
+      - no_internet
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - default
+      - no_internet
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+    networks:
+      - default
+      - no_internet
+
+  # Needs `default` for freshclam's signature-database updates. Holds
+  # ~1.5 GB resident once loaded — by far the largest single consumer on
+  # this host. Do not drop it to save memory: upload scanning is a security
+  # control, not an optional extra.
+  clamav:
+    image: clamav/clamav:latest
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "false"
+    volumes:
+      - clamav_data:/var/lib/clamav
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+    networks:
+      - default
+      - no_internet
+
+  # Takes bytes in, returns text. No DB, no broker, no egress.
+  extraction:
+    build:
+      context: ./extraction-service
+      dockerfile: Dockerfile
+    environment:
+      PORT: "5050"
+      NODE_ENV: production
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - no_internet
+
+  # Renders untrusted CV content — no_internet ONLY, never a domain.
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - no_internet
+
+  # ── Workers ──────────────────────────────────────────────────────────
+  # One queue per worker is kept for the hot paths, because the
+  # queue-to-worker mapping being obvious is what prevents the "queue with
+  # no consumer" class of bug this project has paid for more than once.
+  #
+  # NETWORK PLACEMENT IS A SECURITY DECISION, NOT A DEFAULT. A worker on
+  # `no_internet` only has no route to the public internet. Adding
+  # `default` to one of those silently restores full egress.
+
+  worker_text_extract:
+    <<: [*app-build, *worker-mem]
+    command: celery -A app.workers.tasks worker -Q text_extract --concurrency=1 --max-tasks-per-child=50 --loglevel=info
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      extraction:
+        condition: service_started
+      clamav:
+        condition: service_healthy
+    # Reaches postgres, redis, minio, extraction and clamav, all of which are
+    # multi-homed onto no_internet. The malware scan runs here, not in the API.
+    networks:
+      - no_internet
+
+  worker_ats_check:
+    <<: [*app-build, *worker-mem]
+    command: celery -A app.workers.tasks worker -Q ats_check --concurrency=1 --max-tasks-per-child=50 --loglevel=info
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    # Rules-based check over data already in the DB. No external input,
+    # no outbound need.
+    networks:
+      - no_internet
+
+  worker_export:
+    <<: [*app-build, *worker-mem]
+    command: celery -A app.workers.tasks worker -Q export,export_pdf --concurrency=1 --max-tasks-per-child=50 --loglevel=info
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      gotenberg:
+        condition: service_started
+    # docx rendering is local (docxtpl); pdf conversion calls gotenberg over
+    # this same internal network, never the public internet.
+    networks:
+      - no_internet
+
+  # The four LLM-calling workers below need egress to the OpenAI API, which
+  # is exactly why they are not on no_internet.
+  worker_match:
+    <<: [*app-build, *worker-mem]
+    command: celery -A app.workers.tasks worker -Q match --concurrency=1 --max-tasks-per-child=50 --loglevel=info
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - default
+
+  worker_cv_generate:
+    <<: [*app-build, *worker-mem]
+    command: celery -A app.workers.tasks worker -Q cv_generate --concurrency=1 --max-tasks-per-child=50 --loglevel=info
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - default
+
+  worker_cover_letter_generate:
+    <<: [*app-build, *worker-mem]
+    command: celery -A app.workers.tasks worker -Q cover_letter_generate --concurrency=1 --max-tasks-per-child=50 --loglevel=info
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - default
+
+  worker_cv_analyze:
+    <<: [*app-build, *worker-mem]
+    command: celery -A app.workers.tasks worker -Q cv_analyze --concurrency=1 --max-tasks-per-child=50 --loglevel=info
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - default
+
+  # ── Consolidated cold queues ─────────────────────────────────────────
+  # job_post_fetch, job_post_parse, coverage_report and job_feed share one
+  # container. They are low-traffic, and on an 8 GB host four idle worker
+  # processes cost ~800 MB to buy throughput nobody is asking for.
+  #
+  # These four are merged specifically because they ALL belong on `default`
+  # and none belongs on no_internet — job_post_fetch and job_feed reach
+  # public job boards, and coverage_report calls the LLM via
+  # _get_or_run_match. Merging a no_internet-only queue in here would hand
+  # that queue internet access. Check network posture before adding a fifth.
+  #
+  # Split any of these back out on real contention; nothing else depends on
+  # them sharing a process.
+  worker_jobs_misc:
+    <<: [*app-build, *worker-mem]
+    command: celery -A app.workers.tasks worker -Q job_post_fetch,job_post_parse,coverage_report,job_feed --concurrency=1 --max-tasks-per-child=50 --loglevel=info
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - default
+
+  worker_maintenance:
+    <<: [*app-build, *worker-mem]
+    command: celery -A app.workers.tasks worker -Q maintenance --concurrency=1 --max-tasks-per-child=50 --loglevel=info
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    networks:
+      - default
+      - no_internet
+
+  # Scheduler only: publishes task messages on schedule, executes nothing.
+  # The target queues still need their own consuming workers above.
+  beat:
+    <<: *app-build
+    command: celery -A app.workers.tasks beat --loglevel=info
+    environment: *app-env
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    depends_on:
+      redis:
+        condition: service_started
+    networks:
+      - default
+
+  # ── Observability ────────────────────────────────────────────────────
+  # Prometheus scrapes only the API process, so counters that increment
+  # solely inside Celery workers (SSRF rejections, generation schema
+  # failures) are pushed here and scraped as a second target.
+  pushgateway:
+    image: prom/pushgateway:latest
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - default
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    depends_on:
+      - api
+      - alertmanager
+      - pushgateway
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - default
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - default
+
+  # No host port. If you want this reachable, give it its own domain in the
+  # Coolify UI — it is an admin surface behind a single admin password.
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?set GRAFANA_PASSWORD}
+    volumes:
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - default
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  clamav_data:
+  prometheus_data:
+  alertmanager_data:
+  grafana_data:
+
+networks:
+  default:
+  no_internet:
+    driver: bridge
+    internal: true

@@ -239,7 +239,14 @@
       "Bash(python jbs_flow.py)",
       "Bash(taskkill //PID 20944 //F)",
       "Bash(NODE_OPTIONS=--no-experimental-webstorage npx vitest run src/components/__tests__/linkedin-import-hint.test.tsx)",
-      "Bash(NODE_OPTIONS=--no-experimental-webstorage npx vitest run)"
+      "Bash(NODE_OPTIONS=--no-experimental-webstorage npx vitest run)",
+      "Bash(python -m py_compile app/extraction/parser_interface.py decommissioned/extraction_v1/step3_docling_parser.py app/services/gotenberg_client.py)",
+      "Bash(mv extraction_v1/step3_docling_parser.py .)",
+      "Bash(mv extraction_v1/step3_docling_task.py .)",
+      "Bash(mv extraction_v1/step4_textract_task.py .)",
+      "Bash(mv extraction_v1/step5_merge.py .)",
+      "Bash(mv extraction_v1/step5_merge_task.py .)",
+      "Bash(python -m py_compile decommissioned/*.py)"
     ]
   }
 }

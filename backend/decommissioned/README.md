@@ -2,16 +2,20 @@
 
 Nothing here is deleted and nothing here is imported by the running system.
 This directory holds the previous extraction pipeline verbatim so it can be
-read, diffed, or restored.
+read, diffed, or restored. Flat — no subfolders; the old `extraction_v1/`
+and `tests_v1/` split was merged into this one folder, and every reference
+to those paths elsewhere in the repo was updated to match. This directory is
+`.gitignore`d (see repo-root `.gitignore`): it stays on disk for local
+reference but isn't pushed, so a fresh clone won't have it.
 
 ## What was decommissioned
 
 | Step | What it did | Moved to |
 |---|---|---|
-| 3 | Docling first-pass extraction | `extraction_v1/step3_docling_task.py`, `extraction_v1/step3_docling_parser.py` |
-| 4 | AWS Textract OCR second pass | `extraction_v1/step4_textract_task.py` |
-| 5 | Merge + cross-parser structural validation | `extraction_v1/step5_merge_task.py`, `extraction_v1/step5_merge.py` |
-| 6 | `cv_parse` → structured profile | `extraction_v1/step6_cv_parse_task.py` |
+| 3 | Docling first-pass extraction | `step3_docling_task.py`, `step3_docling_parser.py` |
+| 4 | AWS Textract OCR second pass | `step4_textract_task.py` |
+| 5 | Merge + cross-parser structural validation | `step5_merge_task.py`, `step5_merge.py` |
+| 6 | `cv_parse` → structured profile | `step6_cv_parse_task.py` |
 
 Also commented out rather than deleted, in place:
 
@@ -119,7 +123,7 @@ Two ways forward, whenever you want to pick one:
 
 ## Restoring the old pipeline
 
-1. Move the four `extraction_v1/step*_task.py` bodies back into
+1. Move the four `step*_task.py` bodies back into
    `app/workers/worker_jobs.py`, and `step3_docling_parser.py` /
    `step5_merge.py` back to `app/extraction/`.
 2. Uncomment the enqueue helpers in `app/workers/tasks.py`.
@@ -129,6 +133,24 @@ Two ways forward, whenever you want to pick one:
    warm-up in `Dockerfile` (which needs `libxcb1` added to its `apt-get`
    line to build on the current base image).
 5. Re-add the four job types to `_KNOWN_JOB_TYPES` in `app/main.py`.
+
+## Cleanup follow-up — docling package and DocumentParser ABC
+
+Two things outlived the original decommission and were cleaned up separately,
+once traced to confirm nothing live still depended on them:
+
+- `docling==2.94.0` removed from `requirements.txt` — zero live imports found
+  anywhere under `app/`.
+- The `DocumentParser` ABC moved from `app/extraction/parser_interface.py`
+  into `step3_docling_parser.py`, next to its only
+  implementer (`DoclingParser`), which already lived here. `ExtractionResult`
+  stayed in `app/extraction/parser_interface.py` — `worker_jobs.py` (live)
+  and this directory's own `step5_merge.py` (restorable) both still depend
+  on it.
+
+This doesn't change "Restoring the old pipeline" above: step 1 already moves
+`step3_docling_parser.py` back to `app/extraction/`, and `DocumentParser`
+now travels with it in the same file.
 
 ---
 
@@ -163,14 +185,14 @@ These assert behaviour that no longer exists. Not collected by `pytest tests/`.
 
 | File | Why |
 |---|---|
-| `tests_v1/test_confidence_and_merge.py` | `_compute_confidence` (step 3) and `merge_extractions` (step 5) |
-| `tests_v1/test_pipeline_stage_transitions.py` | asserts the docling→textract→merge→cv_parse handoffs |
-| `tests_v1/test_worker_jobs_cv_parse_new_sections_live.py` | step 6 |
-| `tests_v1/test_worker_jobs_experience_split.py` | step 6 helpers |
-| `tests_v1/test_worker_jobs_education_cert_project_split.py` | step 6 helpers |
-| `tests_v1/test_worker_jobs_header_block.py` | step 6 helpers |
-| `tests_v1/test_docling_convert_timeout.py` | split out of `tests/test_file_upload_security.py`; the rest of that file (magic bytes, storage keys, EICAR/ClamAV) still runs |
-| `tests_v1/test_regression_full_chain.py` | waits for `cv_files.status == "parsed"`, which only step 6 ever set |
+| `test_confidence_and_merge.py` | `_compute_confidence` (step 3) and `merge_extractions` (step 5) |
+| `test_pipeline_stage_transitions.py` | asserts the docling→textract→merge→cv_parse handoffs |
+| `test_worker_jobs_cv_parse_new_sections_live.py` | step 6 |
+| `test_worker_jobs_experience_split.py` | step 6 helpers |
+| `test_worker_jobs_education_cert_project_split.py` | step 6 helpers |
+| `test_worker_jobs_header_block.py` | step 6 helpers |
+| `test_docling_convert_timeout.py` | split out of `tests/test_file_upload_security.py`; the rest of that file (magic bytes, storage keys, EICAR/ClamAV) still runs |
+| `test_regression_full_chain.py` | waits for `cv_files.status == "parsed"`, which only step 6 ever set |
 
 After the moves: **538 passed, 1 skipped** on the backend suite, and
 **79 passed** on the frontend suite.

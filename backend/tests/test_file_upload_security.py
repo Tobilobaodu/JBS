@@ -109,7 +109,7 @@ from app.services.malware_scan import scan_file  # noqa: E402
 from app.core.storage import generate_storage_key  # noqa: E402
 
 # DECOMMISSIONED: the Docling imports and the convert-timeout test that
-# used them moved to decommissioned/tests_v1/test_docling_convert_timeout.py
+# used them moved to decommissioned/test_docling_convert_timeout.py
 # when pipeline step 3 was retired. Everything else in this file (magic-byte
 # validation, storage-key handling, EICAR/ClamAV) is unaffected and still runs.
 

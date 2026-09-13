@@ -1,12 +1,14 @@
 """Thin HTTP client wrapper for Gotenberg's docx-to-pdf conversion route.
 
-Deliberately pulled out of worker_jobs.py into its own small module: that
-file transitively imports docling (app.extraction.docling_parser), which
-isn't installed outside the Docker image the workers run in, so nothing
-importable only via worker_jobs.py is testable from the host venv. This
-module has no such dependency, so httpx.MockTransport can exercise the
-real request/response handling directly, without a live Gotenberg
-container or the full worker module.
+Deliberately pulled out of worker_jobs.py into its own small module: at the
+time this split was made, worker_jobs.py transitively imported docling via
+app.extraction.parser_interface, which wasn't installed outside the Docker
+image the workers run in, so nothing importable only via worker_jobs.py was
+testable from the host venv. Docling was later decommissioned (see
+decommissioned/README.md) and that import chain no longer exists, but the
+split is still worth keeping: this module has no heavy dependencies, so
+httpx.MockTransport can exercise the real request/response handling
+directly, without a live Gotenberg container or the full worker module.
 """
 
 from __future__ import annotations

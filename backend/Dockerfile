@@ -19,7 +19,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # DECOMMISSIONED — Docling model warm-up (pipeline step 3).
 # Docling is no longer in the extraction path; models no longer need
 # baking in. Commented rather than deleted so step 3 can be restored
-# together with decommissioned/extraction_v1/. It was also failing on
+# together with decommissioned/. It was also failing on
 # this base image (ImportError: libxcb.so.1), which blocked every
 # backend image build.
 # ─────────────────────────────────────────────────────────────────────
@@ -73,6 +73,6 @@ COPY alembic/ ./alembic/
 # Expose API port
 EXPOSE 8000
 
-# Default command - run the API server. Temps injects PORT; fall back to
-# 8000 for local docker-compose, which doesn't set it.
+# Default command - run the API server. Honours a platform-injected PORT;
+# falls back to 8000 for docker-compose, which doesn't set it.
 CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

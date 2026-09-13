@@ -174,7 +174,7 @@ services:
   # DECOMMISSIONED — pipeline steps 3-6 (Docling / Textract / merge /
   # cv_parse). Replaced by the `extraction` service below, which hosts
   # Example's routes/extract.ts unchanged. Task code moved verbatim to
-  # decommissioned/extraction_v1/. Left commented rather than deleted
+  # decommissioned/. Left commented rather than deleted
   # so the old pipeline can be restored by uncommenting this block and
   # restoring the modules it imports.
   # ──────────────────────────────────────────────────────────────────
@@ -319,7 +319,7 @@ services:
 
   # Celery worker - CV structured profile extraction (Phase 2)
   # DECOMMISSIONED — step 6 (cv_parse). Moved to
-  # decommissioned/extraction_v1/step6_cv_parse_task.py.
+  # decommissioned/step6_cv_parse_task.py.
 #  worker_cv_parse:
 #    build:
 #      context: .

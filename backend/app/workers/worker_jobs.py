@@ -113,7 +113,7 @@ def _get_sync_session() -> Session:
 #
 # Steps 3 (Docling), 4 (Textract), 5 (merge/structural validation) and
 # 6 (cv_parse) were decommissioned; their code is preserved verbatim in
-# decommissioned/extraction_v1/. Extraction is now a single call to the
+# decommissioned/. Extraction is now a single call to the
 # `extraction` service, which hosts Example's routes/extract.ts unchanged
 # (pdftotext -layout for PDF, unzip + xmlToText for DOCX).
 #

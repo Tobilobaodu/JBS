@@ -1,14 +1,13 @@
-"""Swappable document parser interface.
+"""Standardised document-extraction result shape.
 
-Defines the abstract base class that every parser (Docling, Textract, future
-replacements) must implement. The boundary is Pydantic-typed: parsers return
-a structured model, never a bare dict, and never leak their internal types.
-
-Per 02-architecture-overview.md §4a: this interface must be defined BEFORE
-the Docling implementation, not retrofitted afterward.
+Originally paired with a swappable DocumentParser ABC (for Docling, Textract,
+future replacements) — that interface had zero live implementations once
+Docling/Textract were decommissioned (see decommissioned/README.md) and moved
+with the last remaining implementer to decommissioned/step3_docling_parser.py.
+ExtractionResult itself stays here: worker_jobs.py and the decommissioned-but-
+restorable step3/step5 modules still depend on this shape.
 """
 
-from abc import ABC, abstractmethod
 from pydantic import BaseModel
 
 
@@ -25,29 +24,3 @@ class ExtractionResult(BaseModel):
     characters: int | None = None
     pages: int | None = None
     processing_duration_ms: int | None = None
-
-
-class DocumentParser(ABC):
-    """Abstract base for all document parsers.
-
-    Implementations translate provider-specific output into the common
-    ExtractionResult shape. No caller should depend on Docling/Textract
-    types — only on ExtractionResult.
-    """
-
-    @abstractmethod
-    async def parse(self, file_content: bytes, mime_type: str) -> ExtractionResult:
-        """Parse a document and return a standardised extraction result.
-
-        Args:
-            file_content: Raw bytes of the uploaded file.
-            mime_type: The validated MIME type (e.g. application/pdf).
-
-        Returns:
-            ExtractionResult with extracted_text, confidence, metadata.
-
-        Raises:
-            ValueError: If the file cannot be parsed (bad format, corruption).
-            TimeoutError: If parsing exceeds the configured timeout.
-        """
-        ...

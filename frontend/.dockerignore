@@ -1,0 +1,20 @@
+# Keeps the build context small and, more importantly, keeps local secrets
+# and host-built artifacts out of the image.
+node_modules
+.next
+out
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+.git
+.gitignore
+Dockerfile
+.dockerignore
+e2e
+playwright-report
+test-results
+coverage
+**/__tests__
+*.test.ts
+*.test.tsx
