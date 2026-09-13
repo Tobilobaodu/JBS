@@ -83,6 +83,13 @@ class StructuredGenerationResult:
 _TRANSIENT_EXCEPTIONS = (APIConnectionError, APITimeoutError, RateLimitError)
 
 
+def _reasoning_kwargs() -> dict:
+    """reasoning_effort for reasoning models — see openai_reasoning_effort
+    in core/config.py for why it is set at all."""
+    effort = settings.openai_reasoning_effort
+    return {"reasoning_effort": effort} if effort else {}
+
+
 def _get_client(timeout: float | None = None) -> OpenAI:
     return OpenAI(
         api_key=settings.openai_api_key,
@@ -154,6 +161,7 @@ def generate_structured(
                     # function's own max_tokens= parameter is unchanged,
                     # only the outgoing API request key is renamed.
                     max_completion_tokens=max_tokens,
+                    **_reasoning_kwargs(),
                     response_format={
                         "type": "json_schema",
                         "json_schema": {
@@ -190,13 +198,13 @@ def generate_structured(
         if message.refusal:
             raise LlmSchemaValidationError(f"Model refused to generate: {message.refusal}")
 
-        if not message.content:
-            raise LlmSchemaValidationError("Model returned empty content")
-
         # With strict:true, hitting max_tokens truncates mid-JSON and json.loads
         # below raises a generic "not valid JSON" — which sends you looking for
         # a model problem that is really a config problem (the cap set too low
-        # for this schema/input). Name it explicitly instead.
+        # for this schema/input). Name it explicitly instead. Checked before
+        # the empty-content test: a reasoning model that spends the whole cap
+        # thinking returns empty content WITH finish_reason "length", and the
+        # truncation is the useful diagnosis.
         if getattr(choice, "finish_reason", None) == "length":
             logger.warning(
                 "llm_output_truncated", schema_name=schema_name, max_tokens=max_tokens,
@@ -204,6 +212,9 @@ def generate_structured(
             raise LlmSchemaValidationError(
                 "Response hit the token cap before completing."
             )
+
+        if not message.content:
+            raise LlmSchemaValidationError("Model returned empty content")
 
         try:
             data = json.loads(message.content)
@@ -288,6 +299,7 @@ def stream_text(
                 ],
                 # See the matching comment in generate_structured above.
                 max_completion_tokens=max_tokens,
+                **_reasoning_kwargs(),
                 stream=True,
                 # Without this the final chunk carrying usage never arrives,
                 # and LLM_TOKENS_COUNTER silently stops counting generation

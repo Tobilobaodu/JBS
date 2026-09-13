@@ -63,6 +63,13 @@ class Settings(BaseSettings):
     # max_completion_tokens instead of max_tokens — see llm_client.py.
     openai_model: str = "gpt-5-mini"
     openai_model_generation: str = "gpt-5-mini"
+    # gpt-5-mini is a reasoning model: hidden reasoning tokens are drawn
+    # from the same max_completion_tokens budget as the visible answer. At
+    # the default effort it can spend an entire 800-token cap reasoning and
+    # return empty content (seen live on /match-analyses). "minimal" keeps
+    # reasoning small so the per-call caps size the answer, as they were
+    # written to. Empty string omits the parameter (for non-reasoning models).
+    openai_reasoning_effort: str = "minimal"
     openai_request_timeout_seconds: int = 30
     # Per-task timeouts: tight on the critical (synchronous, user-waiting)
     # path, looser on generation now that it runs off-path (streamed or
