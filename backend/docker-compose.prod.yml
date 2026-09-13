@@ -233,8 +233,15 @@ services:
       - default
       - no_internet
 
+  # quay.io, not Docker Hub. MinIO archived the community edition in April
+  # 2026 (source-only now) and Docker Hub removed the `minio` namespace in
+  # September 2026, so `minio/minio` 404s with a misleading "pull access
+  # denied ... or may require 'docker login'". quay.io/minio/minio is
+  # MinIO's own registry and serves the same images under the same tags.
+  # The image is no longer maintained upstream — see the note in
+  # docker-compose.yml before relying on it long-term.
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER}

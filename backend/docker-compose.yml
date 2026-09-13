@@ -122,9 +122,26 @@ services:
       - default
       - no_internet
 
-  # MinIO for S3-compatible local object storage
+  # MinIO for S3-compatible local object storage.
+  #
+  # quay.io, not Docker Hub: MinIO archived the community edition in April
+  # 2026 and Docker Hub removed the `minio` namespace in September 2026, so
+  # `minio/minio` now 404s with a misleading "pull access denied ... or may
+  # require 'docker login'". quay.io/minio/minio is MinIO's own registry and
+  # serves the same images under the same tags. Cached local images kept
+  # working, which is why this only surfaced on a clean pull.
+  #
+  # Longer-term risk, deliberately not acted on here: the community edition
+  # is source-only and unmaintained upstream as of April 2026, so this image
+  # will not receive fixes. Object storage is core to this app (every upload
+  # and export), so a migration target — another S3-compatible server, or
+  # real S3/R2 — is worth deciding on before it becomes urgent.
+  # Pinned, not :latest. quay.io's `latest` has not moved since 2025-09-07
+  # and the repo is archived, so a floating tag buys nothing and risks
+  # repeating the Docker Hub disappearance. This is the same build `latest`
+  # currently points at. Newer `.hotfix.*` tags exist if a fix is ever needed.
   minio:
-    image: minio/minio:latest
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
