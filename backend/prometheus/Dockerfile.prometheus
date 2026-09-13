@@ -1,0 +1,6 @@
+# Production only (docker-compose.prod.yml). Coolify builds from the repo but
+# never copies it onto the server, so a `./prometheus/...` bind mount points
+# at a path that doesn't exist and Docker substitutes an empty directory.
+# Baking the config in sidesteps that. Local dev still bind-mounts.
+FROM prom/prometheus:latest
+COPY prometheus.yml alert_rules.yml /etc/prometheus/

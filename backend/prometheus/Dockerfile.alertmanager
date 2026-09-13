@@ -1,0 +1,3 @@
+# Production only — see Dockerfile.prometheus for why config is baked in.
+FROM prom/alertmanager:latest
+COPY alertmanager.yml /etc/alertmanager/alertmanager.yml
