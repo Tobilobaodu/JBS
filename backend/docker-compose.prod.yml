@@ -80,7 +80,7 @@ x-app-env: &app-env
 
   # Scheme + host only, no trailing slash — a trailing slash never matches
   # an Origin header and every browser request fails CORS.
-  CORS_ORIGIN: ${CORS_ORIGIN:?set CORS_ORIGIN, e.g. https://jbs.tobilobaodu.com}
+  CORS_ORIGIN: ${CORS_ORIGIN:?set CORS_ORIGIN, e.g. https://cvbuilder.tobilobaodu.com}
 
   MAX_CONCURRENT_JOBS_PER_USER: ${MAX_CONCURRENT_JOBS_PER_USER:-5}
 
@@ -178,7 +178,7 @@ services:
         # the PUBLIC API URL as the browser will see it, not an internal
         # compose hostname: the value ends up in JavaScript running on the
         # user's machine, which cannot resolve `api`.
-        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:?set NEXT_PUBLIC_API_BASE_URL, e.g. https://jbs-api.tobilobaodu.com}
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:?set NEXT_PUBLIC_API_BASE_URL, e.g. https://cvbuilder-api.tobilobaodu.com/api/v1}
     restart: unless-stopped
     expose:
       - "3000"
