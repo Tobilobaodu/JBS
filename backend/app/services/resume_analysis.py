@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.metrics import (
     ANALYSIS_SCORE_BY_LENGTH,
@@ -94,8 +95,11 @@ def analyze_resume(
             user_payload=payload,
             json_schema=prompts.RESUME_ANALYSIS_JSON_SCHEMA,
             schema_name=prompts.RESUME_ANALYSIS_TASK,
-            max_tokens=800,
-            timeout=15,
+            # Measured on gpt-5-mini at reasoning_effort=minimal: a mid-length
+            # CV + job post used 746 completion tokens and ~13s. 800/15s left
+            # no headroom, so longer real inputs failed on the cap or timeout.
+            max_tokens=2000,
+            timeout=settings.openai_timeout_analysis_seconds,
             max_api_retries=1,
             client=llm_client_override,
             prompt_version=prompts.RESUME_ANALYSIS_PROMPT_VERSION,

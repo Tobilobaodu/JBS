@@ -76,7 +76,10 @@ class Settings(BaseSettings):
     # backgrounded). generate_structured()'s default max_api_retries=2
     # means analysis's worst case is timeout * 2, not * 3 - one retry only
     # (see analysis call sites, which pass max_api_retries=1).
-    openai_timeout_analysis_seconds: int = 15
+    # 40, not 15: a real analysis call takes ~13s (see resume_analysis.py).
+    # With one retry the worst case is 80s, still under Cloudflare's 100s
+    # proxy timeout in production.
+    openai_timeout_analysis_seconds: int = 40
     openai_timeout_generation_seconds: int = 45
 
     # Kill switches (jbs-solution-sheet.md C2) — mirrors
