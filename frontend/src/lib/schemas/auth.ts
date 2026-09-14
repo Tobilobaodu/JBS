@@ -18,6 +18,21 @@ export const registerSchema = z
 
 export type RegisterFormValues = z.infer<typeof registerSchema>
 
+// /try/signup: name and email arrive pre-filled from the CV, and there is a
+// single password field with a show/hide toggle instead of a confirm field.
+// Limits mirror RegisterRequest (password min 12, fullName max 200).
+export const trialSignupSchema = z.object({
+  fullName: z
+    .string()
+    .trim()
+    .min(1, "Enter your name.")
+    .max(200, "Name must be 200 characters or fewer."),
+  email: z.string().trim().email("Enter a valid email address."),
+  password: z.string().min(12, "Password must be at least 12 characters."),
+})
+
+export type TrialSignupFormValues = z.infer<typeof trialSignupSchema>
+
 export const loginSchema = z.object({
   email: z.string().email("Enter a valid email address."),
   password: z.string().min(1, "Password is required."),

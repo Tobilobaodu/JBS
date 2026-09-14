@@ -1,9 +1,11 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 import { toast } from "sonner"
 
 import { ApiError, errorMessage } from "@/lib/api"
+import { extractEmail, extractName } from "@/lib/cv-contact"
 import {
   createMatchAnalysis,
   createTrialSession,
@@ -18,6 +20,7 @@ import {
 } from "@/lib/trial-api"
 import { useAuthStore } from "@/store/auth-store"
 import { useTrialStore } from "@/store/trial-store"
+import { useTailoredCvStore } from "@/store/tailored-cv-store"
 import { ScoreBar } from "@/components/modernist/score-bar"
 import { Tag } from "@/components/modernist/tag"
 import { SegmentedControl } from "@/components/modernist/segmented-control"
@@ -118,6 +121,8 @@ function SkillList({
 }
 
 export default function TailorPage() {
+  const router = useRouter()
+  const saveTailoredCvForSignup = useTailoredCvStore((s) => s.saveForSignup)
   const trialSessionId = useTrialStore((s) => s.trialSessionId)
   const setTrialSession = useTrialStore((s) => s.setTrialSession)
   const isAuthenticated = useAuthStore((s) => !!s.accessToken)
@@ -497,6 +502,21 @@ export default function TailorPage() {
     }
   }
 
+  /** Trial visitors sign up before downloading. The tailored CV and a
+   *  best-guess name/email (from the uploaded CV's own text) go with them
+   *  to /try/signup, and on to the dashboard, where the download lives. */
+  function onContinueToSignup() {
+    if (rewrite.phase !== "done") return
+    const cvText = upload.phase === "ready" ? upload.text : ""
+    saveTailoredCvForSignup({
+      markdown: rewrite.markdown,
+      targetTitle: targetTitle.trim(),
+      suggestedName: extractName(cvText),
+      suggestedEmail: extractEmail(cvText),
+    })
+    router.push("/try/signup")
+  }
+
   const canAnalyse = upload.phase === "ready" && hasJobInput && !busy
 
   return (
@@ -797,15 +817,27 @@ export default function TailorPage() {
               <div className="card">
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
                   <div className="card-title" style={{ margin: 0 }}>Tailored CV</div>
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    data-testid="button-download-pdf"
-                    disabled={isExporting || rewrite.phase !== "done"}
-                    onClick={onDownloadPdf}
-                  >
-                    {isExporting ? "Building PDF…" : "Download PDF"}
-                  </button>
+                  {isAuthenticated ? (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      data-testid="button-download-pdf"
+                      disabled={isExporting || rewrite.phase !== "done"}
+                      onClick={onDownloadPdf}
+                    >
+                      {isExporting ? "Building PDF…" : "Download PDF"}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      data-testid="button-continue-signup"
+                      disabled={rewrite.phase !== "done"}
+                      onClick={onContinueToSignup}
+                    >
+                      Continue
+                    </button>
+                  )}
                 </div>
                 {rewrite.phase === "failed" ? (
                   <p data-testid="status-rewrite-failed" style={{ margin: 0, fontSize: 13, color: "var(--color-accent-700)" }}>

@@ -4,6 +4,7 @@ import { persist } from "zustand/middleware"
 export type AuthUser = {
   id: string
   email: string
+  fullName?: string | null
 }
 
 type AuthState = {

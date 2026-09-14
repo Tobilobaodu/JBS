@@ -4,6 +4,12 @@ import userEvent from "@testing-library/user-event"
 import { http, HttpResponse } from "msw"
 import { server } from "@/test/msw/server"
 import TailorPage from "@/app/try/upload/page"
+import { useTailoredCvStore } from "@/store/tailored-cv-store"
+
+const push = vi.fn()
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push }),
+}))
 
 const toastError = vi.fn()
 vi.mock("sonner", () => ({
@@ -247,6 +253,37 @@ describe("TailorPage (/try/upload)", () => {
         ),
       { timeout: 10000 }
     )
+  }, 20000)
+
+  it("replaces Download with Continue for trial visitors and carries the CV to sign-up", async () => {
+    useTailoredCvStore.getState().clear()
+    push.mockReset()
+    server.use(
+      trialSessionHandler(),
+      uploadHandler(),
+      rawTextHandler,
+      matchAnalysisHandler(),
+      rewriteStreamHandler()
+    )
+    const user = userEvent.setup()
+    render(<TailorPage />)
+    await uploadAndWaitReady(user)
+
+    await user.type(screen.getByTestId("input-job-description"), JOB_TEXT)
+    await user.click(screen.getByTestId("button-analyse"))
+
+    const continueButton = await screen.findByTestId("button-continue-signup", {}, { timeout: 10000 })
+    await waitFor(() => expect(continueButton).toBeEnabled(), { timeout: 10000 })
+    expect(screen.queryByTestId("button-download-pdf")).toBeNull()
+
+    await user.click(continueButton)
+
+    expect(push).toHaveBeenCalledWith("/try/signup")
+    const carried = useTailoredCvStore.getState()
+    expect(carried.markdown).toContain("Product designer.")
+    // EXTRACTED opens with "TOBILOBA ODU" and has no email address.
+    expect(carried.suggestedName).toBe("Tobiloba Odu")
+    expect(carried.suggestedEmail).toBe("")
   }, 20000)
 
   it("shows the backend's own reason when a URL is refused, and does not analyse", async () => {

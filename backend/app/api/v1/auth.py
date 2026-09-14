@@ -53,6 +53,7 @@ def _map_user(user: User) -> UserResponse:
     return UserResponse(
         id=user.id,
         email=user.email,
+        full_name=user.full_name,
         account_status=user.status,
         created_at=user.created_at,
     )
@@ -114,6 +115,7 @@ async def register(
 
     user = User(
         email=body.email,
+        full_name=body.full_name,
         password_hash=hash_password(body.password),
     )
     session.add(user)

@@ -1,12 +1,24 @@
 """Pydantic schemas for auth endpoints — matching 05-openapi.yaml."""
 
 from datetime import datetime
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=12)
+    # Optional: the trial sign-up page pre-fills it from the CV; /register
+    # doesn't ask. Blank or whitespace-only is stored as no name.
+    full_name: str | None = Field(default=None, alias="fullName", max_length=200)
+
+    model_config = {"populate_by_name": True}
+
+    @field_validator("full_name")
+    @classmethod
+    def _blank_name_is_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
 
 
 class LoginRequest(BaseModel):
@@ -17,6 +29,7 @@ class LoginRequest(BaseModel):
 class UserResponse(BaseModel):
     id: str
     email: str
+    full_name: str | None = Field(default=None, alias="fullName")
     account_status: str = Field(alias="accountStatus")  # active, suspended, deleted
     created_at: datetime = Field(alias="createdAt")
 

@@ -79,6 +79,16 @@ def test_register_accepts_password_at_exactly_12_chars():
     assert req.password == "TwelveChars1"
 
 
+def test_register_blank_full_name_is_stored_as_none():
+    req = RegisterRequest(email="ok@test.example", password="TwelveChars1", fullName="   ")
+    assert req.full_name is None
+
+
+def test_register_rejects_full_name_over_200_chars():
+    with pytest.raises(ValidationError):
+        RegisterRequest(email="ok@test.example", password="TwelveChars1", fullName="x" * 201)
+
+
 # ── Register endpoint ────────────────────────────────────────────────────
 
 class TestRegisterEndpoint:
@@ -94,6 +104,18 @@ class TestRegisterEndpoint:
             )
             assert resp.email == email
             assert resp.account_status == "active"
+            assert resp.full_name is None
+
+    @pytest.mark.asyncio(loop_scope="function")
+    async def test_stores_full_name_from_camel_case_body(self):
+        async with _test_session_factory() as s:
+            email = f"{uuid.uuid4().hex[:8]}-named@test.example"
+            body = RegisterRequest.model_validate(
+                {"email": email, "password": "ValidPassword123!", "fullName": "  Jane Doe "}
+            )
+            resp = await register(body=body, request=_request(), session=s)
+            assert resp.full_name == "Jane Doe"
+            assert resp.model_dump(by_alias=True)["fullName"] == "Jane Doe"
 
     @pytest.mark.asyncio(loop_scope="function")
     async def test_rejects_duplicate_email(self):

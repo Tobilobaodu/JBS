@@ -12,6 +12,7 @@ import { ScoreBar } from "@/components/modernist/score-bar"
 import { StatBand } from "@/components/modernist/stat-band"
 import { Tag } from "@/components/modernist/tag"
 import { TableShell } from "@/components/modernist/table-shell"
+import { TailoredCvCard } from "@/components/tailored-cv-card"
 
 const TRIAL_REWRITES_TOTAL = 3
 // A match below this score is treated as "would need work before applying"
@@ -44,7 +45,17 @@ export default function DashboardPage() {
   }
 
   if (hasNoCvs) {
-    return <FirstRun />
+    // Normally unreachable with a carried-over CV (claiming the trial
+    // attaches the upload), but a failed claim lands here — the download
+    // must still be offered.
+    return (
+      <>
+        <div style={{ padding: "48px 48px 0", maxWidth: 1000 }}>
+          <TailoredCvCard />
+        </div>
+        <FirstRun />
+      </>
+    )
   }
 
   const matches = matchesQuery.data?.items ?? []
@@ -75,6 +86,8 @@ export default function DashboardPage() {
           <ArrowRight width={16} height={16} strokeWidth={2.2} strokeLinecap="square" />
         </Link>
       </div>
+
+      <TailoredCvCard />
 
       {/* resume summary */}
       <section style={{ background: "var(--color-surface)", padding: 32 }}>

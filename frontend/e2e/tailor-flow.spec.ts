@@ -159,11 +159,24 @@ test.describe("tailor flow", () => {
       "Professional Summary"
     )
 
-    // Download the PDF. The rewrite persists nothing, so the Markdown is
-    // posted back to be rendered — this proves the API can actually reach
-    // gotenberg, which sits on the egress-free network.
+    // 4. Trial visitors sign up before downloading. "Continue" carries the
+    // tailored CV to /try/signup with name and email read from the CV.
+    await expect(page.getByTestId("button-download-pdf")).toHaveCount(0)
+    await page.getByTestId("button-continue-signup").click()
+    await page.waitForURL(/\/try\/signup$/)
+    await expect(page.getByTestId("input-signup-name")).not.toHaveValue("")
+    // A fresh address per run: the CV's own email would 409 on the second.
+    await page.getByTestId("input-signup-email").fill(`e2e-${Date.now()}@test.example`)
+    await page.getByTestId("input-signup-password").fill("e2e-password-1234")
+    await page.getByTestId("button-signup-submit").click()
+    await page.waitForURL(/\/dashboard$/, { timeout: 30_000 })
+    await expect(page.getByTestId("card-tailored-cv")).toBeVisible()
+
+    // Download the PDF from the dashboard. The rewrite persists nothing, so
+    // the Markdown is posted back to be rendered — this proves the API can
+    // actually reach gotenberg, which sits on the egress-free network.
     const downloadPromise = page.waitForEvent("download")
-    await page.getByTestId("button-download-pdf").click()
+    await page.getByTestId("button-download-tailored-cv").click()
     const download = await downloadPromise
     expect(download.suggestedFilename()).toMatch(/\.pdf$/)
     const stream = await download.createReadStream()
