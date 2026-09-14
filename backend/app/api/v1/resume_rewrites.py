@@ -199,8 +199,12 @@ async def create_match_analysis(
             target_title=body.target_title,
         )
     except ResumeAnalysisError as e:
+        # 503, not 502: Cloudflare (in front of production) replaces any
+        # origin 502/504 with its own branded HTML page, which drops both
+        # this detail and the CORS headers — the browser then reports a CORS
+        # failure and the user sees only a generic message.
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
         ) from e
 
     prompt_rate, completion_rate = _GPT_5_MINI_RATE
@@ -376,8 +380,9 @@ async def create_resume_rewrite_pdf(
     try:
         pdf = render_resume_pdf(body.markdown)
     except ResumePdfError as e:
+        # 503, not 502 — see create_match_analysis.
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e)
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e)
         ) from e
 
     filename = _safe_filename(body.file_name)
