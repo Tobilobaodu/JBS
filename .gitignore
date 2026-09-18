@@ -41,3 +41,7 @@ CV matching fix/*
 !CV matching fix/bug-report.md
 !CV matching fix/cv-diagnosis.md
 !CV matching fix/essay-diagnostic-methodology.md
+# Raw Figma/Claude Design export of the Fix+Apply homepage (~12 MB of
+# source PNGs + generated JSX). The landing page was built from it; the
+# app only uses the cropped WebP/SVG copies in frontend/src/assets/landing.
+Job board CV tailor/
