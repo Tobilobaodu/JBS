@@ -82,7 +82,10 @@ def extract_skills_via_llm(
             user_payload=build_user_payload(raw_text),
             json_schema=JOB_POST_SKILL_EXTRACTION_JSON_SCHEMA,
             schema_name=JOB_POST_SKILL_EXTRACTION_TASK,
-            max_tokens=600,  # short phrases only
+            # Measured at ~110 completion tokens, so 600 is not tight today;
+            # raised anyway because a long posting scales the phrase list and
+            # a cap hit here fails the whole extraction. See cv_analysis.py.
+            max_tokens=1500,  # short phrases only
             client=llm_client_override,
             prompt_version=JOB_POST_SKILL_EXTRACTION_PROMPT_VERSION,
         )

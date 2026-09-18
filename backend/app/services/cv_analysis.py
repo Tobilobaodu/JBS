@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.metrics import (
     ANALYSIS_SCORE_BY_LENGTH,
@@ -85,7 +86,13 @@ def analyze_cv(cv_text: str, *, client=None) -> CvAnalysisResult:
             user_payload=payload,
             json_schema=prompts.CV_ANALYSIS_JSON_SCHEMA,
             schema_name=prompts.CV_ANALYSIS_TASK,
-            max_tokens=1200,  # scores plus issue lists
+            # Measured live on gpt-5-mini at reasoning_effort=minimal: a
+            # 3.7k-character CV needs ~1320 completion tokens and ~23s.
+            # 1200/30s left no headroom, so a normal CV came back empty
+            # (finish_reason "length") and the dashboard sat on "Scoring…"
+            # forever. Caps cost nothing unused — only tokens written bill.
+            max_tokens=4000,  # scores plus issue lists
+            timeout=settings.openai_timeout_generation_seconds,
             client=client,
             prompt_version=prompts.CV_ANALYSIS_PROMPT_VERSION,
         )

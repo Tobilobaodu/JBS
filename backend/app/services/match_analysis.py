@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from app.core.config import settings
 from app.core.logging import get_logger
 from app.core.metrics import LLM_GENERATION_COUNTER, LLM_TOKENS_COUNTER
 from app.extraction.match_engine import (
@@ -125,7 +126,12 @@ def run_match_llm(
             user_payload=payload,
             json_schema=prompts.MATCH_ANALYSIS_JSON_SCHEMA,
             schema_name=prompts.MATCH_ANALYSIS_TASK,
-            max_tokens=2000,  # evidence items scale with requirement count
+            # Measured live (gpt-5-mini, reasoning_effort=minimal): a
+            # mid-length CV against a mid-length posting produced ~2280
+            # completion tokens in ~36s — over both the old 2000 cap and the
+            # 30s default timeout. Same failure mode as cv_analysis.py.
+            max_tokens=6000,  # evidence items scale with requirement count
+            timeout=settings.openai_timeout_generation_seconds,
             client=client,
             prompt_version=prompts.MATCH_ANALYSIS_PROMPT_VERSION,
         )
