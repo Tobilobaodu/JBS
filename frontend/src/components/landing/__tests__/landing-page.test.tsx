@@ -20,6 +20,15 @@ describe("LandingPage", () => {
     expect(screen.getByRole("link", { name: /find a job/i })).toHaveAttribute("href", "/dashboard/job-feed")
   })
 
+  it("has the design's footer links and social icons", () => {
+    render(<LandingPage />)
+    const footer = screen.getByRole("contentinfo")
+
+    for (const name of ["About us", "Privacy Policy", "Terms and condition", "FAQs", "LinkedIn", "X", "Facebook"]) {
+      expect(within(footer).getByRole("link", { name })).toBeInTheDocument()
+    }
+  })
+
   it("shows Log in to visitors and Dashboard to signed-in users", () => {
     const { unmount } = render(<LandingPage />)
     const header = screen.getByRole("banner")

@@ -299,15 +299,11 @@
   flex-shrink: 0;
 }
 
+/* Always runs, as in the design — including under prefers-reduced-motion
+   (Windows turns that on when "Animation effects" is off, which froze it). */
 @keyframes fa-marquee {
   from { transform: translateX(0); }
   to { transform: translateX(-50%); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .marqueeTrack {
-    animation: none;
-  }
 }
 
 /* ── CV fixer / match showcase ───────────────────────────────────── */
@@ -871,6 +867,25 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.socials {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.social {
+  display: block;
+  line-height: 0;
+  color: var(--fa-blue) !important;
+}
+
+.social:hover {
+  color: var(--fa-blue-hover) !important;
 }
 
 .footerAbout {
