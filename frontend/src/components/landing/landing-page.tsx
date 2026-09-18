@@ -23,6 +23,7 @@ import markMicrosoft from "@/assets/landing/logos/microsoft-mark.svg"
 import markApple from "@/assets/landing/logos/apple-mark.svg"
 
 import { BrandMark } from "./brand-mark"
+import { FOOTER_ABOUT, FOOTER_LINKS } from "./footer-links"
 import { LandingNav } from "./landing-nav"
 import { Newsletter } from "./newsletter"
 import { Pricing } from "./pricing"
@@ -280,15 +281,8 @@ function HowItWorks() {
   )
 }
 
-// The design's footer links and social accounts. None of these pages or
-// accounts exist yet — "#" is the design's own placeholder; swap in the real
-// URLs here once they do.
-const FOOTER_LINKS = [
-  { href: "#", label: "About us" },
-  { href: "#", label: "Privacy Policy" },
-  { href: "#", label: "Terms and condition" },
-  { href: "#", label: "FAQs" },
-]
+// The design's social accounts. None exist yet — "#" is the design's own
+// placeholder; swap in the real URLs here once they do.
 
 // Icon paths are the design's own (24×24 boxes, brand blue).
 const SOCIAL_LINKS = [
@@ -338,11 +332,7 @@ function LandingFooter() {
           ))}
         </ul>
       </div>
-      <p className={styles.footerAbout}>
-        Fix+Apply reviews your CV, matches it against real job posts and tailors it for each
-        application. Every suggestion is traced back to something already in your CV — we
-        never invent experience you don’t have.
-      </p>
+      <p className={styles.footerAbout}>{FOOTER_ABOUT}</p>
       <div className={styles.footerBottom}>
         <span className={styles.copyright}>
           <Copyright width={16} height={16} aria-hidden="true" />

@@ -33,8 +33,9 @@ export const trialSignupSchema = z.object({
 
 export type TrialSignupFormValues = z.infer<typeof trialSignupSchema>
 
+// Messages are the login-journey Figma's ("Login page – Error", 8:86).
 export const loginSchema = z.object({
-  email: z.string().email("Enter a valid email address."),
+  email: z.string().email("Invalid email address"),
   password: z.string().min(1, "Password is required."),
 })
 

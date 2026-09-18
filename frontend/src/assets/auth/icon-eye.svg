@@ -1,0 +1,13 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="23" height="23" viewBox="0 0 23 23" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Health" clip-path="url(#clip0_0_113)">
+<g id="Vector">
+</g>
+<path id="Vector_2" d="M9.58333 11.5C9.58333 12.0083 9.78527 12.4958 10.1447 12.8553C10.5042 13.2147 10.9917 13.4167 11.5 13.4167C12.0083 13.4167 12.4958 13.2147 12.8553 12.8553C13.2147 12.4958 13.4167 12.0083 13.4167 11.5C13.4167 10.9917 13.2147 10.5042 12.8553 10.1447C12.4958 9.78527 12.0083 9.58333 11.5 9.58333C10.9917 9.58333 10.5042 9.78527 10.1447 10.1447C9.78527 10.5042 9.58333 10.9917 9.58333 11.5Z" stroke="#C5C5C5" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+<path id="Vector_3" d="M20.125 11.5C17.825 15.3333 14.95 17.25 11.5 17.25C8.05 17.25 5.175 15.3333 2.875 11.5C5.175 7.66667 8.05 5.75 11.5 5.75C14.95 5.75 17.825 7.66667 20.125 11.5Z" stroke="#C5C5C5" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+<defs>
+<clipPath id="clip0_0_113">
+<rect width="23" height="23" fill="white"/>
+</clipPath>
+</defs>
+</svg>

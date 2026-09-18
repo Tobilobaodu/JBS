@@ -24,9 +24,10 @@ describe("LoginPage", () => {
     const user = userEvent.setup()
     render(<LoginPage />)
 
-    await user.click(screen.getByRole("button", { name: "Log in" }))
+    await user.click(screen.getByRole("button", { name: "Login" }))
 
-    expect(await screen.findByText("Enter a valid email address.")).toBeInTheDocument()
+    expect(await screen.findByText("Invalid email address")).toBeInTheDocument()
+    expect(screen.getByLabelText(/Email address/)).toHaveAttribute("aria-invalid", "true")
     expect(push).not.toHaveBeenCalled()
   })
 
@@ -34,15 +35,15 @@ describe("LoginPage", () => {
     const user = userEvent.setup()
     render(<LoginPage />)
 
-    await user.type(screen.getByLabelText("Email"), "a@b.com")
-    await user.type(screen.getByLabelText("Password"), "password123")
-    await user.click(screen.getByRole("button", { name: "Log in" }))
+    await user.type(screen.getByLabelText(/Email address/), "a@b.com")
+    await user.type(screen.getByLabelText(/^Password/), "password123")
+    await user.click(screen.getByRole("button", { name: "Login" }))
 
     await waitFor(() => expect(push).toHaveBeenCalledWith("/dashboard"))
     expect(useAuthStore.getState().accessToken).toBe("test-access-token")
   })
 
-  it("shows an error toast on invalid credentials (401)", async () => {
+  it("marks both fields and shows the design's message on wrong credentials (401)", async () => {
     server.use(
       http.post(`${BASE}/auth/login`, () =>
         HttpResponse.json({ detail: "Invalid email or password." }, { status: 401 })
@@ -51,14 +52,33 @@ describe("LoginPage", () => {
     const user = userEvent.setup()
     render(<LoginPage />)
 
-    await user.type(screen.getByLabelText("Email"), "a@b.com")
-    await user.type(screen.getByLabelText("Password"), "wrongpass")
-    await user.click(screen.getByRole("button", { name: "Log in" }))
+    await user.type(screen.getByLabelText(/Email address/), "a@b.com")
+    await user.type(screen.getByLabelText(/^Password/), "wrongpass")
+    await user.click(screen.getByRole("button", { name: "Login" }))
 
-    await waitFor(() =>
-      expect(toastError).toHaveBeenCalledWith("Invalid email or password.")
-    )
+    expect(
+      await screen.findByText("Wrong email address and password combination")
+    ).toBeInTheDocument()
+    expect(screen.getByLabelText(/Email address/)).toHaveAttribute("aria-invalid", "true")
+    expect(screen.getByLabelText(/^Password/)).toHaveAttribute("aria-invalid", "true")
+    expect(toastError).not.toHaveBeenCalled()
     expect(push).not.toHaveBeenCalled()
+
+    // Editing a field clears the stale error.
+    await user.type(screen.getByLabelText(/^Password/), "x")
+    expect(screen.queryByText("Wrong email address and password combination")).toBeNull()
+  })
+
+  it("toggles password visibility with the eye button", async () => {
+    const user = userEvent.setup()
+    render(<LoginPage />)
+
+    const password = screen.getByLabelText(/^Password/)
+    expect(password).toHaveAttribute("type", "password")
+    await user.click(screen.getByRole("button", { name: "Show password" }))
+    expect(password).toHaveAttribute("type", "text")
+    await user.click(screen.getByRole("button", { name: "Hide password" }))
+    expect(password).toHaveAttribute("type", "password")
   })
 
   it("claims an active trial session and redirects to /dashboard/continue instead of /dashboard", async () => {
@@ -80,9 +100,9 @@ describe("LoginPage", () => {
     const user = userEvent.setup()
     render(<LoginPage />)
 
-    await user.type(screen.getByLabelText("Email"), "a@b.com")
-    await user.type(screen.getByLabelText("Password"), "password123")
-    await user.click(screen.getByRole("button", { name: "Log in" }))
+    await user.type(screen.getByLabelText(/Email address/), "a@b.com")
+    await user.type(screen.getByLabelText(/^Password/), "password123")
+    await user.click(screen.getByRole("button", { name: "Login" }))
 
     await waitFor(() => expect(push).toHaveBeenCalledWith("/dashboard/continue"))
     expect(useTrialStore.getState().trialSessionId).toBeNull()
@@ -100,9 +120,9 @@ describe("LoginPage", () => {
     const user = userEvent.setup()
     render(<LoginPage />)
 
-    await user.type(screen.getByLabelText("Email"), "a@b.com")
-    await user.type(screen.getByLabelText("Password"), "password123")
-    await user.click(screen.getByRole("button", { name: "Log in" }))
+    await user.type(screen.getByLabelText(/Email address/), "a@b.com")
+    await user.type(screen.getByLabelText(/^Password/), "password123")
+    await user.click(screen.getByRole("button", { name: "Login" }))
 
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith(

@@ -16,16 +16,17 @@ import { Footer } from "@/components/footer"
  * this keeps every route's file path — and every test's import path —
  * unchanged.
  *
- * The marketing home ("/") is the other exception: it is built from the
- * Fix+Apply Figma design and carries its own pill nav and footer
- * (components/landing/*), so the global chrome would render twice.
+ * The marketing home ("/") and /login are the other exceptions: both are
+ * built from the Fix+Apply Figma designs and carry their own pill nav and
+ * footer (components/landing/*, components/auth/*), so the global chrome
+ * would render twice.
  */
 export function SiteChrome({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const isDashboard = pathname?.startsWith("/dashboard") ?? false
-  const isLanding = pathname === "/"
+  const hasOwnChrome = pathname === "/" || pathname === "/login"
 
-  if (isDashboard || isLanding) {
+  if (isDashboard || hasOwnChrome) {
     return <>{children}</>
   }
 

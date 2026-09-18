@@ -1,0 +1,387 @@
+/*
+ * Fix+Apply login journey, from the Figma file "Login Journey"
+ * (frames 8:47 Login, 8:86 Login – Error). Same brand as the landing page
+ * (components/landing), scoped here so no other route changes.
+ * Measurements are the Figma frame's (1440 × 1024).
+ */
+
+.page {
+  --fa-ink: #26282b;
+  --fa-blue: #3f64de;
+  --fa-blue-hover: #3455c4;
+  --fa-cream: #faf8ed;
+  --fa-grey: #737373;
+  --fa-grey-light: #c5c5c5;
+  --fa-line: #dddddd;
+  --fa-red: #e7000b;
+
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--fa-cream);
+  color: var(--fa-ink);
+  font-family: var(--font-archivo), Archivo, system-ui, sans-serif;
+}
+
+.page h1,
+.page p {
+  margin: 0;
+  font-family: inherit;
+  /* Modernist's global h1 sets negative tracking; the design has none. */
+  letter-spacing: normal;
+}
+
+.page a {
+  color: inherit;
+}
+
+/* ── Header / nav ────────────────────────────────────────────────── */
+
+.header {
+  height: 100px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+}
+
+.nav {
+  width: min(935px, 100%);
+  height: 52px;
+  padding: 0 9px 0 23px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1.5px solid var(--fa-line);
+  border-radius: 84px;
+  background: #ffffff;
+}
+
+.brand {
+  display: block;
+  flex-shrink: 0;
+  line-height: 0;
+}
+
+.navRight {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.navLinks {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.navLink {
+  font-weight: 700;
+  font-size: 14px;
+  text-transform: uppercase;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.navLink:hover {
+  color: var(--fa-blue);
+}
+
+/* 40px pill used by the nav and the form ("Button" component, 8:16). */
+.button {
+  min-width: 100px;
+  height: 40px;
+  padding: 10px 15px;
+  border: 0;
+  border-radius: 55px;
+  background: var(--fa-blue);
+  color: #ffffff !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: normal;
+  text-transform: uppercase;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+
+.button:hover {
+  background: var(--fa-blue-hover);
+}
+
+.button:focus-visible {
+  outline: 2px solid var(--fa-blue);
+  outline-offset: 3px;
+}
+
+.button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+/* ── Body ────────────────────────────────────────────────────────── */
+
+.main {
+  flex: 1;
+  min-height: 729px;
+  padding: 24px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The card sits 50px above the body's centre line in the design. */
+.card {
+  width: min(413px, 100%);
+  margin-bottom: 100px;
+  padding: 50px 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  border: 1px solid var(--fa-line);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.5);
+}
+
+.title {
+  font-weight: 700;
+  font-size: 24px;
+  line-height: 1;
+  text-align: center;
+}
+
+.form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 30px;
+}
+
+.fields {
+  width: min(300px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.label {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.required {
+  color: var(--fa-red);
+}
+
+.inputBox {
+  position: relative;
+  height: 40px;
+  border: 1px solid var(--fa-line);
+  border-radius: 5px;
+  background: #ffffff;
+}
+
+.inputBox:focus-within {
+  border-color: var(--fa-blue);
+}
+
+.inputBoxError,
+.inputBoxError:focus-within {
+  border-color: var(--fa-red);
+}
+
+.input {
+  width: 100%;
+  height: 100%;
+  padding: 0 40px 0 11px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  outline: none;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fa-ink);
+}
+
+.input::placeholder {
+  color: var(--fa-grey-light);
+}
+
+.passwordInput {
+  font-size: 14px;
+}
+
+.inputBoxError .passwordInput {
+  color: var(--fa-red);
+}
+
+/* 23×23 icon slot, 9–11px in from the right edge. */
+.inputIcon {
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  width: 23px;
+  height: 23px;
+  padding: 0;
+  border: 0;
+  background: none;
+  transform: translateY(-50%);
+  line-height: 0;
+}
+
+.inputIcon img {
+  width: 100%;
+  height: 100%;
+}
+
+button.inputIcon {
+  cursor: pointer;
+}
+
+button.inputIcon:focus-visible {
+  outline: 2px solid var(--fa-blue);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+.errorText {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fa-red);
+}
+
+.actions {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.switchText {
+  max-width: 165px;
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.switchText a {
+  color: var(--fa-blue);
+  text-decoration: underline;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────── */
+
+.footer {
+  flex-shrink: 0;
+  width: min(1072px, 100%);
+  margin: 0 auto;
+  padding: 35px 16px;
+}
+
+.footerAbout {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fa-grey);
+}
+
+.footerBottom {
+  margin-top: 22px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--fa-grey);
+}
+
+.overline {
+  font-weight: 700;
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.copyright {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.copyrightIcon {
+  display: block;
+  width: 14px;
+  height: 12px;
+}
+
+.footerLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.footerLink {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.footerLink:hover {
+  color: var(--fa-blue);
+}
+
+@media (max-width: 760px) {
+  .navLinks {
+    display: none;
+  }
+
+  .main {
+    min-height: 0;
+    padding-top: 48px;
+  }
+
+  .card {
+    margin-bottom: 48px;
+    padding: 40px 24px;
+  }
+}
+
+@media (max-width: 480px) {
+  .nav {
+    padding-left: 16px;
+  }
+
+  .navRight {
+    gap: 8px;
+  }
+
+  .button {
+    min-width: 0;
+  }
+
+  /* Logo + two pills don't fit a phone-width nav; Login is the one this
+     journey needs, and Find a job still sits behind a login anyway. */
+  .findJob {
+    display: none;
+  }
+}
