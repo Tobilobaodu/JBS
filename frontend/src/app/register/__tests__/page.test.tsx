@@ -174,4 +174,16 @@ describe("RegisterPage", () => {
     )
     expect(push).not.toHaveBeenCalled()
   })
+
+  it("prefills the email handed over by the landing page's newsletter form", async () => {
+    window.history.replaceState(null, "", "/register?email=jo%2Btest%40example.com")
+    try {
+      render(<RegisterPage />)
+      await waitFor(() =>
+        expect(screen.getByLabelText("Email")).toHaveValue("jo+test@example.com")
+      )
+    } finally {
+      window.history.replaceState(null, "", "/")
+    }
+  })
 })

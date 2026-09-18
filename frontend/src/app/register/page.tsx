@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
@@ -29,6 +29,14 @@ export default function RegisterPage() {
     resolver: zodResolver(registerSchema),
     defaultValues: { email: "", password: "", confirmPassword: "" },
   })
+
+  // The landing page's "Send me jobs" form links here as /register?email=…
+  // Read from location (not useSearchParams) so the page needs no Suspense
+  // boundary; setValue updates the form store, not React state.
+  useEffect(() => {
+    const email = new URLSearchParams(window.location.search).get("email")
+    if (email) form.setValue("email", email)
+  }, [form])
 
   async function onSubmit(values: RegisterFormValues) {
     setIsSubmitting(true)

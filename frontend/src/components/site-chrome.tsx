@@ -15,12 +15,17 @@ import { Footer } from "@/components/footer"
  * "navigating between root layouts" full-reload caveat to worry about, and
  * this keeps every route's file path — and every test's import path —
  * unchanged.
+ *
+ * The marketing home ("/") is the other exception: it is built from the
+ * Fix+Apply Figma design and carries its own pill nav and footer
+ * (components/landing/*), so the global chrome would render twice.
  */
 export function SiteChrome({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const isDashboard = pathname?.startsWith("/dashboard") ?? false
+  const isLanding = pathname === "/"
 
-  if (isDashboard) {
+  if (isDashboard || isLanding) {
     return <>{children}</>
   }
 

@@ -1,0 +1,1026 @@
+/*
+ * Fix+Apply marketing home, built from the Figma file
+ * ("Job board" › Homepage, exported as `Job board CV tailor/`).
+ *
+ * This page deliberately does NOT use the Modernist tokens in
+ * src/styles/modernist.css (#ec3013 accent, square corners): the Figma
+ * direction is a different brand — blue #3f64de, cream, 20–84px radii.
+ * Everything is scoped to this module so no other route changes. Reconciling
+ * the two design systems is an open product decision.
+ *
+ * Measurements are the Figma frame's (1440 wide); layout is flow-based so it
+ * also works on narrow screens instead of the export's absolute positions.
+ */
+
+.page {
+  --fa-ink: #26282b;
+  --fa-blue: #3f64de;
+  --fa-blue-hover: #3455c4;
+  --fa-cream: #faf8ed;
+  --fa-hero: #fbfaf2; /* cream under the export's 25% white wash */
+  --fa-grey: #737373;
+  --fa-grey-light: #c5c5c5;
+  --fa-line: #dddddd;
+  --fa-panel: #edf0f7;
+  --fa-card: #f1f5f8;
+  --fa-green: #12a96a;
+  --fa-match: #008236;
+  --fa-no: #e0546e;
+  --fa-brand-red: #9c232b;
+
+  font-family: var(--font-archivo), Archivo, system-ui, sans-serif;
+  color: var(--fa-ink);
+  background: #ffffff;
+  overflow-x: clip; /* clip, not hidden: hidden would make .page its own scroll box */
+}
+
+.page h1,
+.page h2,
+.page h3,
+.page p {
+  margin: 0;
+  font-family: inherit;
+}
+
+.page a {
+  color: inherit;
+  text-decoration: none;
+}
+
+/* Anchor targets sit below the floating nav. */
+.page [id] {
+  scroll-margin-top: 24px;
+}
+
+/* ── Shared type ─────────────────────────────────────────────────── */
+
+.sectionTitle {
+  font-weight: 800;
+  font-size: 34px;
+  line-height: 1;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.sectionLead {
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.overline {
+  font-weight: 700;
+  font-size: 10px;
+  line-height: 1.2;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 45px;
+  padding: 10px 20px;
+  border: 0;
+  border-radius: 55px;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1.4;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--fa-blue);
+  outline-offset: 3px;
+}
+
+.btnPrimary {
+  composes: btn;
+  background: var(--fa-blue);
+  color: #ffffff !important;
+}
+
+.btnPrimary:hover {
+  background: var(--fa-blue-hover);
+}
+
+.btnPrimary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: var(--fa-blue);
+}
+
+.btnSoft {
+  composes: btn;
+  background: rgba(237, 240, 247, 0.8);
+  color: var(--fa-ink);
+}
+
+.btnSoft:hover {
+  background: var(--fa-panel);
+}
+
+/* ── Nav ─────────────────────────────────────────────────────────── */
+
+.nav {
+  position: absolute;
+  top: 17px;
+  left: 50%;
+  z-index: 20;
+  transform: translateX(-50%);
+  width: min(713px, calc(100% - 32px));
+  height: 56px;
+  padding: 0 5.5px 0 22.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-radius: 84px;
+  background: #ffffff;
+  box-shadow: 0 0 0 1.5px var(--fa-line);
+}
+
+.brand {
+  display: block;
+  flex-shrink: 0;
+  line-height: 0;
+}
+
+.navRight {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.navLinks {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.navLink {
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.navLink:hover {
+  color: var(--fa-blue);
+}
+
+.navCta {
+  composes: btn btnPrimary; /* one level: chained composes are not resolved */
+  width: 146px;
+}
+
+/* ── Hero ────────────────────────────────────────────────────────── */
+
+.hero {
+  position: relative;
+  background: var(--fa-hero);
+  overflow: hidden;
+}
+
+.heroDoc {
+  position: absolute;
+  top: 0;
+  left: calc(50% + 178px);
+  width: 586px;
+  height: 755px;
+  pointer-events: none;
+}
+
+.heroDoc img {
+  width: 100%;
+  height: 100%;
+}
+
+/* The export blurs and fades the document's lower edge into the page. */
+.heroDoc::after {
+  content: "";
+  position: absolute;
+  left: -18px;
+  right: 0;
+  bottom: 0;
+  height: 215px;
+  background: linear-gradient(
+    to bottom,
+    rgba(251, 250, 242, 0) 0%,
+    rgba(251, 250, 242, 0.55) 55%,
+    var(--fa-hero) 100%
+  );
+}
+
+.heroContent {
+  position: relative;
+  z-index: 2;
+  padding: 176px 16px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 40px;
+  text-align: center;
+}
+
+.heroText {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.heroTitle {
+  max-width: 520px;
+  font-weight: 800;
+  font-size: 65px;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  text-transform: uppercase;
+}
+
+.heroSub {
+  max-width: 345px;
+  font-size: 20px;
+  line-height: 1.2;
+}
+
+.heroActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+/* ── Featured companies marquee ──────────────────────────────────── */
+
+.featured {
+  position: relative;
+  z-index: 2;
+  margin-top: 176px;
+  padding: 0 16px 51px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.marquee {
+  width: min(1296px, 100%);
+  overflow: hidden;
+  mask-image: linear-gradient(to right, transparent 0%, #000 5%, #000 95%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, #000 5%, #000 95%, transparent 100%);
+}
+
+.marqueeTrack {
+  display: flex;
+  width: max-content;
+  animation: fa-marquee 46s linear infinite;
+}
+
+.marqueeGroup {
+  display: flex;
+  align-items: center;
+  gap: 50px;
+  padding-right: 50px;
+  flex-shrink: 0;
+}
+
+.marqueeGroup img {
+  flex-shrink: 0;
+}
+
+@keyframes fa-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marqueeTrack {
+    animation: none;
+  }
+}
+
+/* ── CV fixer / match showcase ───────────────────────────────────── */
+
+.showcase {
+  background: var(--fa-cream);
+  padding: 127px 16px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.showcaseHead {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.showcaseHead .sectionTitle {
+  max-width: 484px;
+}
+
+.showcaseHead .sectionLead {
+  max-width: 348px;
+}
+
+.matchRow {
+  margin-top: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+}
+
+.profile {
+  width: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.avatars {
+  position: relative;
+  width: 156px;
+  height: 110.5px;
+}
+
+.brandCircle {
+  position: absolute;
+  left: 53px;
+  top: 0;
+  width: 103px;
+  height: 103px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--fa-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.brandCircleInner {
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #fafafa;
+  box-shadow: 0 0 0 1px var(--fa-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.person {
+  position: absolute;
+  left: 0;
+  top: 22.5px;
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  overflow: hidden;
+  box-shadow: 0 0 0 2px var(--fa-grey-light);
+}
+
+.profileText {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  text-align: center;
+}
+
+.profileName {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.profileRole {
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--fa-grey);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.matchLink {
+  position: relative;
+  width: 109px;
+  height: 214px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.matchLink::before {
+  content: "";
+  position: absolute;
+  top: 26px;
+  left: 54px;
+  height: 156px;
+  border-left: 1px dashed var(--fa-grey);
+}
+
+.noMatch {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--fa-no);
+  color: #f3f3f3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.matchPill {
+  position: relative;
+  height: 30px;
+  padding: 3px 12px 3px 3.5px;
+  border-radius: 18px;
+  background: var(--fa-match);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 700;
+  font-size: 10px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.matchPillIcon {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #ffffff;
+  color: var(--fa-match);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The pile of tilted job cards peeking up from the section's bottom edge. */
+.cardPile {
+  position: relative;
+  margin-top: 24px;
+  width: 100%;
+  height: 119px;
+  overflow: hidden;
+}
+
+.cardPileInner {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 717px;
+  height: 179px;
+  margin-left: -358px;
+}
+
+.jobCard {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  padding: 10px;
+  border-radius: 5px;
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px #f3f3f3, 0 8px 4.2px rgba(0, 0, 0, 0.25);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.jobCardLogo {
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  overflow: hidden;
+  background: #ffffff;
+  box-shadow: inset 0 0 0 1px var(--fa-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.jobCardText {
+  display: flex;
+  flex-direction: column;
+}
+
+.jobCardCompany {
+  font-family: var(--font-anek-tamil), "Anek Tamil", system-ui, sans-serif;
+  font-weight: 500;
+  font-size: 14px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.jobCardTitle {
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.2;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* ── How it works ────────────────────────────────────────────────── */
+
+.how {
+  margin-top: 40px;
+  padding: 45px 16px 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.how .sectionLead {
+  margin-top: 10px;
+}
+
+.steps {
+  margin-top: 40px;
+  width: min(1025px, 100%);
+  display: flex;
+  justify-content: space-between;
+  gap: 32px;
+  list-style: none;
+  padding: 0;
+}
+
+.step {
+  width: 287px;
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+}
+
+.stepText {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stepNumber {
+  font-family: var(--font-cairo), Cairo, system-ui, sans-serif;
+  font-weight: 700;
+  font-size: 55px;
+  line-height: 0.9;
+}
+
+.stepTitle {
+  font-weight: 700;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.stepBody {
+  font-size: 14px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+/* ── Pricing ─────────────────────────────────────────────────────── */
+
+.pricing {
+  margin-top: 37px;
+  padding: 50px 16px 73px;
+  background: var(--fa-panel);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.pricingHead {
+  width: min(429px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.pricingHead .sectionTitle {
+  max-width: 367px;
+}
+
+.pricingHead .sectionLead {
+  max-width: 355px;
+  margin-top: -10px;
+}
+
+.billingToggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.billingLabel {
+  composes: overline;
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  color: var(--fa-grey-light);
+  cursor: pointer;
+}
+
+.billingLabelActive {
+  color: var(--fa-ink);
+}
+
+.switch {
+  position: relative;
+  width: 42px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 27px;
+  background: var(--fa-blue);
+  cursor: pointer;
+}
+
+.switch:focus-visible {
+  outline: 2px solid var(--fa-blue);
+  outline-offset: 3px;
+}
+
+.switchKnob {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  transition: left 180ms ease;
+}
+
+.switch[aria-checked="true"] .switchKnob {
+  left: 25px;
+}
+
+.plans {
+  margin-top: 40px;
+  width: min(1040px, 100%);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+
+.plan {
+  min-height: 589px;
+  padding: 67px 35px 40px 36px;
+  border-radius: 20px;
+  background: var(--fa-card);
+  display: flex;
+  flex-direction: column;
+  gap: 23px;
+}
+
+.planFeatured {
+  padding-top: 35px;
+  background: #ffffff;
+}
+
+.planHead {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.planBadge {
+  composes: overline;
+  align-self: flex-start;
+  height: 22px;
+  padding: 0 7.5px;
+  border-radius: 2px;
+  background: var(--fa-green);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+}
+
+.planName {
+  font-weight: 700;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.planDesc {
+  font-size: 14px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.planPrice {
+  font-weight: 800;
+  font-size: 55px;
+  line-height: 1;
+}
+
+.planBilled {
+  composes: overline;
+  color: var(--fa-grey);
+}
+
+.planCta {
+  composes: btn btnPrimary; /* one level: chained composes are not resolved */
+  width: 100%;
+  border-radius: 58px;
+}
+
+.planIncludes {
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.features {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.feature {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  font-size: 14px;
+  line-height: 1.4;
+  text-wrap: pretty;
+}
+
+.feature svg {
+  flex-shrink: 0;
+  color: var(--fa-blue);
+}
+
+/* ── Newsletter ──────────────────────────────────────────────────── */
+
+.signup {
+  margin-top: 60px;
+  padding: 0 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.signupHead {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.signupHead .sectionTitle {
+  max-width: 509px;
+}
+
+.signupHead .sectionLead {
+  max-width: 343px;
+}
+
+.signupForm {
+  margin-top: 64px;
+  width: min(457px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.signupField {
+  width: 100%;
+  height: 55px;
+  padding: 5px 5px 5px 11.5px;
+  border-radius: 33px;
+  background: var(--fa-panel);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.signupInput {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  outline: none;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--fa-ink);
+}
+
+.signupInput::placeholder {
+  color: var(--fa-grey-light);
+  text-transform: uppercase;
+}
+
+.signupField:focus-within {
+  box-shadow: 0 0 0 2px var(--fa-blue);
+}
+
+.signupSubmit {
+  composes: btn btnPrimary; /* one level: chained composes are not resolved */
+  width: 174px;
+  font-size: 14px;
+}
+
+.signupNote {
+  max-width: 377px;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--fa-grey);
+}
+
+/* ── Footer ──────────────────────────────────────────────────────── */
+
+.footer {
+  margin: 100px auto 0;
+  width: min(1297px, 100%);
+  padding: 0 16px 72px;
+}
+
+.footerTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.footerAbout {
+  margin-top: 13px;
+  max-width: 1249px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--fa-grey);
+}
+
+.footerBottom {
+  margin-top: 64px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--fa-grey);
+}
+
+.copyright {
+  composes: overline;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.footerLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.footerLink {
+  composes: overline;
+  text-decoration: underline !important;
+  text-underline-offset: 3px;
+}
+
+.footerLink:hover {
+  color: var(--fa-blue);
+}
+
+/* ── Narrower screens ────────────────────────────────────────────── */
+
+@media (max-width: 1100px) {
+  .heroDoc {
+    left: auto;
+    right: -180px;
+    opacity: 0.55;
+  }
+}
+
+@media (max-width: 760px) {
+  .navLinks {
+    display: none;
+  }
+
+  .navCta {
+    width: auto;
+    padding: 10px 16px;
+  }
+
+  .heroDoc {
+    width: 330px;
+    height: 425px;
+    right: -150px;
+    opacity: 0.35;
+  }
+
+  .heroContent {
+    padding-top: 130px;
+  }
+
+  .heroTitle {
+    font-size: 44px;
+  }
+
+  .heroSub {
+    font-size: 17px;
+  }
+
+  .featured {
+    margin-top: 96px;
+  }
+
+  .showcase {
+    padding-top: 80px;
+  }
+
+  .sectionTitle {
+    font-size: 28px;
+  }
+
+  /* zoom (not transform: scale) so the row's layout width shrinks too.
+     Narrower profiles + wrapping roles take it from 475px to ~330px. */
+  .matchRow {
+    zoom: 0.8;
+  }
+
+  .profile {
+    width: 150px;
+  }
+
+  .profileRole {
+    white-space: normal;
+  }
+
+  .steps {
+    flex-direction: column;
+    align-items: center;
+    gap: 48px;
+  }
+
+  .plans {
+    grid-template-columns: 1fr;
+    max-width: 400px;
+  }
+
+  .plan {
+    min-height: 0;
+  }
+
+  .signupSubmit {
+    width: auto;
+    padding: 10px 14px;
+  }
+}
+
+@media (max-width: 480px) {
+  .nav {
+    padding-left: 16px;
+    gap: 10px;
+  }
+
+  .navRight {
+    gap: 12px;
+  }
+
+  /* Icon-only "Find a job" so brand, Log in and the button fit in the pill.
+     The link keeps its aria-label. */
+  .navCta {
+    width: 45px;
+    padding: 0;
+  }
+
+  .navCtaLabel {
+    display: none;
+  }
+}
