@@ -33,7 +33,7 @@ export default function DashboardPage() {
   })
 
   const latestCv = cvsQuery.data?.items[0]
-  const { analysis, isScoring } = useCvAnalysis(latestCv?.id ?? null)
+  const { analysis, isScoring, isFailed: scoringFailed } = useCvAnalysis(latestCv?.id ?? null)
 
   const isLoaded = cvsQuery.isSuccess
   const hasNoCvs = isLoaded && (cvsQuery.data?.items.length ?? 0) === 0
@@ -115,6 +115,15 @@ export default function DashboardPage() {
             isLoading={isScoring}
           />
         </div>
+
+        {scoringFailed && !analysis && (
+          <p
+            data-testid="status-scoring-failed"
+            style={{ margin: "16px 0 0", fontSize: 13, color: "var(--color-accent-700)" }}
+          >
+            We couldn&apos;t score this resume. Reload to try again, or re-upload it if this keeps happening.
+          </p>
+        )}
 
         <div style={{ marginTop: 32, display: "flex", gap: 12 }}>
           <button

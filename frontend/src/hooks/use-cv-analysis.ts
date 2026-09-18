@@ -13,6 +13,11 @@ import { useJobPoll } from "@/hooks/use-job-poll"
  */
 export function useCvAnalysis(cvId: string | null) {
   const [jobId, setJobId] = useState<string | null>(null)
+  // The POST itself can fail (it 500'd in production for months of
+  // "Scoring…" that never ended — see migration 022). Without this, a
+  // failed trigger left isScoring true and the bar span forever, which
+  // reads as "still working" rather than "broken".
+  const [triggerFailed, setTriggerFailed] = useState(false)
   const triggeredRef = useRef(false)
   const { isCompleted, isFailed } = useJobPoll(jobId)
 
@@ -24,6 +29,7 @@ export function useCvAnalysis(cvId: string | null) {
     // anti-pattern.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setJobId(null)
+    setTriggerFailed(false)
   }, [cvId])
 
   const query = useQuery<CvAnalysis>({
@@ -41,16 +47,19 @@ export function useCvAnalysis(cvId: string | null) {
       triggerCvAnalysis(cvId)
         .then((job) => setJobId(job.jobId))
         .catch(() => {
-          triggeredRef.current = false
+          // Left true: retrying an endpoint that just refused only repeats
+          // the failure (and each attempt costs a generation-tier slot).
+          setTriggerFailed(true)
         })
     }
   }, [cvId, jobId, query.isError, query.error])
 
-  const isScoring = !!cvId && !query.data && !isFailed && (query.isLoading || !!jobId)
+  const isScoring =
+    !!cvId && !query.data && !isFailed && !triggerFailed && (query.isLoading || !!jobId)
 
   return {
     analysis: query.data,
     isScoring,
-    isFailed,
+    isFailed: isFailed || triggerFailed,
   }
 }
