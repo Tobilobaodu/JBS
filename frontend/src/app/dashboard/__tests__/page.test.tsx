@@ -102,6 +102,51 @@ describe("DashboardPage", () => {
     expect(screen.getByText("Acme")).toBeInTheDocument()
   })
 
+  it("offers a way forward instead of a dead 'View full report' when there are no matches", async () => {
+    // Regression: the button was enabled on having a CV, but a report
+    // belongs to a match — with none, clicking it did nothing at all.
+    useAuthStore.getState().setAuth("token-1", { id: "u1", email: "a@b.com" })
+    server.use(
+      http.get(`${BASE}/cvs`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              id: "cv-1",
+              originalFilename: "resume.pdf",
+              mimeType: "application/pdf",
+              fileSizeBytes: 1024,
+              status: "parsed",
+              uploadStatus: "completed",
+              processingStatus: "completed",
+              jobStatus: null,
+              resumeScore: 85,
+              issueCount: 2,
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            },
+          ],
+          total: 1, limit: 20, offset: 0,
+        })
+      ),
+      http.get(`${BASE}/cvs/cv-1/analysis`, () => HttpResponse.json({}, { status: 404 })),
+      http.post(`${BASE}/cvs/cv-1/analysis`, () =>
+        HttpResponse.json({ jobId: "job-1", status: "queued" }, { status: 202 })
+      ),
+      http.get(`${BASE}/jobs/job-1`, () =>
+        HttpResponse.json({ id: "job-1", jobType: "cv_analyze", status: "queued" })
+      ),
+      http.get(`${BASE}/job-posts`, emptyList),
+      http.get(`${BASE}/matches`, emptyList),
+      http.get(`${BASE}/job-post-collections`, () => HttpResponse.json([]))
+    )
+
+    renderPage()
+
+    const link = await screen.findByTestId("link-first-report")
+    expect(link).toHaveAttribute("href", "/dashboard/new")
+    expect(screen.queryByTestId("button-view-full-report")).toBeNull()
+  })
+
   it("shows the first-run empty state when there are no CVs yet", async () => {
     useAuthStore.getState().setAuth("token-1", { id: "u1", email: "a@b.com" })
     server.use(

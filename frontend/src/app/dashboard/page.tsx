@@ -70,6 +70,7 @@ export default function DashboardPage() {
   const rewritesLeft = Math.max(0, TRIAL_REWRITES_TOTAL - (matchesQuery.data?.total ?? 0))
 
   const recentMatches = matches.slice(0, 3)
+  const latestMatch = matches[0]
   const hasCollections = (collectionsQuery.data?.length ?? 0) > 0
 
   return (
@@ -126,18 +127,31 @@ export default function DashboardPage() {
         )}
 
         <div style={{ marginTop: 32, display: "flex", gap: 12 }}>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={!latestCv}
-            onClick={() => {
-              const latest = matches[0]
-              if (latest) router.push(`/dashboard/matches/${latest.id}`)
-            }}
-          >
-            View full report
-            <ArrowRight width={16} height={16} strokeWidth={2.2} strokeLinecap="square" />
-          </button>
+          {/* A report belongs to a MATCH, not to the CV — so with no match
+              yet there is nowhere to go. This used to be a button enabled
+              on `latestCv` whose onClick silently did nothing when
+              matches[0] was undefined, which reads as a broken button. */}
+          {latestMatch ? (
+            <button
+              type="button"
+              className="btn btn-primary"
+              data-testid="button-view-full-report"
+              onClick={() => router.push(`/dashboard/matches/${latestMatch.id}`)}
+            >
+              View full report
+              <ArrowRight width={16} height={16} strokeWidth={2.2} strokeLinecap="square" />
+            </button>
+          ) : (
+            <Link
+              href="/dashboard/new"
+              className="btn btn-primary"
+              data-testid="link-first-report"
+              aria-disabled={matchesQuery.isLoading}
+            >
+              {matchesQuery.isLoading ? "Loading…" : "Match a job to get a report"}
+              <ArrowRight width={16} height={16} strokeWidth={2.2} strokeLinecap="square" />
+            </Link>
+          )}
           <Link href="/dashboard/new" className="btn btn-secondary">
             Upload another file
           </Link>
