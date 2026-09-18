@@ -141,14 +141,28 @@ export default function DashboardPage() {
               View full report
               <ArrowRight width={16} height={16} strokeWidth={2.2} strokeLinecap="square" />
             </button>
+          ) : matchesQuery.isLoading ? (
+            // Until the match list arrives we can't know which destination is
+            // right, so nothing may be clickable yet: a link here sent users
+            // who DO have matches to "New match" instead of their report.
+            <button
+              type="button"
+              className="btn btn-primary"
+              data-testid="button-report-loading"
+              disabled
+            >
+              Loading…
+            </button>
           ) : (
+            // Plain link, not aria-disabled: it has a real destination.
+            // aria-disabled on a link doesn't block clicks anyway — it would
+            // only mislabel a working link for screen readers.
             <Link
               href="/dashboard/new"
               className="btn btn-primary"
               data-testid="link-first-report"
-              aria-disabled={matchesQuery.isLoading}
             >
-              {matchesQuery.isLoading ? "Loading…" : "Match a job to get a report"}
+              Match a job to get a report
               <ArrowRight width={16} height={16} strokeWidth={2.2} strokeLinecap="square" />
             </Link>
           )}
