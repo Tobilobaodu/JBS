@@ -101,6 +101,33 @@ class UserSession(Base):
     user: Mapped["User"] = relationship(back_populates="sessions")
 
 
+class PasswordResetToken(Base):
+    """One emailed "reset your password" link (migration 023).
+
+    Only the SHA-256 of the token is stored. Single-use (used_at) and
+    short-lived (expires_at); see app/services/password_reset.py.
+    """
+
+    __tablename__ = "password_reset_tokens"
+    __table_args__ = (
+        Index("ix_password_reset_tokens_user_id_created_at", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), primary_key=True, default=_new_uuid
+    )
+    user_id: Mapped[str] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    requested_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Anonymous trial support (Sprint 2)
 # ──────────────────────────────────────────────────────────────────────

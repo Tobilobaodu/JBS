@@ -267,6 +267,68 @@ button.inputIcon:focus-visible {
   color: var(--fa-red);
 }
 
+/* "Reset password" under the password field (8:80). */
+.smallLink {
+  align-self: flex-start;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fa-ink) !important;
+  text-decoration: underline;
+}
+
+/* Title + explanation stack on the forgot-password screens (8:153). */
+.titleBlock {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+
+/* The design's heading frame (8:153, 321px) is wider than the card's
+   padding box, so "Forgotten your password?" sits on one line. */
+@media (min-width: 481px) {
+  .titleBlock .title {
+    white-space: nowrap;
+  }
+}
+
+.subtitle {
+  max-width: 321px;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+/* "Successful_password_reset_modal" (8:192): green 20% wash, 1px border. */
+.successBox {
+  width: calc(100% + 51px);
+  max-width: calc(100vw - 32px);
+  padding: 10px 15px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #008236;
+  border-radius: 8px;
+  background: rgba(160, 205, 159, 0.2);
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.successIcon {
+  display: block;
+  width: 24px;
+  height: 24px;
+}
+
+.successText {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .actions {
   width: 100%;
   display: flex;
@@ -282,9 +344,15 @@ button.inputIcon:focus-visible {
   text-align: center;
 }
 
+/* The forgot-password screens' line is wider (8:163 is 215px). */
+.switchTextWide {
+  max-width: 215px;
+}
+
 .switchText a {
   color: var(--fa-blue);
   text-decoration: underline;
+  white-space: nowrap;
 }
 
 /* ── Footer ──────────────────────────────────────────────────────── */

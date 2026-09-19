@@ -69,6 +69,24 @@ describe("LoginPage", () => {
     expect(screen.queryByText("Wrong email address and password combination")).toBeNull()
   })
 
+  it("links to the forgot-password page", () => {
+    render(<LoginPage />)
+    expect(screen.getByRole("link", { name: "Reset password" })).toHaveAttribute(
+      "href",
+      "/forgot-password"
+    )
+  })
+
+  it("confirms a completed password reset when arriving from /reset-password", () => {
+    window.history.replaceState(null, "", "/login?reset=done")
+    try {
+      render(<LoginPage />)
+      expect(screen.getByRole("status")).toHaveTextContent("Your password has been changed")
+    } finally {
+      window.history.replaceState(null, "", "/")
+    }
+  })
+
   it("toggles password visibility with the eye button", async () => {
     const user = userEvent.setup()
     render(<LoginPage />)

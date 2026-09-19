@@ -40,3 +40,17 @@ export const loginSchema = z.object({
 })
 
 export type LoginFormValues = z.infer<typeof loginSchema>
+
+// Forgot-password (Figma 8:125 / 8:164).
+export const forgotPasswordSchema = z.object({
+  email: z.string().trim().email("Invalid email address"),
+})
+
+export type ForgotPasswordFormValues = z.infer<typeof forgotPasswordSchema>
+
+// Same policy as registerSchema / the backend's PasswordResetConfirm.
+export const resetPasswordSchema = z.object({
+  password: z.string().min(12, "Password must be at least 12 characters."),
+})
+
+export type ResetPasswordFormValues = z.infer<typeof resetPasswordSchema>

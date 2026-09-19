@@ -30,6 +30,24 @@ export function loginAccount(email: string, password: string) {
   })
 }
 
+/** Always resolves the same way whether or not the email has an account
+ *  (the backend won't say). 503 when the server has no email configured. */
+export function requestPasswordReset(email: string) {
+  return apiFetch<{ detail: string }>("/auth/password-reset/request", {
+    method: "POST",
+    body: { email },
+  })
+}
+
+/** 400 when the link is invalid, used or expired. Signs the account out
+ *  everywhere; the user then logs in with the new password. */
+export function confirmPasswordReset(token: string, password: string) {
+  return apiFetch<void>("/auth/password-reset/confirm", {
+    method: "POST",
+    body: { token, password },
+  })
+}
+
 export function logoutAccount() {
   return apiFetch<void>("/auth/logout", { method: "POST" })
 }

@@ -1,15 +1,13 @@
 "use client"
 
-import { useState } from "react"
-import Image from "next/image"
+import { useState, useSyncExternalStore } from "react"
 import Link from "next/link"
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { toast } from "sonner"
 
-import eyeIcon from "@/assets/auth/icon-eye.svg"
-import warningIcon from "@/assets/auth/icon-warning.svg"
 import { AuthShell } from "@/components/auth/auth-shell"
+import { EmailField, PasswordField } from "@/components/auth/fields"
 import styles from "@/components/auth/auth.module.css"
 import { loginSchema, type LoginFormValues } from "@/lib/schemas/auth"
 import { loginAccount } from "@/lib/auth-api"
@@ -17,16 +15,22 @@ import { ApiError, errorMessage } from "@/lib/api"
 import { useAuthStore } from "@/store/auth-store"
 import { usePostAuthRedirect } from "@/hooks/use-post-auth-redirect"
 
+// /reset-password sends people here as /login?reset=done. Read from
+// location rather than useSearchParams so the page needs no Suspense
+// boundary; the server snapshot is "no notice".
+const noop = () => () => {}
+const readResetDone = () => new URLSearchParams(window.location.search).get("reset") === "done"
+
 // Built from the "Login Journey" Figma: 8:47 (Login) and 8:86 (Login – Error).
 export default function LoginPage() {
   const redirectAfterAuth = usePostAuthRedirect()
   const setAuth = useAuthStore((state) => state.setAuth)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [showPassword, setShowPassword] = useState(false)
   // A 401 is shown on the form (both fields red), not as a toast. One
   // message for both cases on purpose: the API doesn't reveal whether the
   // email exists (security plan: no user enumeration), so neither do we.
   const [wrongCredentials, setWrongCredentials] = useState(false)
+  const passwordWasReset = useSyncExternalStore(noop, readResetDone, () => false)
 
   const form = useForm<LoginFormValues>({
     resolver: zodResolver(loginSchema),
@@ -68,76 +72,39 @@ export default function LoginPage() {
     }
   }
 
-  const emailInvalid = Boolean(errors.email) || wrongCredentials
-  const passwordInvalid = Boolean(errors.password) || wrongCredentials
   const passwordMessage = errors.password?.message
-    ?? (wrongCredentials ? "Wrong email address and password combination" : null)
+    ?? (wrongCredentials ? "Wrong email address and password combination" : undefined)
 
   return (
     <AuthShell>
       <div className={styles.card}>
         <h1 className={styles.title}>Login</h1>
+        {passwordWasReset && (
+          <div className={styles.successBox} role="status">
+            Your password has been changed. Log in with your new password.
+          </div>
+        )}
         <form className={styles.form} onSubmit={form.handleSubmit(onSubmit)} noValidate>
           <div className={styles.fields}>
-            <div className={styles.field}>
-              <label htmlFor="login-email" className={styles.label}>
-                Email address <span className={styles.required} aria-hidden="true">*</span>
-              </label>
-              <div className={`${styles.inputBox} ${emailInvalid ? styles.inputBoxError : ""}`}>
-                <input
-                  id="login-email"
-                  type="email"
-                  autoComplete="email"
-                  placeholder="email@domain.com"
-                  required
-                  aria-invalid={emailInvalid}
-                  aria-describedby={errors.email ? "login-email-error" : undefined}
-                  className={styles.input}
-                  {...emailField}
-                />
-                {errors.email && (
-                  <span className={styles.inputIcon}>
-                    <Image src={warningIcon} alt="" width={23} height={23} unoptimized />
-                  </span>
-                )}
-              </div>
-              {errors.email && (
-                <p id="login-email-error" className={styles.errorText}>{errors.email.message}</p>
-              )}
-            </div>
-
-            <div className={styles.field}>
-              <label htmlFor="login-password" className={styles.label}>
-                Password <span className={styles.required} aria-hidden="true">*</span>
-              </label>
-              <div className={`${styles.inputBox} ${passwordInvalid ? styles.inputBoxError : ""}`}>
-                <input
-                  id="login-password"
-                  type={showPassword ? "text" : "password"}
-                  autoComplete="current-password"
-                  placeholder="******"
-                  required
-                  aria-invalid={passwordInvalid}
-                  aria-describedby={passwordMessage ? "login-password-error" : undefined}
-                  className={`${styles.input} ${styles.passwordInput}`}
-                  {...passwordField}
-                />
-                <button
-                  type="button"
-                  className={styles.inputIcon}
-                  onClick={() => setShowPassword((s) => !s)}
-                  aria-label={showPassword ? "Hide password" : "Show password"}
-                  aria-pressed={showPassword}
-                >
-                  <Image src={eyeIcon} alt="" width={23} height={23} unoptimized />
-                </button>
-              </div>
-              {passwordMessage && (
-                <p id="login-password-error" role="alert" className={styles.errorText}>
-                  {passwordMessage}
-                </p>
-              )}
-            </div>
+            <EmailField
+              id="login-email"
+              label="Email address"
+              registration={emailField}
+              invalid={Boolean(errors.email) || wrongCredentials}
+              message={errors.email?.message}
+            />
+            <PasswordField
+              id="login-password"
+              label="Password"
+              registration={passwordField}
+              invalid={Boolean(errors.password) || wrongCredentials}
+              message={passwordMessage}
+              footer={
+                <Link href="/forgot-password" className={styles.smallLink}>
+                  Reset password
+                </Link>
+              }
+            />
           </div>
 
           <div className={styles.actions}>

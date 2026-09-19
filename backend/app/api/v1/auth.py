@@ -1,4 +1,5 @@
-"""Auth endpoints — POST /auth/register, /auth/login, /auth/logout, GET /auth/me.
+"""Auth endpoints — POST /auth/register, /auth/login, /auth/logout, GET /auth/me,
+and the forgot-password pair POST /auth/password-reset/request + /confirm.
 
 Matches 05-openapi.yaml exactly. Uses bcrypt for password hashing,
 short-lived JWT access tokens, and revocable refresh tokens per security plan §1.
@@ -7,7 +8,7 @@ short-lived JWT access tokens, and revocable refresh tokens per security plan §
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,12 +27,21 @@ from app.core.security import (
 )
 from app.db import get_session
 from app.db.models import AuditEvent, User, UserSession
+from app.services.password_reset import (
+    InvalidResetTokenError,
+    issue_reset_token,
+    redeem_reset_token,
+    send_reset_email,
+)
 from app.services.trial_session import claim_trial_session
 from app.schemas.auth import (
     ClaimTrialRequest,
     ClaimTrialResponse,
     LoginRequest,
     LoginResponse,
+    PasswordResetConfirm,
+    PasswordResetRequest,
+    PasswordResetRequestResponse,
     RefreshRequest,
     RegisterRequest,
     UserResponse,
@@ -336,6 +346,95 @@ async def refresh(
         refresh_token=body.refresh_token,
         user=_map_user(user),
     )
+
+
+_RESET_REQUESTED = (
+    "If an account exists for that email, we've sent a link to reset its password."
+)
+
+
+@router.post(
+    "/password-reset/request",
+    response_model=PasswordResetRequestResponse,
+    status_code=202,
+)
+async def request_password_reset(
+    body: PasswordResetRequest,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    session: AsyncSession = Depends(get_session),
+):
+    """Email a single-use reset link.
+
+    Same 202 body whether or not the email has an account (security plan
+    §1: the reset flow must not leak account existence), and the SMTP call
+    runs after the response is sent, so timing doesn't leak it either.
+    Per-IP rate limited under its own key namespace; per-account email cap
+    in services/password_reset.py.
+    """
+    client_key = get_client_key(request)
+    if not check_rate_limit(f"pwreset:{client_key}"):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many reset requests. Please wait and try again.",
+        )
+
+    # Checked before any lookup, so a 503 says nothing about the account.
+    if not settings.email_configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Password reset by email isn't available right now.",
+        )
+
+    ip = request.client.host if request.client else None
+    message = await issue_reset_token(session, body.email, ip)
+    if message is not None:
+        await session.commit()
+        background_tasks.add_task(send_reset_email, message)
+
+    return PasswordResetRequestResponse(detail=_RESET_REQUESTED)
+
+
+@router.post("/password-reset/confirm", status_code=204)
+async def confirm_password_reset(
+    body: PasswordResetConfirm,
+    request: Request,
+    session: AsyncSession = Depends(get_session),
+):
+    """Set a new password from an emailed token.
+
+    One 400 for every bad-token case (unknown, used, expired, inactive
+    account). On success every session of the account is revoked, so a
+    reset also signs out whoever may have had access. Does not log the
+    user in — they sign in with the new password.
+    """
+    client_key = get_client_key(request)
+    if not check_rate_limit(f"pwreset-confirm:{client_key}"):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many attempts. Please wait and try again.",
+        )
+
+    try:
+        user = await redeem_reset_token(session, body.token, body.password)
+    except InvalidResetTokenError:
+        AUTH_FAILURE_COUNTER.labels(reason="invalid_reset_token").inc()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This reset link is invalid or has expired. Please request a new one.",
+        )
+
+    await _create_audit_event(
+        session=session,
+        event_type="password_reset",
+        user_id=user.id,
+        entity_type="user",
+        entity_id=user.id,
+        ip_address=request.client.host if request.client else None,
+        user_agent=request.headers.get("user-agent"),
+    )
+    await session.commit()
+    logger.info("password_reset_completed", user_id=user.id)
 
 
 @router.post("/logout", status_code=204)

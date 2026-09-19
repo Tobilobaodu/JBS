@@ -203,6 +203,30 @@ class Settings(BaseSettings):
     # CORS
     cors_origin: str = "http://localhost:3000"
 
+    # Outgoing email (password reset). Plain SMTP so any provider works —
+    # Resend, Postmark, Amazon SES and Gmail all expose an SMTP endpoint.
+    # Unset smtp_host means "email not configured": the reset endpoint then
+    # returns an honest 503 instead of claiming a link was sent.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    # 465 speaks TLS from the first byte (implicit TLS); any other port is
+    # upgraded with STARTTLS. Never sent in clear text.
+    mail_from: str = ""  # e.g. "Fix+Apply <no-reply@yourdomain.com>"
+
+    # Where the emailed reset link points. Scheme + host, no trailing slash.
+    # Falls back to cors_origin, which is the frontend's origin already.
+    frontend_base_url: str = ""
+    password_reset_token_ttl_minutes: int = 30
+    # Per-account cap, independent of the per-IP limiter: stops anyone
+    # flooding a victim's inbox by rotating IPs.
+    password_reset_max_emails_per_hour: int = 3
+
+    @property
+    def email_configured(self) -> bool:
+        return bool(self.smtp_host and self.mail_from)
+
     model_config = {"env_file": ".env.local", "env_file_encoding": "utf-8"}
 
 

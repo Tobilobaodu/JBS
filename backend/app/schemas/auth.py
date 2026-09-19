@@ -58,6 +58,21 @@ class RefreshRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetRequestResponse(BaseModel):
+    # Always the same text — it must not reveal whether the account exists.
+    detail: str
+
+
+class PasswordResetConfirm(BaseModel):
+    token: str = Field(min_length=1, max_length=256)
+    # Same policy as RegisterRequest.
+    password: str = Field(min_length=12)
+
+
 class ClaimTrialRequest(BaseModel):
     trial_session_id: str = Field(alias="trialSessionId")
 

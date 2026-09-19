@@ -82,6 +82,16 @@ x-app-env: &app-env
   # an Origin header and every browser request fails CORS.
   CORS_ORIGIN: ${CORS_ORIGIN:?set CORS_ORIGIN, e.g. https://cvbuilder.tobilobaodu.com}
 
+  # Password-reset email over SMTP (any provider: Resend, Postmark, SES,
+  # Gmail). Optional: left empty, "Forgot password" answers with an honest
+  # 503 instead of pretending to send. Port 465 = implicit TLS, else STARTTLS.
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  MAIL_FROM: ${MAIL_FROM:-}
+  FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-}
+
   MAX_CONCURRENT_JOBS_PER_USER: ${MAX_CONCURRENT_JOBS_PER_USER:-5}
 
   CLAMD_HOST: clamav
