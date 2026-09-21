@@ -19,7 +19,7 @@ boto3==1.36.3
 
 # Queue / Workers
 celery[redis]==5.4.0
-redis==5.2.1
+redis==8.1.0
 
 # LLM (Phase 3 — tailored CV generation)
 openai==2.53.0
