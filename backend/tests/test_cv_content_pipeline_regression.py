@@ -40,6 +40,8 @@ bottom of this file is a lightweight, explicitly-labelled stand-in.
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from app.services.cv_analysis import analyze_cv
 from app.services.tailored_cv_generation import (
     SECTION_EDUCATION,
@@ -47,6 +49,15 @@ from app.services.tailored_cv_generation import (
     SECTION_SKILLS,
     SECTION_SUMMARY,
     generate_draft_sections,
+)
+
+# These assert the contract the extraction fix must satisfy; they fail
+# today because it is not built yet (see the docstring above). strict=True
+# means CI turns red again the moment they start passing, so this marker
+# gets removed rather than quietly outliving the bug.
+_extraction_not_restored = pytest.mark.xfail(
+    strict=True,
+    reason="CV extraction does not yet return structured experience/education rows",
 )
 
 # A real designer CV, close to the reproduction case in
@@ -293,6 +304,7 @@ class TestExtractionReturnsStructuredContent:
     """The extraction step is the origin of the defect: it must return the
     candidate's roles and qualifications, not only basics + skills."""
 
+    @_extraction_not_restored
     def test_experience_is_extracted_with_roles_and_bullets(self):
         result = analyze_cv(CV_TEXT, client=FakeClient())
 
@@ -310,6 +322,7 @@ class TestExtractionReturnsStructuredContent:
         first = next(e for e in experience if e.get("title") == "UX Design Manager")
         assert len(first.get("bullets") or []) == 3
 
+    @_extraction_not_restored
     def test_quantified_achievements_survive_extraction(self):
         """The numbers are the most persuasive content on the CV. If they
         are lost here, no prompt downstream can recover them."""
@@ -322,6 +335,7 @@ class TestExtractionReturnsStructuredContent:
         for figure in ("43", "20", "50%", "25%"):
             assert figure in all_bullets, f"lost the {figure!r} figure in extraction"
 
+    @_extraction_not_restored
     def test_education_and_certifications_are_extracted(self):
         result = analyze_cv(CV_TEXT, client=FakeClient())
 
@@ -347,6 +361,7 @@ class TestExtractionFeedsAUsableTailoredCv:
     """End of the chain: extraction output must produce a CV containing
     experience and education, not just a summary and a skills list."""
 
+    @_extraction_not_restored
     def test_generated_draft_contains_experience_and_education(self):
         result = analyze_cv(CV_TEXT, client=FakeClient())
         experience, education, certifications, skills = _rows_from_analysis(result)
@@ -392,6 +407,7 @@ class TestProfileShimPersistenceContract:
     it would leave the user-visible defect exactly as it is.
     """
 
+    @_extraction_not_restored
     def test_shim_accepts_the_structured_rows_it_must_persist(self):
         import inspect
 

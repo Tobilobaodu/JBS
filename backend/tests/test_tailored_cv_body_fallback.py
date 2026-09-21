@@ -16,6 +16,7 @@ network — same discipline as test_tailored_cv_generation.py.
 from types import SimpleNamespace
 
 import app.services.tailored_cv_generation as tt
+from app.prompts.resume_rewrite_prompts import RESUME_REWRITE_PROMPT_VERSION
 from app.services.export_rendering import build_cv_docx_context
 from app.services.resume_rewrite import ResumeRewriteError, ResumeRewriteResult
 from app.services.tailored_cv_generation import (
@@ -121,7 +122,7 @@ class TestBodyFallbackWhenRowsAreMissing:
         body = outcome.sections[0]
         assert body.content_text == BODY_MARKDOWN
         assert body.generation_task == "tailored_cv_body"
-        assert body.prompt_version == "v5"
+        assert body.prompt_version == RESUME_REWRITE_PROMPT_VERSION
         assert body.order_index == 0
         assert body.evidence_references == ["cvraw-1"]
         assert len(calls) == 1
